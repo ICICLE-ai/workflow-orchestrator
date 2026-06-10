@@ -1,0 +1,29 @@
+{
+  "step_type_key": "training",
+  "display_name": "Model Training",
+  "description": "Trains a machine learning model on the provided dataset.",
+  "inputs": [
+    { "name": "dataset", "type": "image_dir" }
+  ],
+  "outputs": [
+    { "name": "model", "type": "pytorch_model" },
+    { "name": "metrics", "type": "json_metrics" }
+  ],
+  "config_schema": {
+    "epochs": {
+      "type": "int",
+      "description": "Number of full passes through the training dataset.",
+      "default": 50
+    },
+    "learning_rate": {
+      "type": "float",
+      "description": "Step size at each iteration while moving toward a minimum of a loss function.",
+      "default": 0.001
+    },
+    "batch_size": {
+      "type": "int",
+      "description": "Number of training examples utilized in one iteration.",
+      "default": 32
+    }
+  }
+}
