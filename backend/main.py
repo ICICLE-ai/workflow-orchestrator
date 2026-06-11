@@ -6,7 +6,7 @@ from sqlalchemy.orm import sessionmaker, Session
 import os
 import uvicorn
 
-from models import Base, StepTypeRegistry, StepTypePort, WorkflowTemplate, PipelineRun, AppUser, WfNode, WfEdge
+from models import Base, StepTypeRegistry, StepTypePort, WorkflowTemplate, PipelineRun, AppUser, WfNode, WfEdge, PortDataType
 import auth
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
@@ -61,6 +61,8 @@ def sync_step_registry(db: Session):
             
         registry_entry.display_name = data.get("display_name", step_key)
         registry_entry.description = data.get("description", "")
+        registry_entry.category = data.get("category", "general")
+        registry_entry.icon = data.get("icon", "default")
         registry_entry.config_schema = data.get("config_schema", {})
         db.commit()
         print(f"  Synced registry: {step_key} (config_schema keys: {list(data.get('config_schema', {}).keys())})")
@@ -174,6 +176,18 @@ def get_step_types(db: Session = Depends(get_db)):
             "outputs": outputs
         })
     return result
+
+@app.get("/api/port-data-types")
+def get_port_data_types(db: Session = Depends(get_db)):
+    types = db.query(PortDataType).all()
+    return [
+        {
+            "type_key": t.type_key,
+            "parent_type": t.parent_type,
+            "description": t.description,
+            "coerce_from": t.coerce_from or []
+        } for t in types
+    ]
 
 @app.get("/api/workflow-templates")
 def list_workflow_templates(db: Session = Depends(get_db)):

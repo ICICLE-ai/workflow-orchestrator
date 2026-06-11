@@ -1,0 +1,18 @@
+{
+  "step_type_key": "source_model",
+  "display_name": "🧠 Pretrained Model",
+  "description": "Provides a path to a pretrained model artifact.",
+  "category": "source",
+  "icon": "brain",
+  "inputs": [],
+  "outputs": [
+    { "name": "model", "type": "pytorch_model" }
+  ],
+  "config_schema": {
+    "path": {
+      "type": "string",
+      "description": "Path or Tapis URI to the model weights file (e.g. tapis://storage-system/models/yolov8.pth)",
+      "default": ""
+    }
+  }
+}

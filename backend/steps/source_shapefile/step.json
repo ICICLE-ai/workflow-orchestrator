@@ -1,0 +1,18 @@
+{
+  "step_type_key": "source_shapefile",
+  "display_name": "🗺️ Shapefile",
+  "description": "Provides a path to a geospatial shapefile.",
+  "category": "source",
+  "icon": "map-pin",
+  "inputs": [],
+  "outputs": [
+    { "name": "shapefile", "type": "shapefile" }
+  ],
+  "config_schema": {
+    "path": {
+      "type": "string",
+      "description": "Path or Tapis URI to the shapefile (e.g. tapis://storage-system/geo/boundaries.shp)",
+      "default": ""
+    }
+  }
+}

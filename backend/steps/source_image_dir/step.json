@@ -1,0 +1,18 @@
+{
+  "step_type_key": "source_image_dir",
+  "display_name": "📁 Image Directory",
+  "description": "Provides a path to an image directory as input to the pipeline.",
+  "category": "source",
+  "icon": "folder",
+  "inputs": [],
+  "outputs": [
+    { "name": "images", "type": "image_dir" }
+  ],
+  "config_schema": {
+    "path": {
+      "type": "string",
+      "description": "Path or Tapis URI to the image directory (e.g. tapis://storage-system/data/images/)",
+      "default": ""
+    }
+  }
+}

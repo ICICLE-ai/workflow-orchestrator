@@ -1,0 +1,18 @@
+{
+  "step_type_key": "source_csv",
+  "display_name": "📊 CSV Dataset",
+  "description": "Provides a path to a CSV dataset file.",
+  "category": "source",
+  "icon": "table",
+  "inputs": [],
+  "outputs": [
+    { "name": "csv_data", "type": "csv_data" }
+  ],
+  "config_schema": {
+    "path": {
+      "type": "string",
+      "description": "Path or Tapis URI to the CSV file (e.g. tapis://storage-system/data/dataset.csv)",
+      "default": ""
+    }
+  }
+}
