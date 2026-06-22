@@ -1,4 +1,5 @@
-from app.utils.graph import topological_sort, render_ascii_graph
+from app.utils.graph import render_ascii_graph, topological_sort
+
 
 def test_topological_sort():
     nodes = ["A", "B", "C", "D"]
@@ -8,17 +9,15 @@ def test_topological_sort():
     assert order.index("B") < order.index("C")
     assert order.index("C") < order.index("D")
 
+
 def test_render_ascii_graph_simple():
     nodes = ["A", "B", "C"]
     edges = [("A", "B"), ("B", "C")]
     statuses = {"A": "completed", "B": "running", "C": "pending"}
     graph = render_ascii_graph(nodes, edges, statuses)
-    expected = (
-        "*  A [completed]\n"
-        "*  B [running]\n"
-        "*  C [pending]"
-    )
+    expected = "*  A [completed]\n*  B [running]\n*  C [pending]"
     assert graph.strip() == expected.strip()
+
 
 if __name__ == "__main__":
     print("Running unit tests...")

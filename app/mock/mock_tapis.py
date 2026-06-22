@@ -1,8 +1,10 @@
-import random
 import asyncio
-import os
 import json
+import os
+import random
+
 import anyio
+
 
 class MockTapisJobResponse:
     """
@@ -11,6 +13,7 @@ class MockTapisJobResponse:
     Attributes:
         uuid (str): The unique identifier assigned to the simulated job.
     """
+
     def __init__(self, uuid: str):
         """
         Initializes a new instance of MockTapisJobResponse.
@@ -20,6 +23,7 @@ class MockTapisJobResponse:
         """
         self.uuid = uuid
 
+
 class MockTapisStatusResponse:
     """
     Represents a simulated response containing the status of a Tapis job.
@@ -27,6 +31,7 @@ class MockTapisStatusResponse:
     Attributes:
         status (str): The current status of the job (e.g., 'PENDING', 'RUNNING', 'FINISHED', 'FAILED').
     """
+
     def __init__(self, status: str):
         """
         Initializes a new instance of MockTapisStatusResponse.
@@ -35,6 +40,7 @@ class MockTapisStatusResponse:
             status (str): The status string of the job.
         """
         self.status = status
+
 
 class MockTapisJobs:
     """
@@ -45,6 +51,7 @@ class MockTapisJobs:
         job_states (dict): A dictionary mapping job UUIDs to their state/progress.
         lock (asyncio.Lock): An asyncio lock to ensure safe asynchronous operations on job states.
     """
+
     def __init__(self):
         """
         Initializes a new instance of MockTapisJobs.
@@ -62,11 +69,11 @@ class MockTapisJobs:
         self.file_path = "tapis_jobs.json"
         self.job_states = {}
         self.lock = asyncio.Lock()
-        
+
         # Load initially synchronously since __init__ cannot be async
         if os.path.exists(self.file_path):
             try:
-                with open(self.file_path, "r") as f:
+                with open(self.file_path) as f:
                     self.job_states = json.load(f)
             except Exception:
                 self.job_states = {}
@@ -92,7 +99,9 @@ class MockTapisJobs:
         except Exception:
             pass
 
-    async def submitJob(self, name: str, appId: str, appVersion: str, parameterSet: dict) -> MockTapisJobResponse:
+    async def submitJob(
+        self, name: str, appId: str, appVersion: str, parameterSet: dict
+    ) -> MockTapisJobResponse:
         """
         Submits a new simulated job to the Tapis Jobs service.
 
@@ -141,10 +150,10 @@ class MockTapisJobs:
             await self._load()
             if jobUuid not in self.job_states:
                 return MockTapisStatusResponse("FAILED")
-            
+
             job = self.job_states[jobUuid]
             job["ticks"] += 1
-            
+
             if job.get("appId") == "training-pipeline":
                 if job["ticks"] >= 2:
                     job["status"] = "FINISHED"
@@ -153,15 +162,16 @@ class MockTapisJobs:
             else:
                 if job["ticks"] >= 1:
                     job["status"] = "FINISHED"
-                
+
             await self._save()
             print(f"[Mock Tapis] Polling Job {jobUuid}: Status is {job['status']}")
             status_to_return = job["status"]
-            
+
         if status_to_return == "RUNNING":
             await asyncio.sleep(2)
-            
+
         return MockTapisStatusResponse(status_to_return)
+
 
 class MockTapis:
     """
@@ -170,6 +180,7 @@ class MockTapis:
     Attributes:
         jobs (MockTapisJobs): The simulated jobs service instance.
     """
+
     def __init__(self, base_url, username, password):
         """
         Initializes a new instance of MockTapis.
@@ -192,8 +203,5 @@ class MockTapis:
         """
         pass
 
-tapis_client = MockTapis(
-    base_url="https://tacc.tapis.io",
-    username="mock_user",
-    password="mock_password"
-)
+
+tapis_client = MockTapis(base_url="https://tacc.tapis.io", username="mock_user", password="mock_password")

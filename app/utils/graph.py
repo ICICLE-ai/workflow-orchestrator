@@ -5,10 +5,10 @@ def topological_sort(nodes, edges):
         if u in adj and v in adj:
             adj[u].append(v)
             in_degree[v] += 1
-            
+
     sources = [n for n in nodes if in_degree[n] == 0]
     sources.sort()
-    
+
     order = []
     while sources:
         u = sources.pop(0)
@@ -18,12 +18,13 @@ def topological_sort(nodes, edges):
             if in_degree[v] == 0:
                 sources.append(v)
                 sources.sort()
-                
+
     if len(order) < len(nodes):
         remaining = [n for n in nodes if n not in order]
         remaining.sort()
         order.extend(remaining)
     return order
+
 
 def render_ascii_graph(nodes, edges, node_statuses):
     order = topological_sort(nodes, edges)
@@ -32,20 +33,20 @@ def render_ascii_graph(nodes, edges, node_statuses):
     for u, v in edges:
         parents[v].append(u)
         children[u].append(v)
-        
+
     lines = []
     active_lanes = []
-    
+
     for n in order:
         status = node_statuses.get(n, "pending")
         parent_indices = [i for i, lane in enumerate(active_lanes) if lane == n]
-        
+
         if not parent_indices:
             node_idx = len(active_lanes)
             node_line_parts = ["|"] * node_idx + ["*"]
             node_line = " ".join(node_line_parts) + f"  {n} [{status}]"
             lines.append(node_line)
-            
+
             targets = children[n]
             if targets:
                 active_lanes.append(targets[0])
@@ -64,10 +65,10 @@ def render_ascii_graph(nodes, edges, node_statuses):
                     node_line_parts.append("|")
                 else:
                     node_line_parts.append("|")
-            
+
             node_line = " ".join(node_line_parts) + f"  {n} [{status}]"
             lines.append(node_line)
-            
+
             targets = children[n]
             if len(parent_indices) > 1:
                 merge_parts = []
@@ -79,7 +80,7 @@ def render_ascii_graph(nodes, edges, node_statuses):
                     else:
                         merge_parts.append("|")
                 lines.append(" ".join(merge_parts))
-            
+
             new_lanes = []
             inserted_targets = False
             for i, lane in enumerate(active_lanes):
@@ -94,5 +95,5 @@ def render_ascii_graph(nodes, edges, node_statuses):
             if not inserted_targets and targets:
                 new_lanes.extend(targets)
             active_lanes = new_lanes
-            
+
     return "\n".join(lines)

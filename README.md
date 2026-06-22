@@ -1,28 +1,17 @@
 # workflow-orchestrator
 An extensible workflow orchestration platform that manages the full ML lifecycle — ingesting data from HPC, cloud, and drone sources; harmonizing it into ZARR cubes; training and publishing models via PMC; and delivering inference results with uncertainty quantification.
 
-# DBOS FastAPI and Mock Tapis Pipeline Example
-This branch contains a sample project integrating FastAPI with DBOS to orchestrate a mock Tapis AI pipeline. The workflow orchestrator tracks progress and status through server crashes and restarts.
+## Overview
+A DBOS-FastAPI proof-of-concept backend for orchestrating ML pipelines as DAGs on Tapis v3 remote compute resources with reliable, durable tracking and automatic recovery.
 
-## Project Vision & Purpose
-
-This workflow orchestrator provides a user interface (UI) to allow researchers who aren't AI researchers to implement machine learning and data processing pipelines for their projects (e.g., a researcher training image classification models on a custom dataset). 
-
-The UI allows users to drag and drop "steps" and connect the inputs and outputs of nodes. The system supports Directed Acyclic Graphs (DAGs), enabling setups like two distinct datasets with their own preprocessing steps connecting to one or more training steps, which then feed into one or more inference steps.
-
-All steps run on remote compute resources managed via Tapis v3. This is currently a proof-of-concept backend, utilizing DBOS Transact to facilitate reliable, resilient, and durable pipeline tracking and recovery.
-
-## File Structure
-
-- [app/main.py](app/main.py): Main entrypoint of the application. Contains the FastAPI app and lifespans.
-- [app/models.py](app/models.py): Declares SQLAlchemy models for the business schema (`StepType`, `Workflow`, `WFNode`, `WFEdge`, `WFRun`, and `RunStep`) and handles database schema initialization.
-- [app/transactions.py](app/transactions.py): Contains all the DBOS transactions (using SQLAlchemy session queries) for creating workflows, resolving inputs, and updating run step statuses.
-- [app/workflows.py](app/workflows.py): Defines the DBOS orchestrator workflow (`dag_orchestrator_workflow`) and node execution workflow (`execute_node_workflow`).
-- [app/integrations/TapisV3.py](app/integrations/TapisV3.py): Wraps job submission and status checks to Tapis in DBOS step interfaces.
-- [app/mock/mock_tapis.py](app/mock/mock_tapis.py): Implements a simulated Tapis v3 job client, maintaining state inside `tapis_jobs.json`.
-- [tests/test.py](tests/test.py): An integration test suite verifying standard DAG execution and crash recovery.
-- [tests/test_graph.py](tests/test_graph.py): A unit test suite verifying graph topological sorting and ASCII progress graph rendering.
-- [scripts/clear_dbos.py](scripts/clear_dbos.py): Script to clear and reset application database states.
+## Structure
+* [app/main.py](app/main.py): FastAPI app & endpoints.
+* [app/models.py](app/models.py): SQLAlchemy database schema.
+* [app/transactions.py](app/transactions.py): DBOS database transactions.
+* [app/workflows.py](app/workflows.py): Orchestrator & execution workflows.
+* [app/integrations/TapisV3.py](app/integrations/TapisV3.py): Tapis API wrapper.
+* [app/mock/mock_tapis.py](app/mock/mock_tapis.py): Mock Tapis job client.
+* [tests/](tests/): DAG, API, and recovery tests.
 
 ## How to Run
 
@@ -43,12 +32,12 @@ All steps run on remote compute resources managed via Tapis v3. This is currentl
 
 4. **Run the unit tests**:
    ```bash
-   uv run python -m tests.test_graph
+   uv run python -m tests.graph_test
    ```
 
 5. **Run the server api tests**:
    ```bash
-   uv run python -m tests.test
+   uv run python -m tests.api_test
    ```
 
 6. **Run the application server**:
@@ -60,3 +49,24 @@ All steps run on remote compute resources managed via Tapis v3. This is currentl
    uv run uvicorn app.main:app --reload
    ```
 
+## Code Quality & Pre-commit
+
+This project uses `pre-commit` to maintain code style and quality. The hook configurations are defined in `.pre-commit-config.yaml` and include:
+- Formatting and linting checks via `ruff` (`ruff-check`, `ruff-format`).
+- UV lockfile consistency checks (`uv-lock`).
+- File sanity checks (trailing whitespace, mixed line endings, end of file formatting, UTF-8 BOM).
+- Verification that tests follow the `*_test.py` naming convention.
+
+### Setting Up Pre-commit
+
+Pre-commit is installed automatically as part of the development dependencies when you run `uv sync`.
+
+1. **Install the git hook**:
+   ```bash
+   uv run pre-commit install
+   ```
+
+2. **Run manually against all files**:
+   ```bash
+   uv run pre-commit run --all-files
+```

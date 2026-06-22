@@ -1,0 +1,30 @@
+# See https://pre-commit.com for more information
+# See https://pre-commit.com/hooks.html for more hooks
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: fix-byte-order-marker
+      - id: mixed-line-ending
+      - id: name-tests-test
+      - id: no-commit-to-branch
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.18
+    hooks:
+      # Run the linter.
+      - id: ruff-check
+        args: [--fix]
+      # Run the formatter.
+      - id: ruff-format
+
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: 0.11.23
+    hooks:
+      # Update the uv lockfile
+      - id: uv-lock
+        # Change <path/to/project> to your relative path
+        files: ./pyproject.toml
+        args: [--project, .]

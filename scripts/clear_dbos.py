@@ -4,9 +4,11 @@ import sys
 import psycopg2
 from dbos import DBOS
 from dotenv import load_dotenv
+
 load_dotenv()
 
 DATABASE_URL = os.environ.get("DBOS_DATABASE_URL")
+
 
 def main():
     print("--- 1. Resetting DBOS System Database (Dropping dbos_db) ---")
@@ -27,7 +29,7 @@ def main():
         DBOS.destroy()
 
     print("\n--- 2. Re-creating dbos_db Database ---")
-    
+
     try:
         # Connect to 'postgres' database to run CREATE DATABASE
         conn = psycopg2.connect(DATABASE_URL)
@@ -59,6 +61,7 @@ def main():
         print(f"[INFO] {tapis_jobs_path} does not exist (already clean).")
 
     print("\n[COMPLETE] DBOS and application environments have been completely cleared!")
+
 
 if __name__ == "__main__":
     main()

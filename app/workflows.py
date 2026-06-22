@@ -1,15 +1,18 @@
 from dbos import DBOS, SetWorkflowID
-from app.transactions import (
-                         create_workflow_from_config,
-                         get_wf_step_input,
-                         update_wf_step_inputs,
-                         get_tapis_info_from_wf_node,
-                         get_run_steps_status,
-                         get_wf_node_output,
-                         complete_run_step,
-                         update_wf_run_status,
-                         update_run_step_status)
+
 from app.integrations.TapisV3 import TapisV3
+from app.transactions import (
+    complete_run_step,
+    create_workflow_from_config,
+    get_run_steps_status,
+    get_tapis_info_from_wf_node,
+    get_wf_node_output,
+    get_wf_step_input,
+    update_run_step_status,
+    update_wf_run_status,
+    update_wf_step_inputs,
+)
+
 
 async def _resolve_inputs(wf_run_id: int, input_specs: dict) -> dict:
     """Resolves data dependencies by substituting parent-step output references into inputs.
@@ -31,6 +34,7 @@ async def _resolve_inputs(wf_run_id: int, input_specs: dict) -> dict:
             resolved[param_name] = spec_value
     return resolved
 
+
 @DBOS.workflow()
 async def execute_node_workflow(node_label: str, run_id: int, orchestrator_workflow_id: str):
     """A DBOS workflow that handles the execution of a single node in the DAG.
@@ -45,29 +49,28 @@ async def execute_node_workflow(node_label: str, run_id: int, orchestrator_workf
     """
     # Update step to running
     await update_run_step_status(run_id, node_label, "running")
-    
+
     # Get step inputs
     input_specs = await get_wf_step_input(run_id, node_label)
     resolved = await _resolve_inputs(run_id, input_specs)
     await update_wf_step_inputs(run_id, node_label, resolved)
-    
+
     # Get Tapis app info
     tapis_app_id = await get_tapis_info_from_wf_node(run_id, node_label)
-    
+
     # Submit job to Mock Tapis
     try:
         args = [str(v) for v in resolved.values()]
 
         job_uuid = await TapisV3.submit_job(
-            app_id=tapis_app_id,
-            app_version="1.0.0",
-            name=f"run-{run_id}-{node_label}",
-            args=args
+            app_id=tapis_app_id, app_version="1.0.0", name=f"run-{run_id}-{node_label}", args=args
         )
-        
+
         # Update tapis status
-        await update_run_step_status(run_id, node_label, "running", tapis_job_uuid=job_uuid, tapis_job_status="PENDING")
-        
+        await update_run_step_status(
+            run_id, node_label, "running", tapis_job_uuid=job_uuid, tapis_job_status="PENDING"
+        )
+
         # Poll until Tapis job is finished or failed
         # TODO make this non-blocking instead of polling
         while True:
@@ -78,7 +81,7 @@ async def execute_node_workflow(node_label: str, run_id: int, orchestrator_workf
             elif status in ["FAILED", "CANCELLED"]:
                 raise RuntimeError(f"Tapis Job {job_uuid} failed with status: {status}")
             await DBOS.sleep_async(3)
-        
+
         # Mock outputs
         if tapis_app_id == "preprocessing-pipeline":
             outputs = {"dataset_path": f"tapis-outputs/{job_uuid}/preprocessed_dataset"}
@@ -91,17 +94,22 @@ async def execute_node_workflow(node_label: str, run_id: int, orchestrator_workf
 
         # Complete run step
         await complete_run_step(run_id, node_label, outputs)
-        
+
         # Notify orchestrator of completion
-        await DBOS.send_async(destination_id=orchestrator_workflow_id, message=node_label, topic="step_complete")
+        await DBOS.send_async(
+            destination_id=orchestrator_workflow_id, message=node_label, topic="step_complete"
+        )
         return outputs
 
     except Exception as e:
         # Update run step to failed
         await update_run_step_status(run_id, node_label, "failed", error_message=str(e))
         # Notify orchestrator of failure
-        await DBOS.send_async(destination_id=orchestrator_workflow_id, message=node_label, topic="step_complete")
+        await DBOS.send_async(
+            destination_id=orchestrator_workflow_id, message=node_label, topic="step_complete"
+        )
         raise e
+
 
 @DBOS.workflow()
 async def dag_orchestrator_workflow(dag_config: dict):
@@ -114,8 +122,10 @@ async def dag_orchestrator_workflow(dag_config: dict):
            a. Checks statuses. If any task failed, propagates failures to downstream pending tasks and throws.
            b. If all tasks completed, breaks out of loop.
            c. Identifies pending tasks whose dependencies are fully completed.
-           d. Starts execution sub-workflows (`execute_node_workflow`) for ready tasks concurrently using `DBOS.start_workflow`.
-           e. Uses event-driven sleep (`DBOS.recv`) to wait for a completion signal from child tasks, preventing active busy waiting.
+           d. Starts execution sub-workflows (`execute_node_workflow`) for ready tasks concurrently,
+              using `DBOS.start_workflow`.
+           e. Uses event-driven sleep (`DBOS.recv`) to wait for a completion signal from child tasks,
+              preventing active busy waiting.
         4. Marks the run status as 'COMPLETED' upon successful traversal.
 
     Inputs:
@@ -130,16 +140,16 @@ async def dag_orchestrator_workflow(dag_config: dict):
     run_id = await create_workflow_from_config(w_id, dag_config)
     nodes = {node["id"]: node for node in dag_config.get("nodes", [])}
     edges = dag_config.get("edges", [])
-    
+
     # Create dependency graph
     deps = {node_id: set() for node_id in nodes}
     for edge in edges:
         deps[edge["to"]].add(edge["from"])
-    
+
     # Loop until all nodes are completed or failed
     while True:
         statuses = await get_run_steps_status(run_id)
-        
+
         all_done = True
         for node_id, status in statuses.items():
             if status == "failed":
@@ -148,7 +158,9 @@ async def dag_orchestrator_workflow(dag_config: dict):
                     if status == "pending":
                         node_deps = deps[node_id]
                         if any(statuses.get(d) == "failed" for d in node_deps):
-                            await update_run_step_status(run_id, node_id, "failed", error_message="Dependency failed")
+                            await update_run_step_status(
+                                run_id, node_id, "failed", error_message="Dependency failed"
+                            )
                 await update_wf_run_status(run_id, "FAILED")
                 raise RuntimeError("DAG execution failed due to task failure.")
             elif status != "completed":
@@ -156,7 +168,7 @@ async def dag_orchestrator_workflow(dag_config: dict):
 
         if all_done:
             break
-            
+
         # Spawn ready nodes
         for node_id, status in statuses.items():
             if status == "pending":
@@ -164,17 +176,13 @@ async def dag_orchestrator_workflow(dag_config: dict):
                 if all(statuses.get(d) == "completed" for d in node_deps):
                     # Node dependencies are completed
                     with SetWorkflowID(f"{w_id}-{node_id}"):
-                        await DBOS.start_workflow_async(
-                            execute_node_workflow,
-                            node_id,
-                            run_id,
-                            w_id
-                        )
+                        await DBOS.start_workflow_async(execute_node_workflow, node_id, run_id, w_id)
 
         # Event-driven wait: block until notified by execute_node_workflow of a step completion
         try:
             await DBOS.recv_async(topic="step_complete", timeout_seconds=30)
-        except Exception:
+        except Exception as e:
+            print(f"Error: {e}")
             pass
 
     await update_wf_run_status(run_id, "COMPLETED")

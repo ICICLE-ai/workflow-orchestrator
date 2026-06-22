@@ -16,6 +16,32 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "pre-commit>=4.6.0",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
 ]
+
+[tool.ruff]
+line-length = 112
+
+[tool.ruff.lint]
+select = [
+    # pycodestyle
+    "E", "W",
+    # Pyflakes
+    "F",
+    # isort
+    "I",
+    # flake8-bugbear
+    "B",
+    # pyupgrade
+    "UP",
+    # flake8-simplify
+    "SIM",
+]
+fixable = ["ALL"]
+
+[tool.ruff.format]
+line-ending = "native"
+indent-style = "space"
+docstring-code-format = true

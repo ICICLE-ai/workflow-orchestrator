@@ -1,11 +1,14 @@
 from dbos import DBOS
+
 from app.mock.mock_tapis import tapis_client
+
 
 class TapisV3:
     """
     A static utility class that provides DBOS step interfaces for interacting with the Tapis v3 service.
     Wraps static operations to submit and check the status of jobs using the mock Tapis client.
     """
+
     @staticmethod
     @DBOS.step()
     async def submit_job(app_id: str, app_version: str, name: str, args: list) -> str:
@@ -23,10 +26,7 @@ class TapisV3:
         """
         print(f"[TapisV3] Submitting job {name} for App {app_id}...")
         response = await tapis_client.jobs.submitJob(
-            name=name,
-            appId=app_id,
-            appVersion=app_version,
-            parameterSet={"args": args}
+            name=name, appId=app_id, appVersion=app_version, parameterSet={"args": args}
         )
         return response.uuid
 

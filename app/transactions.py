@@ -1,9 +1,11 @@
 import json
-from sqlalchemy import select
-from sqlalchemy.orm import joinedload
-from app.models import StepType, Workflow, WFNode, WFEdge, WFRun, RunStep, engine, DATABASE_URL
+
 from dbos._datasource import DBOSDefaultSerializer
 from dbos._datasource_postgres import PostgresAsyncDatasource
+from sqlalchemy import select
+from sqlalchemy.orm import joinedload
+
+from app.models import DATABASE_URL, RunStep, StepType, WFEdge, WFNode, WFRun, Workflow, engine
 
 # Use internal PostgresAsyncDatasource and move run_migrations() to main.py lifespan.
 ads = PostgresAsyncDatasource(
@@ -14,56 +16,53 @@ ads = PostgresAsyncDatasource(
     serializer=DBOSDefaultSerializer,
 )
 
+
 @ads.transaction(isolation_level="READ COMMITTED")
 async def create_workflow_from_config(workflow_id: str, wf_config: dict) -> int:
     """Initializes a new DAG workflow from a JSON configuration.
 
     Inputs:
         workflow_id (str): The DBOS workflow ID mapping this run to a durable DBOS workflow.
-        wf_config (dict): The JSON DAG configuration containing nodes (with types, labels, and inputs) and edges (dependencies).
+        wf_config (dict): The JSON DAG configuration containing
+                          nodes (with types, labels, and inputs
+                          edges (dependencies).
 
     Outputs:
         int: The unique run ID (`wf_run_id`) created for the workflow.
     """
     session = ads.sql_session()
-    
+
     # 1. Create workflow
     workflow = Workflow(name="Custom DAG Template", description="Parsed from JSON POST")
     session.add(workflow)
     await session.flush()
-    
+
     # 2. Populate WF Nodes
     nodes_map = {}
     for node_data in wf_config.get("nodes", []):
         step_type_key = node_data["type"]
         wf_node = WFNode(
-            workflow_id=workflow.workflow_id,
-            step_type_key=step_type_key,
-            node_label=node_data["id"]
+            workflow_id=workflow.workflow_id, step_type_key=step_type_key, node_label=node_data["id"]
         )
         session.add(wf_node)
         await session.flush()
         nodes_map[node_data["id"]] = wf_node.wf_node_id
-        
+
     # 3. Populate WF Edges
     for edge_data in wf_config.get("edges", []):
         wf_edge = WFEdge(
             workflow_id=workflow.workflow_id,
             source_wf_node_id=nodes_map[edge_data["from"]],
-            target_wf_node_id=nodes_map[edge_data["to"]]
+            target_wf_node_id=nodes_map[edge_data["to"]],
         )
         session.add(wf_edge)
     await session.flush()
-        
+
     # 4. Create WF Run
-    wf_run = WFRun(
-        workflow_id=workflow.workflow_id,
-        dbos_workflow_id=workflow_id,
-        status="RUNNING"
-    )
+    wf_run = WFRun(workflow_id=workflow.workflow_id, dbos_workflow_id=workflow_id, status="RUNNING")
     session.add(wf_run)
     await session.flush()
-    
+
     # 5. Create Run Steps
     for node_label, wf_node_id in nodes_map.items():
         # Check if custom configs/inputs are passed
@@ -72,11 +71,16 @@ async def create_workflow_from_config(workflow_id: str, wf_config: dict) -> int:
             wf_run_id=wf_run.wf_run_id,
             wf_node_id=wf_node_id,
             status="pending",
-            inputs=json.dumps(node_cfg.get("inputs", {}) if "inputs" in node_cfg else {"dataset_url": node_cfg.get("dataset_url", "")})
+            inputs=json.dumps(
+                node_cfg.get("inputs", {})
+                if "inputs" in node_cfg
+                else {"dataset_url": node_cfg.get("dataset_url", "")}
+            ),
         )
         session.add(run_step)
-        
+
     return wf_run.wf_run_id
+
 
 @ads.transaction(isolation_level="READ COMMITTED")
 async def get_run_steps_status(wf_run_id: int) -> dict:
@@ -86,7 +90,8 @@ async def get_run_steps_status(wf_run_id: int) -> dict:
         wf_run_id (int): The database ID of the WF Run.
 
     Outputs:
-        dict: A dictionary mapping node labels (str) to their current status (str, e.g., 'pending', 'running', 'completed', 'failed').
+        dict: A dictionary mapping node labels (str) to their current status
+              (str, e.g., 'pending', 'running', 'completed', 'failed').
     """
     session = ads.sql_session()
     result = await session.execute(
@@ -98,8 +103,16 @@ async def get_run_steps_status(wf_run_id: int) -> dict:
     steps = result.scalars().all()
     return {step.wf_node.node_label: step.status for step in steps}
 
+
 @ads.transaction(isolation_level="READ COMMITTED")
-async def update_run_step_status(wf_run_id: int, node_label: str, status: str, tapis_job_uuid: str = None, tapis_job_status: str = None, error_message: str = None):
+async def update_run_step_status(
+    wf_run_id: int,
+    node_label: str,
+    status: str,
+    tapis_job_uuid: str = None,
+    tapis_job_status: str = None,
+    error_message: str = None,
+):
     """Updates the status and metadata of a specific node/step within a workflow run.
 
     Inputs:
@@ -116,7 +129,8 @@ async def update_run_step_status(wf_run_id: int, node_label: str, status: str, t
     session = ads.sql_session()
     result = await session.execute(
         select(WFNode)
-        .join(Workflow).join(WFRun)
+        .join(Workflow)
+        .join(WFRun)
         .where(WFRun.wf_run_id == wf_run_id, WFNode.node_label == node_label)
     )
     wf_node = result.scalars().one()
@@ -133,6 +147,7 @@ async def update_run_step_status(wf_run_id: int, node_label: str, status: str, t
     if error_message is not None:
         run_step.error_message = error_message
 
+
 @ads.transaction(isolation_level="READ COMMITTED")
 async def get_tapis_info_from_wf_node(run_id: int, node_label: str):
     """Retrieves the Tapis application ID mapped to the step type of a specific node.
@@ -147,12 +162,14 @@ async def get_tapis_info_from_wf_node(run_id: int, node_label: str):
     session = ads.sql_session()
     result = await session.execute(
         select(WFNode)
-        .join(Workflow).join(WFRun)
+        .join(Workflow)
+        .join(WFRun)
         .options(joinedload(WFNode.step_type))
         .where(WFRun.wf_run_id == run_id, WFNode.node_label == node_label)
     )
     wf_node = result.scalars().one()
     return wf_node.step_type.tapis_app_id
+
 
 @ads.transaction(isolation_level="READ COMMITTED")
 async def complete_run_step(wf_run_id: int, node_label: str, outputs: dict):
@@ -166,7 +183,8 @@ async def complete_run_step(wf_run_id: int, node_label: str, outputs: dict):
     session = ads.sql_session()
     result = await session.execute(
         select(WFNode)
-        .join(Workflow).join(WFRun)
+        .join(Workflow)
+        .join(WFRun)
         .where(WFRun.wf_run_id == wf_run_id, WFNode.node_label == node_label)
     )
     wf_node = result.scalars().one()
@@ -177,6 +195,7 @@ async def complete_run_step(wf_run_id: int, node_label: str, outputs: dict):
 
     run_step.status = "completed"
     run_step.outputs = json.dumps(outputs)
+
 
 @ads.transaction(isolation_level="READ COMMITTED")
 async def get_wf_node_output(wf_run_id: int, node_label: str) -> dict:
@@ -192,7 +211,8 @@ async def get_wf_node_output(wf_run_id: int, node_label: str) -> dict:
     session = ads.sql_session()
     result = await session.execute(
         select(WFNode)
-        .join(Workflow).join(WFRun)
+        .join(Workflow)
+        .join(WFRun)
         .where(WFRun.wf_run_id == wf_run_id, WFNode.node_label == node_label)
     )
     wf_node = result.scalars().one()
@@ -204,6 +224,7 @@ async def get_wf_node_output(wf_run_id: int, node_label: str) -> dict:
     if run_step.outputs:
         return json.loads(run_step.outputs)
     return {}
+
 
 @ads.transaction(isolation_level="READ COMMITTED")
 async def update_wf_run_status(wf_run_id: int, status: str):
@@ -217,6 +238,7 @@ async def update_wf_run_status(wf_run_id: int, status: str):
     result = await session.execute(select(WFRun).where(WFRun.wf_run_id == wf_run_id))
     wf_run = result.scalars().one()
     wf_run.status = status
+
 
 @ads.transaction(isolation_level="READ COMMITTED")
 async def get_wf_step_input(wf_run_id: int, node_label: str) -> dict:
@@ -232,7 +254,8 @@ async def get_wf_step_input(wf_run_id: int, node_label: str) -> dict:
     session = ads.sql_session()
     result = await session.execute(
         select(WFNode)
-        .join(Workflow).join(WFRun)
+        .join(Workflow)
+        .join(WFRun)
         .where(WFRun.wf_run_id == wf_run_id, WFNode.node_label == node_label)
     )
     wf_node = result.scalars().one()
@@ -242,6 +265,7 @@ async def get_wf_step_input(wf_run_id: int, node_label: str) -> dict:
     run_step = result_step.scalars().one()
 
     return json.loads(run_step.inputs) if run_step.inputs else {}
+
 
 @ads.transaction(isolation_level="READ COMMITTED")
 async def update_wf_step_inputs(wf_run_id: int, node_label: str, resolved_inputs: dict):
@@ -255,7 +279,8 @@ async def update_wf_step_inputs(wf_run_id: int, node_label: str, resolved_inputs
     session = ads.sql_session()
     result = await session.execute(
         select(WFNode)
-        .join(Workflow).join(WFRun)
+        .join(Workflow)
+        .join(WFRun)
         .where(WFRun.wf_run_id == wf_run_id, WFNode.node_label == node_label)
     )
     wf_node = result.scalars().one()
@@ -265,6 +290,7 @@ async def update_wf_step_inputs(wf_run_id: int, node_label: str, resolved_inputs
     run_step = result_step.scalars().one()
 
     run_step.inputs = json.dumps(resolved_inputs)
+
 
 @ads.transaction(isolation_level="READ COMMITTED")
 async def get_run_details(workflow_id: str) -> dict:
@@ -283,9 +309,7 @@ async def get_run_details(workflow_id: str) -> dict:
     if not wf_run:
         return {}
     result_steps = await session.execute(
-        select(RunStep)
-        .where(RunStep.wf_run_id == wf_run.wf_run_id)
-        .options(joinedload(RunStep.wf_node))
+        select(RunStep).where(RunStep.wf_run_id == wf_run.wf_run_id).options(joinedload(RunStep.wf_node))
     )
     run_steps = result_steps.scalars().all()
     return {
@@ -299,11 +323,12 @@ async def get_run_details(workflow_id: str) -> dict:
                 "tapis_job_status": s.tapis_job_status,
                 "inputs": json.loads(s.inputs) if s.inputs else None,
                 "outputs": json.loads(s.outputs) if s.outputs else None,
-                "error_message": s.error_message
+                "error_message": s.error_message,
             }
             for s in run_steps
-        ]
+        ],
     }
+
 
 @ads.transaction(isolation_level="READ COMMITTED")
 async def get_workflow_run_graph_data(workflow_id: str) -> dict:
@@ -318,39 +343,33 @@ async def get_workflow_run_graph_data(workflow_id: str) -> dict:
     """
     session = ads.sql_session()
     result = await session.execute(
-        select(WFRun)
-        .where(WFRun.dbos_workflow_id == workflow_id)
-        .options(joinedload(WFRun.workflow))
+        select(WFRun).where(WFRun.dbos_workflow_id == workflow_id).options(joinedload(WFRun.workflow))
     )
     wf_run = result.scalars().first()
     if not wf_run:
         return {}
-    
-    result_nodes = await session.execute(
-        select(WFNode)
-        .where(WFNode.workflow_id == wf_run.workflow_id)
-    )
+
+    result_nodes = await session.execute(select(WFNode).where(WFNode.workflow_id == wf_run.workflow_id))
     nodes = result_nodes.scalars().all()
-    
+
     result_edges = await session.execute(
         select(WFEdge)
         .where(WFEdge.workflow_id == wf_run.workflow_id)
         .options(joinedload(WFEdge.source_wf_node), joinedload(WFEdge.target_wf_node))
     )
     edges = result_edges.scalars().all()
-    
+
     result_steps = await session.execute(
-        select(RunStep)
-        .where(RunStep.wf_run_id == wf_run.wf_run_id)
-        .options(joinedload(RunStep.wf_node))
+        select(RunStep).where(RunStep.wf_run_id == wf_run.wf_run_id).options(joinedload(RunStep.wf_node))
     )
     run_steps = result_steps.scalars().all()
-    
+
     return {
         "nodes": [n.node_label for n in nodes],
         "edges": [(e.source_wf_node.node_label, e.target_wf_node.node_label) for e in edges],
-        "statuses": {s.wf_node.node_label: s.status for s in run_steps}
+        "statuses": {s.wf_node.node_label: s.status for s in run_steps},
     }
+
 
 @ads.transaction(isolation_level="READ COMMITTED")
 async def mock_step_types():
@@ -361,15 +380,11 @@ async def mock_step_types():
     types_data = [
         {"key": "preprocess", "app": "preprocessing-pipeline", "name": "Preprocessing"},
         {"key": "train", "app": "training-pipeline", "name": "Training"},
-        {"key": "inference", "app": "inference-pipeline", "name": "Inference"}
+        {"key": "inference", "app": "inference-pipeline", "name": "Inference"},
     ]
-    
+
     for t in types_data:
         result = await session.execute(select(StepType).where(StepType.step_type_key == t["key"]))
         existing = result.scalars().first()
         if not existing:
-            session.add(StepType(
-                step_type_key=t["key"],
-                tapis_app_id=t["app"],
-                display_name=t["name"]
-            ))
+            session.add(StepType(step_type_key=t["key"], tapis_app_id=t["app"], display_name=t["name"]))
