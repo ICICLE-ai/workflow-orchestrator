@@ -1,6 +1,8 @@
-# DBOS FastAPI and Mock Tapis Pipeline Example
+# workflow-orchestrator
+An extensible workflow orchestration platform that manages the full ML lifecycle — ingesting data from HPC, cloud, and drone sources; harmonizing it into ZARR cubes; training and publishing models via PMC; and delivering inference results with uncertainty quantification.
 
-This repository contains a sample project integrating FastAPI with DBOS to orchestrate a mock Tapis AI pipeline. The workflow orchestrator tracks progress and status through server crashes and restarts.
+# DBOS FastAPI and Mock Tapis Pipeline Example
+This branch contains a sample project integrating FastAPI with DBOS to orchestrate a mock Tapis AI pipeline. The workflow orchestrator tracks progress and status through server crashes and restarts.
 
 ## Project Vision & Purpose
 
@@ -57,3 +59,4 @@ All steps run on remote compute resources managed via Tapis v3. This project (`d
    ```bash
    uv run uvicorn app.main:app --reload
    ```
+
