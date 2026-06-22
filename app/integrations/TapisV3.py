@@ -8,7 +8,7 @@ class TapisV3:
     """
     @staticmethod
     @DBOS.step()
-    def submit_job(app_id: str, app_version: str, name: str, args: list) -> str:
+    async def submit_job(app_id: str, app_version: str, name: str, args: list) -> str:
         """
         Submits a new job to the Tapis service.
 
@@ -22,7 +22,7 @@ class TapisV3:
             str: The UUID of the submitted Tapis job.
         """
         print(f"[TapisV3] Submitting job {name} for App {app_id}...")
-        response = tapis_client.jobs.submitJob(
+        response = await tapis_client.jobs.submitJob(
             name=name,
             appId=app_id,
             appVersion=app_version,
@@ -32,7 +32,7 @@ class TapisV3:
 
     @staticmethod
     @DBOS.step()
-    def check_job_status(job_uuid: str) -> str:
+    async def check_job_status(job_uuid: str) -> str:
         """
         Retrieves the current status of a submitted Tapis job.
 
@@ -42,5 +42,5 @@ class TapisV3:
         Outputs:
             str: The status string of the job (e.g., 'PENDING', 'RUNNING', 'FINISHED', 'FAILED').
         """
-        status = tapis_client.jobs.getJobStatus(jobUuid=job_uuid).status
-        return status
+        status_resp = await tapis_client.jobs.getJobStatus(jobUuid=job_uuid)
+        return status_resp.status

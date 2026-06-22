@@ -1,5 +1,8 @@
 import random
-import threading
+import asyncio
+import os
+import json
+import anyio
 
 class MockTapisJobResponse:
     """
@@ -14,12 +17,6 @@ class MockTapisJobResponse:
 
         Inputs:
             uuid (str): The unique identifier of the job.
-
-        Outputs:
-            None.
-
-        What it does and how:
-            Stores the provided job UUID into the instance attribute `self.uuid`.
         """
         self.uuid = uuid
 
@@ -36,17 +33,8 @@ class MockTapisStatusResponse:
 
         Inputs:
             status (str): The status string of the job.
-
-        Outputs:
-            None.
-
-        What it does and how:
-            Stores the provided job status into the instance attribute `self.status`.
         """
         self.status = status
-
-import os
-import json
 
 class MockTapisJobs:
     """
@@ -55,7 +43,7 @@ class MockTapisJobs:
     Attributes:
         file_path (str): The path to the local JSON file storing job states.
         job_states (dict): A dictionary mapping job UUIDs to their state/progress.
-        lock (threading.Lock): A reentrant or standard lock to ensure thread-safe operations on job states.
+        lock (asyncio.Lock): An asyncio lock to ensure safe asynchronous operations on job states.
     """
     def __init__(self):
         """
@@ -68,29 +56,14 @@ class MockTapisJobs:
             None.
 
         What it does and how:
-            Sets up the local state file path, initializes the thread lock,
-            and calls the private load method `_load` to retrieve existing jobs.
+            Sets up the local state file path, initializes the asyncio lock,
+            and retrieves existing jobs from the local JSON file.
         """
         self.file_path = "tapis_jobs.json"
         self.job_states = {}
-        self.lock = threading.Lock()
-        self._load()
-
-    def _load(self):
-        """
-        Loads the job states dictionary from the local JSON file.
-
-        Inputs:
-            None.
-
-        Outputs:
-            None.
-
-        What it does and how:
-            Checks if the status file exists on the local disk. If it does,
-            reads its contents and deserializes the JSON object into `self.job_states`.
-            Catches any exception and defaults to an empty dictionary on failure.
-        """
+        self.lock = asyncio.Lock()
+        
+        # Load initially synchronously since __init__ cannot be async
         if os.path.exists(self.file_path):
             try:
                 with open(self.file_path, "r") as f:
@@ -98,27 +71,28 @@ class MockTapisJobs:
             except Exception:
                 self.job_states = {}
 
-    def _save(self):
+    async def _load(self):
+        """
+        Loads the job states dictionary from the local JSON file.
+        """
+        if os.path.exists(self.file_path):
+            try:
+                async with await anyio.open_file(self.file_path, "r") as f:
+                    self.job_states = json.loads(await f.read())
+            except Exception:
+                self.job_states = {}
+
+    async def _save(self):
         """
         Saves the current job states dictionary to the local JSON file.
-
-        Inputs:
-            None.
-
-        Outputs:
-            None.
-
-        What it does and how:
-            Opens the status file for writing and serializes the `self.job_states`
-            dictionary into it as JSON formatted text. Catches and suppresses any exceptions.
         """
         try:
-            with open(self.file_path, "w") as f:
-                json.dump(self.job_states, f)
+            async with await anyio.open_file(self.file_path, "w") as f:
+                await f.write(json.dumps(self.job_states))
         except Exception:
             pass
 
-    def submitJob(self, name: str, appId: str, appVersion: str, parameterSet: dict) -> MockTapisJobResponse:
+    async def submitJob(self, name: str, appId: str, appVersion: str, parameterSet: dict) -> MockTapisJobResponse:
         """
         Submits a new simulated job to the Tapis Jobs service.
 
@@ -132,20 +106,20 @@ class MockTapisJobs:
             MockTapisJobResponse: A response object containing the generated job UUID.
 
         What it does and how:
-            Acquires a thread lock, loads the current job states from disk, generates a new
+            Acquires an async lock, loads the current job states from disk, generates a new
             random job UUID (e.g. tapis-job-<random_int>), initializes its state as
             PENDING with 0 ticks, saves the updated states to disk, prints a confirmation
             message to stdout, and returns a response containing the new job UUID.
         """
-        with self.lock:
-            self._load()
+        async with self.lock:
+            await self._load()
             job_uuid = f"tapis-job-{random.randint(1000, 9999)}"
             self.job_states[job_uuid] = {"status": "PENDING", "ticks": 0}
-            self._save()
+            await self._save()
             print(f"[Mock Tapis] Job {name} submitted. UUID: {job_uuid}")
             return MockTapisJobResponse(job_uuid)
 
-    def getJobStatus(self, jobUuid: str) -> MockTapisStatusResponse:
+    async def getJobStatus(self, jobUuid: str) -> MockTapisStatusResponse:
         """
         Retrieves and updates the current status of a simulated job.
 
@@ -156,31 +130,29 @@ class MockTapisJobs:
             MockTapisStatusResponse: A response object containing the current job status.
 
         What it does and how:
-            Acquires a thread lock, loads the current job states, and checks if the UUID exists.
+            Acquires an async lock, loads the current job states, and checks if the UUID exists.
             If the UUID is not found, returns a status response of FAILED.
             Otherwise, increments the job's progress tick count. Transitions status based on ticks:
             if ticks >= 3, status becomes FINISHED; if ticks >= 1, status becomes RUNNING;
             otherwise status remains PENDING. Saves updated states to disk, prints the status
             to stdout, and returns a MockTapisStatusResponse containing the updated status.
         """
-        with self.lock:
-            self._load()
+        async with self.lock:
+            await self._load()
             if jobUuid not in self.job_states:
                 return MockTapisStatusResponse("FAILED")
             
             job = self.job_states[jobUuid]
             job["ticks"] += 1
             
-            # Transition: PENDING -> RUNNING -> FINISHED
             if job["ticks"] >= 3:
                 job["status"] = "FINISHED"
             elif job["ticks"] >= 1:
                 job["status"] = "RUNNING"
                 
-            self._save()
+            await self._save()
             print(f"[Mock Tapis] Polling Job {jobUuid}: Status is {job['status']}")
             return MockTapisStatusResponse(job["status"])
-
 
 class MockTapis:
     """
@@ -198,9 +170,6 @@ class MockTapis:
             username (str): The username for simulated authentication.
             password (str): The password for simulated authentication.
 
-        Outputs:
-            None.
-
         What it does and how:
             Initializes the jobs attribute with an instance of `MockTapisJobs`.
             The base URL, username, and password parameters are accepted for API compatibility but not stored.
@@ -210,15 +179,7 @@ class MockTapis:
     def get_tokens(self):
         """
         Simulates retrieving authentication tokens from the Tapis service.
-
-        Inputs:
-            None.
-
-        Outputs:
-            None.
-
-        What it does and how:
-            Placeholder method for retrieving authentication tokens. Does nothing.
+        Placeholder method for retrieving authentication tokens. Does nothing.
         """
         pass
 

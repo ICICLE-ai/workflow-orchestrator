@@ -1,6 +1,4 @@
-from dbos import DBOS, SetWorkflowID, SQLAlchemyDatasource
-
-from app.models import engine, DATABASE_URL
+from dbos import DBOS, SetWorkflowID
 from app.transactions import (
                          create_workflow_from_config,
                          get_wf_step_input,
@@ -11,12 +9,9 @@ from app.transactions import (
                          complete_run_step,
                          update_wf_run_status,
                          update_run_step_status)
-from app.integrations import TapisV3
+from app.integrations.TapisV3 import TapisV3
 
-
-ds = SQLAlchemyDatasource.create(DATABASE_URL, engine=engine)
-
-def _resolve_inputs(wf_run_id: int, input_specs: dict) -> dict:
+async def _resolve_inputs(wf_run_id: int, input_specs: dict) -> dict:
     """Resolves data dependencies by substituting parent-step output references into inputs.
 
     Inputs:
@@ -30,14 +25,14 @@ def _resolve_inputs(wf_run_id: int, input_specs: dict) -> dict:
     for param_name, spec_value in input_specs.items():
         if isinstance(spec_value, str) and "." in spec_value:
             parent_node_label, key = spec_value.split(".", 1)
-            parent_outputs = get_wf_node_output(wf_run_id, parent_node_label)
+            parent_outputs = await get_wf_node_output(wf_run_id, parent_node_label)
             resolved[param_name] = parent_outputs.get(key)
         else:
             resolved[param_name] = spec_value
     return resolved
 
 @DBOS.workflow()
-def execute_node_workflow(node_label: str, run_id: int, orchestrator_workflow_id: str):
+async def execute_node_workflow(node_label: str, run_id: int, orchestrator_workflow_id: str):
     """A DBOS workflow that handles the execution of a single node in the DAG.
 
     Inputs:
@@ -49,22 +44,21 @@ def execute_node_workflow(node_label: str, run_id: int, orchestrator_workflow_id
         dict: The resulting output dictionary of the executed node on success.
     """
     # Update step to running
-    update_run_step_status(run_id, node_label, "running")
+    await update_run_step_status(run_id, node_label, "running")
     
     # Get step inputs
-    input_specs = get_wf_step_input(run_id, node_label)
-    resolved = _resolve_inputs(run_id, input_specs)
-    update_wf_step_inputs(run_id, node_label, resolved)
+    input_specs = await get_wf_step_input(run_id, node_label)
+    resolved = await _resolve_inputs(run_id, input_specs)
+    await update_wf_step_inputs(run_id, node_label, resolved)
     
     # Get Tapis app info
-    tapis_app_id = get_tapis_info_from_wf_node(run_id, node_label)
+    tapis_app_id = await get_tapis_info_from_wf_node(run_id, node_label)
     
     # Submit job to Mock Tapis
     try:
         args = [str(v) for v in resolved.values()]
 
-        # Mock Tapis
-        job_uuid = TapisV3.submit_job(
+        job_uuid = await TapisV3.submit_job(
             app_id=tapis_app_id,
             app_version="1.0.0",
             name=f"run-{run_id}-{node_label}",
@@ -72,18 +66,18 @@ def execute_node_workflow(node_label: str, run_id: int, orchestrator_workflow_id
         )
         
         # Update tapis status
-        update_run_step_status(run_id, node_label, "running", tapis_job_uuid=job_uuid, tapis_job_status="PENDING")
+        await update_run_step_status(run_id, node_label, "running", tapis_job_uuid=job_uuid, tapis_job_status="PENDING")
         
         # Poll until Tapis job is finished or failed
         # TODO make this non-blocking instead of polling
         while True:
-            status = TapisV3.check_job_status(job_uuid)
-            update_run_step_status(run_id, node_label, "running", tapis_job_status=status)
+            status = await TapisV3.check_job_status(job_uuid)
+            await update_run_step_status(run_id, node_label, "running", tapis_job_status=status)
             if status == "FINISHED":
                 break
             elif status in ["FAILED", "CANCELLED"]:
                 raise RuntimeError(f"Tapis Job {job_uuid} failed with status: {status}")
-            DBOS.sleep(3)
+            await DBOS.sleep_async(3)
         
         # Mock outputs
         if tapis_app_id == "preprocessing-pipeline":
@@ -91,27 +85,26 @@ def execute_node_workflow(node_label: str, run_id: int, orchestrator_workflow_id
         elif tapis_app_id == "training-pipeline":
             outputs = {"model_path": f"tapis-outputs/{job_uuid}/model.tar.gz"}
         elif tapis_app_id == "inference-pipeline":
-            outputs = {"model_accuracy": 0.92}  # Mock accuracy
+            outputs = {"model_accuracy": 0.92}
         else:
             outputs = {"output_path": f"tapis-outputs/{job_uuid}/out"}
 
         # Complete run step
-        complete_run_step(run_id, node_label, outputs)
+        await complete_run_step(run_id, node_label, outputs)
         
         # Notify orchestrator of completion
-        DBOS.send(destination_id=orchestrator_workflow_id, message=node_label, topic="step_complete")
+        await DBOS.send_async(destination_id=orchestrator_workflow_id, message=node_label, topic="step_complete")
         return outputs
 
     except Exception as e:
         # Update run step to failed
-        update_run_step_status(run_id, node_label, "failed", error_message=str(e))
-
+        await update_run_step_status(run_id, node_label, "failed", error_message=str(e))
         # Notify orchestrator of failure
-        DBOS.send(destination_id=orchestrator_workflow_id, message=node_label, topic="step_complete")
+        await DBOS.send_async(destination_id=orchestrator_workflow_id, message=node_label, topic="step_complete")
         raise e
 
 @DBOS.workflow()
-def dag_orchestrator_workflow(dag_config: dict):
+async def dag_orchestrator_workflow(dag_config: dict):
     """The orchestrator DBOS workflow managing execution of the entire DAG pipeline. This is the main workflow.
 
     What it does & How it works:
@@ -134,7 +127,7 @@ def dag_orchestrator_workflow(dag_config: dict):
     w_id = DBOS.workflow_id
 
     # Create workflow run
-    run_id = create_workflow_from_config(w_id, dag_config)
+    run_id = await create_workflow_from_config(w_id, dag_config)
     nodes = {node["id"]: node for node in dag_config.get("nodes", [])}
     edges = dag_config.get("edges", [])
     
@@ -144,9 +137,8 @@ def dag_orchestrator_workflow(dag_config: dict):
         deps[edge["to"]].add(edge["from"])
     
     # Loop until all nodes are completed or failed
-    # TODO make this non-blocking instead of polling
     while True:
-        statuses = get_run_steps_status(run_id)
+        statuses = await get_run_steps_status(run_id)
         
         all_done = True
         for node_id, status in statuses.items():
@@ -156,8 +148,8 @@ def dag_orchestrator_workflow(dag_config: dict):
                     if status == "pending":
                         node_deps = deps[node_id]
                         if any(statuses.get(d) == "failed" for d in node_deps):
-                            update_run_step_status(run_id, node_id, "failed", error_message="Dependency failed")
-                update_wf_run_status(run_id, "FAILED")
+                            await update_run_step_status(run_id, node_id, "failed", error_message="Dependency failed")
+                await update_wf_run_status(run_id, "FAILED")
                 raise RuntimeError("DAG execution failed due to task failure.")
             elif status != "completed":
                 all_done = False
@@ -172,7 +164,7 @@ def dag_orchestrator_workflow(dag_config: dict):
                 if all(statuses.get(d) == "completed" for d in node_deps):
                     # Node dependencies are completed
                     with SetWorkflowID(f"{w_id}-{node_id}"):
-                        DBOS.start_workflow(
+                        await DBOS.start_workflow_async(
                             execute_node_workflow,
                             node_id,
                             run_id,
@@ -181,9 +173,9 @@ def dag_orchestrator_workflow(dag_config: dict):
 
         # Event-driven wait: block until notified by execute_node_workflow of a step completion
         try:
-            DBOS.recv(topic="step_complete", timeout_seconds=30)
+            await DBOS.recv_async(topic="step_complete", timeout_seconds=30)
         except Exception:
             pass
 
-    update_wf_run_status(run_id, "COMPLETED")
+    await update_wf_run_status(run_id, "COMPLETED")
     return {"status": "SUCCESS"}

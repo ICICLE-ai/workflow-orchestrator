@@ -1,7 +1,8 @@
 import os
 from datetime import datetime
-from sqlalchemy import Integer, String, DateTime, ForeignKey, Text, create_engine, UniqueConstraint, func
+from sqlalchemy import Integer, String, DateTime, ForeignKey, Text, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.ext.asyncio import create_async_engine
 
 class Base(DeclarativeBase):
     pass
@@ -153,10 +154,11 @@ class RunStep(Base):
     wf_run: Mapped["WFRun"] = relationship(back_populates="run_steps")
     wf_node: Mapped["WFNode"] = relationship(back_populates="run_steps")
 
-DATABASE_URL = os.environ.get("DBOS_SYSTEM_DATABASE_URL", "postgresql+psycopg2://dbos:dbos_password@localhost:5433/dbos_db")
-engine = create_engine(DATABASE_URL)
+DATABASE_URL = os.environ.get("DBOS_SYSTEM_DATABASE_URL", "postgresql+asyncpg://dbos:dbos_password@localhost:5433/dbos_db")
 
-def init_db():
+engine = create_async_engine(DATABASE_URL)
+
+async def init_db():
     """
     Initializes the database schema by creating all defined tables.
 
@@ -165,9 +167,6 @@ def init_db():
 
     Outputs:
         None
-
-    What it does & How:
-        Iterates over the SQLAlchemy Base metadata registration and generates the
-        corresponding database tables in the database backend linked via the global `engine`.
     """
-    Base.metadata.create_all(bind=engine)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)

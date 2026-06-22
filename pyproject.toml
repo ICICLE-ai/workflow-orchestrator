@@ -5,8 +5,16 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
-    "dbos>=2.23.0",
+    "dbos>=2.25.0",
     "fastapi[standard]>=0.136.3",
     "uvicorn>=0.49.0",
     "psycopg2-binary>=2.9.9",
+    "asyncpg",
+    "sqlalchemy[asyncio]>=2.0.51",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
 ]
