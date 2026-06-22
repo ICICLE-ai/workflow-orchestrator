@@ -114,7 +114,7 @@ class MockTapisJobs:
         async with self.lock:
             await self._load()
             job_uuid = f"tapis-job-{random.randint(1000, 9999)}"
-            self.job_states[job_uuid] = {"status": "PENDING", "ticks": 0}
+            self.job_states[job_uuid] = {"status": "PENDING", "ticks": 0, "appId": appId}
             await self._save()
             print(f"[Mock Tapis] Job {name} submitted. UUID: {job_uuid}")
             return MockTapisJobResponse(job_uuid)
@@ -145,14 +145,23 @@ class MockTapisJobs:
             job = self.job_states[jobUuid]
             job["ticks"] += 1
             
-            if job["ticks"] >= 3:
-                job["status"] = "FINISHED"
-            elif job["ticks"] >= 1:
-                job["status"] = "RUNNING"
+            if job.get("appId") == "training-pipeline":
+                if job["ticks"] >= 2:
+                    job["status"] = "FINISHED"
+                elif job["ticks"] >= 1:
+                    job["status"] = "RUNNING"
+            else:
+                if job["ticks"] >= 1:
+                    job["status"] = "FINISHED"
                 
             await self._save()
             print(f"[Mock Tapis] Polling Job {jobUuid}: Status is {job['status']}")
-            return MockTapisStatusResponse(job["status"])
+            status_to_return = job["status"]
+            
+        if status_to_return == "RUNNING":
+            await asyncio.sleep(2)
+            
+        return MockTapisStatusResponse(status_to_return)
 
 class MockTapis:
     """

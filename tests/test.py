@@ -235,8 +235,8 @@ def test_2_crash_and_recovery_flow():
         workflow_id = run_res["workflow_id"]
         print(f"Workflow started with workflow_id: {workflow_id}")
 
-        # Wait until preprocessing runs and train starts (about 7 seconds)
-        time.sleep(7)
+        # Wait until preprocessing runs and train starts (about 1.5 seconds)
+        time.sleep(1.5)
         status = get_workflow_status(workflow_id)
         if status and "progress_graph" in status:
             print("\nIn-Progress Graph before crash:")
