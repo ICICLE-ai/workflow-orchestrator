@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15
+    container_name: dbos-postgres
+    environment:
+      POSTGRES_USER: dbos
+      POSTGRES_PASSWORD: dbos_password
+      POSTGRES_DB: dbos_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
