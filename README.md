@@ -44,7 +44,7 @@ All steps run on remote compute resources managed via Tapis v3. This project (`d
    uv run python -m tests.test_graph
    ```
 
-5. **Run the integration tests**:
+5. **Run the server api tests**:
    ```bash
    uv run python -m tests.test
    ```
