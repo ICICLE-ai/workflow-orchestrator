@@ -3,14 +3,16 @@ import sys
 
 import psycopg2
 from dbos import DBOS
-from app.models import Base, engine, DATABASE_URL, StepType
-from sqlalchemy.orm import sessionmaker
+from dotenv import load_dotenv
+load_dotenv()
+
+DATABASE_URL = os.environ.get("DBOS_DATABASE_URL")
 
 def main():
     print("--- 1. Resetting DBOS System Database (Dropping dbos_db) ---")
     try:
         config = {
-            "name": "dbos-example",
+            "name": "workflow-orchestrator",
             "system_database_url": DATABASE_URL,
         }
         # Initialize DBOS configuration
@@ -28,7 +30,7 @@ def main():
     
     try:
         # Connect to 'postgres' database to run CREATE DATABASE
-        conn = psycopg2.connect("postgresql://dbos:dbos_password@localhost:5433/postgres")
+        conn = psycopg2.connect(DATABASE_URL)
         conn.autocommit = True
         cur = conn.cursor()
         cur.execute("SELECT 1 FROM pg_catalog.pg_database WHERE datname = 'dbos_db';")
@@ -43,39 +45,8 @@ def main():
     except Exception as e:
         print(f"[ERROR] Re-creating dbos_db database failed: {e}")
         sys.exit(1)
-    """
-    print("\n--- 3. Creating Application Database Tables ---")
-    try:
-        # Re-create all application tables defined in models.py
-        Base.metadata.create_all(bind=engine)
-        print("[SUCCESS] Created all application database tables.")
-    except Exception as e:
-        print(f"[ERROR] Creating application database tables failed: {e}")
-        sys.exit(1)
 
-    print("\n--- 4. Seeding Predefined Step Types ---")
-    try:
-        Session = sessionmaker(bind=engine)
-        with Session() as session:
-            types_data = [
-                {"key": "preprocess", "app": "preprocessing-pipeline", "name": "Preprocessing"},
-                {"key": "train", "app": "training-pipeline", "name": "Training"},
-                {"key": "inference", "app": "inference-pipeline", "name": "Inference"}
-            ]
-            for t in types_data:
-                session.add(StepType(
-                    step_type_key=t["key"],
-                    tapis_app_id=t["app"],
-                    display_name=t["name"]
-                ))
-            session.commit()
-        print("[SUCCESS] Predefined step types seeded successfully.")
-    except Exception as e:
-        print(f"[ERROR] Seeding predefined step types failed: {e}")
-        sys.exit(1)
-    """
-
-    print("\n--- 5. Clearing Mock Tapis Jobs ---")
+    print("\n--- 3. Clearing Mock Tapis Jobs ---")
     tapis_jobs_path = "tapis_jobs.json"
     if os.path.exists(tapis_jobs_path):
         try:
@@ -87,7 +58,7 @@ def main():
     else:
         print(f"[INFO] {tapis_jobs_path} does not exist (already clean).")
 
-    print("\n[COMPLETE] DBOS and application environments have been completely cleared, reset, and seeded!")
+    print("\n[COMPLETE] DBOS and application environments have been completely cleared!")
 
 if __name__ == "__main__":
     main()

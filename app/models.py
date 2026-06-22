@@ -154,7 +154,8 @@ class RunStep(Base):
     wf_run: Mapped["WFRun"] = relationship(back_populates="run_steps")
     wf_node: Mapped["WFNode"] = relationship(back_populates="run_steps")
 
-DATABASE_URL = os.environ.get("DBOS_SYSTEM_DATABASE_URL", "postgresql+asyncpg://dbos:dbos_password@localhost:5433/dbos_db")
+DATABASE_URL = os.environ.get("DBOS_SYSTEM_DATABASE_URL")
+assert DATABASE_URL, "DBOS_SYSTEM_DATABASE_URL environment variable is not set"
 
 engine = create_async_engine(DATABASE_URL)
 

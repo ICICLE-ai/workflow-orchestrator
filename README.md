@@ -10,7 +10,7 @@ This workflow orchestrator provides a user interface (UI) to allow researchers w
 
 The UI allows users to drag and drop "steps" and connect the inputs and outputs of nodes. The system supports Directed Acyclic Graphs (DAGs), enabling setups like two distinct datasets with their own preprocessing steps connecting to one or more training steps, which then feed into one or more inference steps.
 
-All steps run on remote compute resources managed via Tapis v3. This project (`dbos-example`) acts as a proof-of-concept backend, utilizing DBOS Transact to facilitate reliable, resilient, and durable pipeline tracking and recovery.
+All steps run on remote compute resources managed via Tapis v3. This is currently a proof-of-concept backend, utilizing DBOS Transact to facilitate reliable, resilient, and durable pipeline tracking and recovery.
 
 ## File Structure
 

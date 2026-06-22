@@ -5,6 +5,9 @@ from dbos import DBOS, DBOSConfig
 import uvicorn
 import os
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from app.models import init_db
 from app.workflows import dag_orchestrator_workflow
 from app.transactions import (
@@ -62,8 +65,8 @@ async def get_workflow_status(workflow_id: str, format: str = "json"):
     }
 
 config: DBOSConfig = {
-    "name": "dbos-example",
-    "system_database_url": os.environ.get("DBOS_SYSTEM_DATABASE_URL", "postgresql+psycopg2://dbos:dbos_password@localhost:5433/dbos_db"),
+    "name": "workflow-orchestrator",
+    "system_database_url": os.environ.get("DBOS_DATABASE_URL"),
 }
 
 DBOS(fastapi=app, config=config)

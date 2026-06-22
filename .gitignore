@@ -18,7 +18,7 @@ skills-lock.json
 *.log
 
 # env files (can opt-in for committing if needed)
-.env*
+.env
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
