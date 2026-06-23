@@ -123,8 +123,8 @@ async def dag_orchestrator_workflow(dag_config: dict):
            b. If all tasks completed, breaks out of loop.
            c. Identifies pending tasks whose dependencies are fully completed.
            d. Starts execution sub-workflows (`execute_node_workflow`) for ready tasks concurrently,
-              using `DBOS.start_workflow`.
-           e. Uses event-driven sleep (`DBOS.recv`) to wait for a completion signal from child tasks,
+              using `DBOS.start_workflow_async`.
+           e. Uses event-driven sleep (`DBOS.recv_async`) to wait for a completion signal from child tasks,
               preventing active busy waiting.
         4. Marks the run status as 'COMPLETED' upon successful traversal.
 
