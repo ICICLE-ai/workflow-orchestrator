@@ -12,6 +12,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse
 
 from app.models import init_db
+from app.schemas import WorkflowConfig
 from app.transactions import get_run_details, get_workflow_run_graph_data, mock_step_types
 from app.utils.graph import render_ascii_graph
 from app.workflows import dag_orchestrator_workflow
@@ -33,8 +34,8 @@ app = FastAPI(title="DBOS + FastAPI AI Workflow with Tapis", lifespan=lifespan)
 
 
 @app.post("/workflow/run")
-async def trigger_workflow(dag_config: dict):
-    handle = await DBOS.start_workflow_async(dag_orchestrator_workflow, dag_config)
+async def trigger_workflow(dag_config: WorkflowConfig):
+    handle = await DBOS.start_workflow_async(dag_orchestrator_workflow, dag_config.model_dump())
     return {"message": "DAG Workflow started", "workflow_id": handle.get_workflow_id()}
 
 
