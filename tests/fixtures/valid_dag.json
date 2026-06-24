@@ -1,0 +1,28 @@
+{
+    "dataset_url": "test_dataset_url",
+    "nodes": [
+        {"id": "preprocess_1", "type": "preprocess", "dataset_url": "url_1"},
+        {"id": "preprocess_2", "type": "preprocess", "dataset_url": "url_2"},
+        {"id": "train_1", "type": "train", "inputs": {"dataset_path": "preprocess_1.dataset_path"}},
+        {
+            "id": "train_2",
+            "type": "train",
+            "inputs": {
+                "dataset_path": "preprocess_1.dataset_path",
+                "dataset_path_2": "preprocess_2.dataset_path"
+            }
+        },
+        {
+            "id": "inference",
+            "type": "inference",
+            "inputs": {"model_path": "train_1.model_path", "model_path_2": "train_2.model_path"}
+        }
+    ],
+    "edges": [
+        {"from": "preprocess_1", "to": "train_1"},
+        {"from": "preprocess_1", "to": "train_2"},
+        {"from": "preprocess_2", "to": "train_2"},
+        {"from": "train_1", "to": "inference"},
+        {"from": "train_2", "to": "inference"}
+    ]
+}

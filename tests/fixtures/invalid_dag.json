@@ -1,0 +1,8 @@
+{
+    "nodes": [
+        {"id": "preprocess_1", "type": "preprocess"}
+    ],
+    "edges": [
+        {"from": "preprocess_1", "to": "train_1"}
+    ]
+}

@@ -11,7 +11,9 @@ A DBOS-FastAPI proof-of-concept backend for orchestrating ML pipelines as DAGs o
 * [app/workflows.py](app/workflows.py): Orchestrator & execution workflows.
 * [app/integrations/TapisV3.py](app/integrations/TapisV3.py): Tapis API wrapper.
 * [app/mock/mock_tapis.py](app/mock/mock_tapis.py): Mock Tapis job client.
-* [tests/](tests/): DAG, API, and recovery tests.
+* [tests/](tests/): Comprehensive test suite.
+  * `workflow_creation/`: API endpoints and database transaction tests.
+  * `workflow_execution/`: Orchestrator and disaster recovery flow tests.
 
 ## How to Run
 
@@ -30,17 +32,17 @@ A DBOS-FastAPI proof-of-concept backend for orchestrating ML pipelines as DAGs o
    uv run python -m scripts.clear_dbos
    ```
 
-4. **Run the unit tests**:
+4. **Run the tests**:
+   For a quick development test (standard execution flow):
    ```bash
-   uv run python -m tests.graph_test
+   uv run pytest -m smoke
+   ```
+   To run the full test suite (API, DAG, recovery, orchestrator):
+   ```bash
+   uv run pytest
    ```
 
-5. **Run the server api tests**:
-   ```bash
-   uv run python -m tests.api_test
-   ```
-
-6. **Run the application server**:
+5. **Run the application server**:
    ```bash
    uv run python -m app.main
    ```
@@ -69,4 +71,4 @@ Pre-commit is installed automatically as part of the development dependencies wh
 2. **Run manually against all files**:
    ```bash
    uv run pre-commit run --all-files
-```
+   ```

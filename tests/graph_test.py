@@ -2,6 +2,7 @@ from app.utils.graph import render_ascii_graph, topological_sort
 
 
 def test_topological_sort():
+    """Test that topological_sort correctly orders nodes based on their dependencies."""
     nodes = ["A", "B", "C", "D"]
     edges = [("A", "C"), ("B", "C"), ("C", "D")]
     order = topological_sort(nodes, edges)
@@ -11,6 +12,7 @@ def test_topological_sort():
 
 
 def test_render_ascii_graph_simple():
+    """Test that render_ascii_graph produces the expected string representation of a DAG."""
     nodes = ["A", "B", "C"]
     edges = [("A", "B"), ("B", "C")]
     statuses = {"A": "completed", "B": "running", "C": "pending"}
