@@ -1,0 +1,29 @@
+{
+  "step_type_key": "data_augmentation",
+  "display_name": "Data Augmentation",
+  "description": "Augments/harmonizes the dataset with transforms to improve robustness.",
+  "category": "Data Harmonization",
+  "inputs": [
+    { "name": "images", "type": "image_dir" },
+    { "name": "model", "type": "pytorch_model" },
+    { "name": "annotations", "type": "json_results" },
+    { "name": "config", "type": "json_results" }
+  ],
+  "outputs": [
+    { "name": "augmented_images", "type": "image_dir" },
+    { "name": "augmented_labels", "type": "json_results" },
+    { "name": "metrics", "type": "json_results" }
+  ],
+  "config_schema": {
+    "confidence_threshold": {
+      "type": "float",
+      "description": "Minimum confidence score to retain a prediction.",
+      "default": 0.5
+    },
+    "device": {
+      "type": "string",
+      "description": "Compute device to use (cpu or cuda).",
+      "default": "cuda"
+    }
+  }
+}

@@ -1,0 +1,12 @@
+# Secrets — never commit real credentials
+.env
+.env.local
+
+# Python / uv
+.venv/
+__pycache__/
+*.pyc
+.python-version
+
+# Mock Tapis local job state
+tapis_jobs.json

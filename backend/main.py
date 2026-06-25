@@ -1,30 +1,21 @@
 from fastapi import FastAPI, Depends, Request, HTTPException
 from fastapi.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import create_engine, func
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy import func
+from sqlalchemy.orm import Session
 import os
 import uvicorn
 
-from models import Base, StepTypeRegistry, StepTypePort, WorkflowTemplate, PipelineRun, AppUser, WfNode, WfEdge, PortDataType
+from db import engine, SessionLocal, get_db, DATABASE_URL
+from models import Base, StepTypeRegistry, StepTypePort, WorkflowTemplate, PipelineRun, AppUser, WfNode, WfEdge, RunEdge, PortDataType
 import auth
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import json
 import glob
 
-# Database Configuration
-# Using psycopg2 driver
-DB_HOST = os.getenv("DB_HOST", "localhost")
-DB_PORT = os.getenv("DB_PORT", "5433")
-DB_NAME = os.getenv("DB_NAME", "harvest")
-DB_USER = os.getenv("DB_USER", "postgres")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "password")
-
-SQLALCHEMY_DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-
-engine = create_engine(SQLALCHEMY_DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+from dbos import DBOS, DBOSConfig
+from fastapi.responses import PlainTextResponse
 
 app = FastAPI(title="Harvest Tapis Backend")
 
@@ -37,12 +28,45 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+# --- DBOS durable-execution engine ---
+# Shares the harvest Postgres but keeps its internal bookkeeping in a dedicated
+# 'dbos' schema so it never collides with the application's public tables.
+# Passing fastapi=app integrates DBOS with the app lifecycle (launch/recovery).
+# Importing engine.workflows registers the @DBOS.workflow / @DBOS.step functions.
+dbos_config: DBOSConfig = {
+    "name": "harvest-orchestrator",
+    "system_database_url": DATABASE_URL,
+    "dbos_system_schema": "dbos",
+}
+DBOS(fastapi=app, config=dbos_config)
+
+from engine.workflows import dag_orchestrator_workflow  # noqa: E402  (after DBOS init)
+from engine.transactions import get_run_details, get_run_graph_data  # noqa: E402
+from engine.graph import render_ascii_graph  # noqa: E402
+
+def _delete_port_with_dependents(db: Session, port):
+    """Delete a step-type port, first removing any saved workflow/run edges that
+    reference it. A port that was renamed or removed in step.json may still be
+    wired into saved templates (wf_edge) or executed runs (run_edge); the foreign
+    keys would otherwise block the delete and the whole step's port sync would be
+    skipped. We drop those dangling edges and log a warning so the operator knows
+    a saved workflow was altered."""
+    dependents = db.query(WfEdge).filter(
+        (WfEdge.source_port_id == port.port_id) | (WfEdge.target_port_id == port.port_id)
+    ).all()
+    dependents += db.query(RunEdge).filter(
+        (RunEdge.source_port_id == port.port_id) | (RunEdge.target_port_id == port.port_id)
+    ).all()
+
+    if dependents:
+        print(f"  Warning: removing stale port '{port.step_type_key}.{port.port_name}' "
+              f"({port.direction}) drops {len(dependents)} saved edge(s) that referenced it.")
+        for edge in dependents:
+            db.delete(edge)
+        db.flush()  # ensure edge deletes are issued before the port delete
+
+    db.delete(port)
+
 
 def sync_step_registry(db: Session):
     print("Syncing step registry from JSON files...")
@@ -64,22 +88,49 @@ def sync_step_registry(db: Session):
         registry_entry.category = data.get("category", "general")
         registry_entry.icon = data.get("icon", "default")
         registry_entry.config_schema = data.get("config_schema", {})
+        # Optional: the Tapis app this step submits to when executed by the DBOS
+        # engine. Sourced from step.json (single source of truth); left as-is in
+        # the DB if absent so it can be set manually for steps not yet mapped.
+        if data.get("tapis_app_id") is not None:
+            registry_entry.tapis_app_id = data["tapis_app_id"]
+        # Optional: full Tapis job-spec template (with ${...} placeholders) used
+        # to submit the real job. Mirrored from step.json each sync.
+        registry_entry.tapis_job = data.get("tapis_job")
         db.commit()
         print(f"  Synced registry: {step_key} (config_schema keys: {list(data.get('config_schema', {}).keys())})")
         
-        # Upsert Ports (don't delete — just add missing ones)
+        # Sync Ports: make the DB an exact mirror of the JSON definition.
+        # The JSON file is the source of truth, so add new ports, update changed
+        # ones, and remove ports that were renamed/deleted in the JSON. Without
+        # the removal step, ports renamed during development accumulate forever
+        # and the node would render extra/wrong handles.
+        json_ports = {}  # (port_name, direction) -> data_type
         for direction, port_list in [("input", data.get("inputs", [])), ("output", data.get("outputs", []))]:
             for p in port_list:
-                existing = db.query(StepTypePort).filter_by(
-                    step_type_key=step_key, port_name=p["name"], direction=direction
-                ).first()
-                if not existing:
-                    try:
-                        db.add(StepTypePort(step_type_key=step_key, port_name=p["name"], data_type=p["type"], direction=direction))
-                        db.commit()
-                    except Exception as e:
-                        db.rollback()
-                        print(f"  Warning: Could not add port {p['name']} for {step_key}: {e}")
+                json_ports[(p["name"], direction)] = p["type"]
+
+        try:
+            existing_ports = db.query(StepTypePort).filter_by(step_type_key=step_key).all()
+            existing_by_key = {(p.port_name, p.direction): p for p in existing_ports}
+
+            # Remove ports no longer present in the JSON (dropping any saved
+            # edges that still reference them, with a logged warning).
+            for key, port in existing_by_key.items():
+                if key not in json_ports:
+                    _delete_port_with_dependents(db, port)
+
+            # Add new ports and update changed data types
+            for (port_name, direction), data_type in json_ports.items():
+                existing = existing_by_key.get((port_name, direction))
+                if existing is None:
+                    db.add(StepTypePort(step_type_key=step_key, port_name=port_name, data_type=data_type, direction=direction))
+                elif existing.data_type != data_type:
+                    existing.data_type = data_type
+
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            print(f"  Warning: Could not sync ports for {step_key}: {e}")
     
     # Prune: deactivate steps that no longer have a JSON file
     json_keys = set()
@@ -90,10 +141,20 @@ def sync_step_registry(db: Session):
     all_db_steps = db.query(StepTypeRegistry).all()
     for db_step in all_db_steps:
         if db_step.step_type_key not in json_keys:
-            if db_step.is_active:
-                db_step.is_active = False
+            # Stale step: deactivate it and remove its ports so they can't leak
+            # into the API response for any step that reuses a port name. Drop any
+            # saved edges referencing those ports first (with a logged warning).
+            try:
+                stale_ports = db.query(StepTypePort).filter_by(step_type_key=db_step.step_type_key).all()
+                for port in stale_ports:
+                    _delete_port_with_dependents(db, port)
+                if db_step.is_active:
+                    db_step.is_active = False
+                    print(f"  Deactivated stale step: {db_step.step_type_key}")
                 db.commit()
-                print(f"  Deactivated stale step: {db_step.step_type_key}")
+            except Exception as e:
+                db.rollback()
+                print(f"  Warning: Could not prune stale step {db_step.step_type_key}: {e}")
         else:
             if not db_step.is_active:
                 db_step.is_active = True
@@ -423,6 +484,110 @@ def execute_single_node(req: NodeExecutionRequest, db: Session = Depends(get_db)
         "status": "COMPLETED",
         "config_used": req.config_values
     }
+
+# --- Whole-workflow execution via the DBOS engine ---
+
+def _build_dag_config(db: Session, template_version_id: int) -> dict:
+    """Read a saved template's nodes/edges and shape them into the dag_config the
+    DBOS orchestrator expects: {template_version_id, nodes:[{id,type,inputs}], edges:[{from,to}]}.
+
+    Node ids are the string form of wf_node.node_id (the DAG node key the engine
+    uses throughout). Each node's inputs come from its saved default_config.
+    """
+    template = db.query(WorkflowTemplate).filter(
+        WorkflowTemplate.template_version_id == template_version_id
+    ).first()
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    nodes = db.query(WfNode).filter(WfNode.template_version_id == template_version_id).all()
+    edges = db.query(WfEdge).filter(WfEdge.template_version_id == template_version_id).all()
+
+    if not nodes:
+        raise HTTPException(status_code=400, detail="Template has no nodes to execute")
+
+    return {
+        "template_version_id": template_version_id,
+        "name": template.name,
+        "nodes": [
+            {
+                "id": str(n.node_id),
+                "type": n.step_type_key,
+                "label": n.node_label or n.step_type_key,
+                "inputs": n.default_config or {},
+            }
+            for n in nodes
+        ],
+        "edges": [
+            {"from": str(e.source_node_id), "to": str(e.target_node_id)}
+            for e in edges
+        ],
+    }
+
+
+class RunOptions(BaseModel):
+    # Run-level Tapis values substituted into job specs (${slurm_account} etc.)
+    # and stored on the run's frozen_config. All optional; sensible defaults
+    # apply when omitted (see engine.transactions.get_run_archive_context).
+    slurm_account: Optional[str] = None
+    archive_system: Optional[str] = None
+    archive_dir: Optional[str] = None
+
+
+@app.post("/api/pipeline-runs/{template_version_id}/execute")
+def execute_workflow(template_version_id: int, options: Optional[RunOptions] = None, db: Session = Depends(get_db)):
+    """Kick off durable execution of a saved workflow template.
+
+    Builds the DAG from the persisted template and starts the DBOS orchestrator
+    asynchronously. Returns the DBOS workflow id, which the frontend polls via
+    the status endpoint. The pipeline_run row (with dbos_workflow_id) is created
+    inside the orchestrator's first transaction.
+
+    Optional run-level Tapis values (slurm_account, archive_system, archive_dir)
+    are merged into the dag_config, which the orchestrator stores as frozen_config
+    and the engine reads when rendering each step's Tapis job spec.
+    """
+    dag_config = _build_dag_config(db, template_version_id)
+
+    if options is not None:
+        for key, value in options.model_dump(exclude_none=True).items():
+            dag_config[key] = value
+
+    handle = DBOS.start_workflow(dag_orchestrator_workflow, dag_config)
+    return {
+        "message": "Workflow execution started",
+        "dbos_workflow_id": handle.get_workflow_id(),
+        "template_version_id": template_version_id,
+    }
+
+
+@app.get("/api/pipeline-runs/status/{dbos_workflow_id}")
+def get_workflow_run_status(dbos_workflow_id: str, format: str = "json"):
+    """Return live status of a workflow run: overall DBOS state, per-step detail,
+    and an ASCII progress graph. `format=text` returns just the graph as text."""
+    status = DBOS.get_workflow_status(dbos_workflow_id)
+    if status is None:
+        raise HTTPException(status_code=404, detail="Workflow run not found")
+
+    db_details = get_run_details(dbos_workflow_id)
+
+    graph_data = get_run_graph_data(dbos_workflow_id)
+    progress_graph = ""
+    if graph_data:
+        progress_graph = render_ascii_graph(
+            graph_data["nodes"], graph_data["edges"], graph_data["statuses"]
+        )
+
+    if format == "text":
+        return PlainTextResponse(progress_graph)
+
+    return {
+        "dbos_workflow_id": dbos_workflow_id,
+        "workflow_state": status.status,
+        "database_record": db_details,
+        "progress_graph": progress_graph,
+    }
+
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8002, reload=True)

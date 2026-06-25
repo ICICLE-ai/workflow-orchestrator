@@ -42,6 +42,9 @@ class StepTypeRegistry(Base):
     category = Column(String, default='general')
     icon = Column(String, default='default')
     config_schema = Column(JSON, nullable=False, default={})
+    # Full Tapis job-spec template (from step.json), with ${...} placeholders the
+    # engine substitutes at run time. Null for steps that aren't executable.
+    tapis_job = Column(JSON, default=None)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -137,6 +140,10 @@ class PipelineRun(Base):
     status = Column(String, default='pending')
     slurm_account = Column(String)
     tapis_pipeline_run_uuid = Column(String)
+    # Bridge to the DBOS durable-execution engine: the id of the DBOS workflow
+    # orchestrating this run. Set when execution is kicked off; used to poll
+    # run status and correlate run_step rows with DBOS child workflows.
+    dbos_workflow_id = Column(String, unique=True, index=True)
     frozen_config = Column(JSON, default={})
     started_at = Column(DateTime(timezone=True))
     completed_at = Column(DateTime(timezone=True))
@@ -154,7 +161,8 @@ class RunStep(Base):
     node_id = Column(Integer, ForeignKey('wf_node.node_id'))
     step_label = Column(String, default='')
     status = Column(String, default='pending')
-    config = Column(JSON, default={})
+    config = Column(JSON, default={})  # resolved step inputs (merged defaults + overrides)
+    outputs = Column(JSON, default={})  # outputs produced by this step, consumed by downstream steps
     tapis_job_uuid = Column(String)
     tapis_job_status = Column(String)
     percent_complete = Column(Integer, default=0)

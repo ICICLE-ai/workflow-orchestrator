@@ -1,0 +1,60 @@
+{
+  "step_type_key": "classifier",
+  "display_name": "Image Classifier",
+  "description": "Classifies images or detected regions (DINOv3) into labeled categories.",
+  "category": "Inference",
+  "icon": "tag",
+  "tapis_app_id": "harvest-Dino-Classifier-Parth-gupta.1543",
+  "inputs": [
+    { "name": "images", "type": "image_dir" },
+    { "name": "regions", "type": "json_results", "required": false }
+  ],
+  "outputs": [
+    { "name": "classifications", "type": "json_results" }
+  ],
+  "config_schema": {
+    "model_name": {
+      "type": "string",
+      "description": "Classification model identifier.",
+      "default": "dinov3"
+    },
+    "similarity_threshold": {
+      "type": "float",
+      "description": "Minimum similarity score to assign a class.",
+      "default": 0.5
+    }
+  },
+  "tapis_job": {
+    "name": "harvest-classifier",
+    "appId": "harvest-Dino-Classifier-Parth-gupta.1543",
+    "appVersion": "1.0.0",
+    "description": "Classify images / detected regions",
+    "execSystemId": "expanse-tapis",
+    "execSystemLogicalQueue": "tapisGPUshared",
+    "archiveSystemId": "${archive_system}",
+    "archiveSystemDir": "${archive_dir}",
+    "nodeCount": 1,
+    "coresPerNode": 8,
+    "memoryMB": 32000,
+    "maxMinutes": 180,
+    "fileInputs": [
+      { "name": "images", "envKey": "images", "autoMountLocal": true, "sourceUrl": "${images}", "targetPath": "input/images" },
+      { "name": "regions", "envKey": "regions", "autoMountLocal": true, "sourceUrl": "${regions}", "targetPath": "input/regions.json" }
+    ],
+    "parameterSet": {
+      "schedulerOptions": [
+        { "arg": "-G 1", "name": "gpu_per_node" },
+        { "name": "slurm account", "arg": "-A ${slurm_account}" },
+        { "name": "job name", "arg": "--job-name=classifier" }
+      ],
+      "containerArgs": [
+        { "name": "binding", "arg": "--bind $PWD/output:/output" }
+      ],
+      "envVariables": [
+        { "key": "MODEL_NAME", "value": "${model_name}" },
+        { "key": "SIMILARITY_THRESHOLD", "value": "${similarity_threshold}" }
+      ],
+      "archiveFilter": { "includeLaunchFiles": false }
+    }
+  }
+}

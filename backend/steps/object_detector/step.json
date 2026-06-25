@@ -1,0 +1,58 @@
+{
+  "step_type_key": "object_detector",
+  "display_name": "Object Detection",
+  "description": "Detects objects in images (OWLv2), producing bounding-box results.",
+  "category": "Inference",
+  "icon": "target",
+  "tapis_app_id": "harvest-Classifier-gupta.1543",
+  "inputs": [
+    { "name": "images", "type": "image_dir" }
+  ],
+  "outputs": [
+    { "name": "detections", "type": "json_results" }
+  ],
+  "config_schema": {
+    "confidence_threshold": {
+      "type": "float",
+      "description": "Minimum confidence score to keep a detection.",
+      "default": 0.3
+    },
+    "model_name": {
+      "type": "string",
+      "description": "Detection model identifier.",
+      "default": "owlv2"
+    }
+  },
+  "tapis_job": {
+    "name": "harvest-object-detector",
+    "appId": "harvest-Classifier-gupta.1543",
+    "appVersion": "1.0.0",
+    "description": "Object detection over an image directory",
+    "execSystemId": "expanse-tapis",
+    "execSystemLogicalQueue": "tapisGPUshared",
+    "archiveSystemId": "${archive_system}",
+    "archiveSystemDir": "${archive_dir}",
+    "nodeCount": 1,
+    "coresPerNode": 8,
+    "memoryMB": 32000,
+    "maxMinutes": 180,
+    "fileInputs": [
+      { "name": "images", "envKey": "images", "autoMountLocal": true, "sourceUrl": "${images}", "targetPath": "input" }
+    ],
+    "parameterSet": {
+      "schedulerOptions": [
+        { "arg": "-G 1", "name": "gpu_per_node" },
+        { "name": "slurm account", "arg": "-A ${slurm_account}" },
+        { "name": "job name", "arg": "--job-name=object-detector" }
+      ],
+      "containerArgs": [
+        { "name": "binding", "arg": "--bind $PWD/output:/output" }
+      ],
+      "envVariables": [
+        { "key": "CONFIDENCE_THRESHOLD", "value": "${confidence_threshold}" },
+        { "key": "MODEL_NAME", "value": "${model_name}" }
+      ],
+      "archiveFilter": { "includeLaunchFiles": false }
+    }
+  }
+}

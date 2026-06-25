@@ -2,6 +2,8 @@
   "step_type_key": "preprocess",
   "display_name": "Preprocessing",
   "description": "Process CSV and Shapefile data",
+  "category": "Data Pre-processing",
+  "tapis_app_id": "harvest-preprocess-yuan1374",
   "inputs": [
     { "name": "csv_input", "type": "csv_data" },
     { "name": "shapefile_input", "type": "shapefile" }
@@ -24,6 +26,36 @@
       "type": "boolean",
       "description": "Whether to normalize pixel values to [0, 1].",
       "default": true
+    }
+  },
+  "tapis_job": {
+    "name": "harvest-preprocess",
+    "appId": "harvest-preprocess-yuan1374",
+    "appVersion": "0.3.6",
+    "description": "Harvest preprocessing (CSV + shapefile)",
+    "execSystemId": "expanse-tapis",
+    "execSystemLogicalQueue": "tapisGPUshared",
+    "archiveSystemId": "${archive_system}",
+    "archiveSystemDir": "${archive_dir}",
+    "nodeCount": 1,
+    "coresPerNode": 28,
+    "memoryMB": 100000,
+    "maxMinutes": 210,
+    "fileInputs": [
+      { "name": "csv", "envKey": "csv", "autoMountLocal": true, "sourceUrl": "${csv_input}", "targetPath": "test/csv.csv" },
+      { "name": "shp", "envKey": "shp", "autoMountLocal": true, "sourceUrl": "${shapefile_input}", "targetPath": "test/shapefile" },
+      { "name": "sif", "envKey": "sif", "autoMountLocal": true, "sourceUrl": "https://icicleai.tapis.io/v3/files/postits/redeem/86abf9eb-2978-423e-a636-a952bd3837ce-010", "targetPath": "preprocess.sif" }
+    ],
+    "parameterSet": {
+      "schedulerOptions": [
+        { "arg": "-G 1", "name": "constraint" },
+        { "arg": "-A ${slurm_account}", "name": "slurm account" }
+      ],
+      "envVariables": [
+        { "key": "RESIZE_WIDTH", "value": "${resize_width}" },
+        { "key": "RESIZE_HEIGHT", "value": "${resize_height}" }
+      ],
+      "archiveFilter": { "includeLaunchFiles": false }
     }
   }
 }
