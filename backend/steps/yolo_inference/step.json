@@ -1,0 +1,65 @@
+{
+  "step_type_key": "yolo_inference",
+  "display_name": "YOLO Inference",
+  "description": "Runs an Ultralytics YOLO model on an image directory; writes predictions + annotated images.",
+  "category": "Inference",
+  "tapis_app_id": "yolo-inference",
+  "inputs": [
+    { "name": "images", "type": "image_dir" },
+    { "name": "model", "type": "pytorch_model" }
+  ],
+  "outputs": [
+    { "name": "predictions", "type": "json_results" }
+  ],
+  "config_schema": {
+    "conf": {
+      "type": "float",
+      "description": "Minimum confidence threshold for detections.",
+      "default": 0.25
+    },
+    "imgsz": {
+      "type": "int",
+      "description": "Inference image size (pixels).",
+      "default": 640
+    }
+  },
+  "tapis_job": {
+    "name": "yolo-inference",
+    "appId": "yolo-inference",
+    "appVersion": "1.0",
+    "description": "YOLO object detection over an image directory",
+    "execSystemId": "${exec_system}",
+    "execSystemLogicalQueue": "${exec_queue}",
+    "execSystemExecDir": "${work_dir}/new_jobs/${JobUUID}",
+    "execSystemInputDir": "${work_dir}/new_jobs/${JobUUID}",
+    "execSystemOutputDir": "${work_dir}/new_jobs/${JobUUID}/output",
+    "archiveSystemId": "${archive_system}",
+    "archiveSystemDir": "${archive_dir}",
+    "nodeCount": 1,
+    "coresPerNode": 4,
+    "memoryMB": 16000,
+    "maxMinutes": 30,
+    "fileInputs": [
+      { "name": "images", "autoMountLocal": true, "sourceUrl": "${images}", "targetPath": "data/images" },
+      { "name": "model", "autoMountLocal": true, "sourceUrl": "${model}", "targetPath": "data/model.pt" }
+    ],
+    "parameterSet": {
+      "appArgs": [
+        { "name": "model", "arg": "--model /job/data/model.pt" },
+        { "name": "images", "arg": "--images /job/data/images" },
+        { "name": "output", "arg": "--output /job/output" },
+        { "name": "conf", "arg": "--conf ${conf}" },
+        { "name": "imgsz", "arg": "--imgsz ${imgsz}" }
+      ],
+      "containerArgs": [
+        { "name": "gpu", "arg": "--nv" },
+        { "name": "binding", "arg": "--bind $PWD:/job" }
+      ],
+      "schedulerOptions": [
+        { "arg": "-G 1", "name": "gpu_per_node" },
+        { "arg": "-A ${slurm_account}", "name": "slurm account" }
+      ],
+      "archiveFilter": { "includeLaunchFiles": false }
+    }
+  }
+}

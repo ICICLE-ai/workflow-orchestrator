@@ -66,11 +66,34 @@ class TapisV3:
         in-progress status string.
         """
         if _use_real():
-            token = tapis_auth.get_token()
             url = f"{tapis_auth.TAPIS_BASE_URL}/v3/jobs/{job_uuid}/status"
-            headers = {"X-Tapis-Token": token}
-            resp = httpx.get(url, headers=headers, timeout=60)
+            resp = httpx.get(url, headers={"X-Tapis-Token": tapis_auth.get_token()}, timeout=60)
+            # A 401 mid-run usually means the token expired during a long job.
+            # Force a token refresh and retry once before surfacing an error, so
+            # a transient auth lapse doesn't get mistaken for a job failure.
+            if resp.status_code == 401:
+                fresh = tapis_auth.get_token(force_refresh=True)
+                if fresh:
+                    resp = httpx.get(url, headers={"X-Tapis-Token": fresh}, timeout=60)
             resp.raise_for_status()
             return resp.json()["result"]["status"]
 
         return _mock_client.jobs.getJobStatus(jobUuid=job_uuid).status
+
+
+def cancel_tapis_job(job_uuid: str) -> bool:
+    """Best-effort cancel of a running Tapis job. Not a DBOS step — called from
+    the HTTP layer (outside a workflow) to stop a run. Returns True if the cancel
+    request was accepted, False otherwise (already terminal, gone, or no creds)."""
+    if not job_uuid:
+        return False
+    if not _use_real():
+        return True  # mock jobs have nothing to cancel remotely
+    try:
+        token = tapis_auth.get_token()
+        url = f"{tapis_auth.TAPIS_BASE_URL}/v3/jobs/{job_uuid}/cancel"
+        resp = httpx.post(url, headers={"X-Tapis-Token": token}, timeout=30)
+        return resp.status_code == 200
+    except Exception as e:
+        print(f"[tapis] cancel_tapis_job {job_uuid} failed: {type(e).__name__}")
+        return False

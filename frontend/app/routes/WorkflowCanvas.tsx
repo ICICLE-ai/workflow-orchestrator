@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { ReactFlow, ReactFlowProvider, addEdge, useNodesState, useEdgesState, Background, Controls } from '@xyflow/react';
-import { AppShell, Group, Button, Text, ActionIcon, Stack, Title, Drawer, TextInput, Textarea, Notification, Code, Badge, Loader } from '@mantine/core';
-import { IconArrowLeft, IconDeviceFloppy, IconX, IconPlayerPlay } from '@tabler/icons-react';
+import { AppShell, Group, Button, Text, ActionIcon, Stack, Title, Drawer, TextInput, Textarea, Notification, Code, Badge, Loader, Alert, List } from '@mantine/core';
+import { IconArrowLeft, IconDeviceFloppy, IconX, IconPlayerPlay, IconAlertTriangle } from '@tabler/icons-react';
 import { useNavigate, useParams, useLoaderData } from 'react-router';
 import CustomNode from '../components/CustomNode';
 
@@ -77,10 +77,14 @@ const STAGES = [
   'Post-processing',
 ];
 
-// A draggable palette card for a step type. `variant` switches the accent color
-// between data sources (green) and pipeline steps (blue).
-function StepCard({ step, variant }: { step: any; variant: 'source' | 'processing' }) {
-  const isSource = variant === 'source';
+// A draggable palette card for a step type. `variant` switches the accent color:
+// data sources (green, dashed), pipeline steps (blue), data sinks (amber, dashed).
+function StepCard({ step, variant }: { step: any; variant: 'source' | 'processing' | 'sink' }) {
+  const styles = {
+    source: { border: '1px dashed #10b981', color: '#059669' },
+    processing: { border: '1px solid #3b82f6', color: '#1d4ed8' },
+    sink: { border: '1px dashed #f59e0b', color: '#b45309' },
+  }[variant];
   return (
     <div
       onDragStart={(e) => {
@@ -91,9 +95,9 @@ function StepCard({ step, variant }: { step: any; variant: 'source' | 'processin
       title={step.description || step.display_name}
       style={{
         padding: '10px', background: 'white',
-        border: isSource ? '1px dashed #10b981' : '1px solid #3b82f6',
+        border: styles.border,
         borderRadius: '6px', cursor: 'grab', fontSize: '13px', fontWeight: 500,
-        color: isSource ? '#059669' : '#1d4ed8', boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
+        color: styles.color, boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
       }}
     >
       {step.display_name}
@@ -113,6 +117,8 @@ function Flow() {
   const [drawerOpened, setDrawerOpened] = useState(false);
   const [formData, setFormData] = useState({ name: '', description: '', category: 'Custom' });
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string[]>([]);
+  const [outputWarnings, setOutputWarnings] = useState<string[]>([]);
 
   // Workflow run state (DBOS execution)
   const [running, setRunning] = useState(false);
@@ -120,6 +126,18 @@ function Flow() {
   const [runSteps, setRunSteps] = useState<any[]>([]);
   const [progressGraph, setProgressGraph] = useState<string>('');
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Run settings — where/how the workflow's Tapis jobs execute. Defaults target
+  // OSC Pitzer (the working exec system); the user can edit before launching.
+  const [runSettingsOpened, setRunSettingsOpened] = useState(false);
+  const [runOptions, setRunOptions] = useState({
+    exec_system: 'pitzer-tapis',
+    exec_queue: 'gpu',
+    work_dir: '/fs/ess/PAS2699/shyama',
+    archive_dir: '/fs/ess/PAS2699/shyama/harvest_jobs/ui-run',
+    archive_system: 'pitzer-tapis',
+    slurm_account: 'PAS2699',
+  });
 
   // Stop polling on unmount
   useEffect(() => {
@@ -234,7 +252,79 @@ function Flow() {
     setNodes((nds) => nds.concat(newNode));
   }, [reactFlowInstance, stepTypes, setNodes]);
 
-  const handleSave = async () => {
+  // Find required input ports that aren't fed by an incoming edge. Returns a
+  // list of human-readable problems; empty means the workflow is complete.
+  const findHangingInputs = (): string[] => {
+    // node id -> set of target ports that have an incoming edge
+    const satisfied = new Map<string, Set<string>>();
+    for (const e of edges) {
+      if (!e.targetHandle) continue;
+      if (!satisfied.has(e.target)) satisfied.set(e.target, new Set());
+      satisfied.get(e.target)!.add(e.targetHandle);
+    }
+    const problems: string[] = [];
+    for (const n of nodes) {
+      const cfg = stepTypes.find((s: any) => s.step_type_key === n.data.nodeType);
+      const inputs = (cfg?.inputs || []);
+      for (const p of inputs) {
+        const name = p.port_name || p.name;
+        const required = p.is_required !== false; // default required
+        if (!required) continue;
+        if (!satisfied.get(n.id)?.has(name)) {
+          const label = cfg?.display_name || n.data.nodeType;
+          problems.push(`"${label}" is missing required input "${name}"`);
+        }
+      }
+    }
+    return problems;
+  };
+
+  // Find output ports with no outgoing edge — the user may have forgotten to
+  // attach a sink (e.g. inference's predictions). This is a SOFT warning, not a
+  // hard block: intermediate outputs are often intentionally left unconsumed.
+  // Source and sink nodes are excluded (sources always dangle by design; sinks
+  // have no outputs).
+  const findHangingOutputs = (): string[] => {
+    const used = new Map<string, Set<string>>(); // node id -> source ports that feed an edge
+    for (const e of edges) {
+      if (!e.sourceHandle) continue;
+      if (!used.has(e.source)) used.set(e.source, new Set());
+      used.get(e.source)!.add(e.sourceHandle);
+    }
+    const warnings: string[] = [];
+    for (const n of nodes) {
+      const cfg = stepTypes.find((s: any) => s.step_type_key === n.data.nodeType);
+      if (!cfg || cfg.category === 'source' || cfg.category === 'sink') continue;
+      for (const p of (cfg.outputs || [])) {
+        const name = p.port_name || p.name;
+        if (!used.get(n.id)?.has(name)) {
+          warnings.push(`"${cfg.display_name || n.data.nodeType}" output "${name}" is not saved to a sink`);
+        }
+      }
+    }
+    return warnings;
+  };
+
+  const handleSave = async (confirmedHangingOutputs = false) => {
+    // Hard constraint: block incomplete workflows (unsatisfied required inputs).
+    const hanging = findHangingInputs();
+    if (hanging.length > 0) {
+      setSaveError(hanging);
+      setOutputWarnings([]);
+      return;
+    }
+    setSaveError([]);
+
+    // Soft constraint: warn about unconsumed outputs, but let the user proceed.
+    if (!confirmedHangingOutputs) {
+      const outWarn = findHangingOutputs();
+      if (outWarn.length > 0) {
+        setOutputWarnings(outWarn);
+        return;
+      }
+    }
+    setOutputWarnings([]);
+
     const payload = {
       ...formData,
       nodes: nodes.map(n => ({
@@ -246,8 +336,8 @@ function Flow() {
       edges: edges.map(e => ({ id: e.id, source: e.source, target: e.target, sourceHandle: e.sourceHandle, targetHandle: e.targetHandle }))
     };
 
-    const url = id && templateData 
-      ? `http://localhost:8002/api/workflow-templates/${templateData.template_id}/versions` 
+    const url = id && templateData
+      ? `http://localhost:8002/api/workflow-templates/${templateData.template_id}/versions`
       : 'http://localhost:8002/api/workflow-templates';
 
     try {
@@ -256,18 +346,25 @@ function Flow() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
+      if (!res.ok) {
+        // Surface the backend's validation message (e.g. hanging inputs it caught).
+        const err = await res.json().catch(() => ({}));
+        setSaveError([err.detail || 'Failed to save template']);
+        return;
+      }
       const data = await res.json();
       alert(data.message);
       navigate('/templates');
     } catch (err) {
-      alert('Failed to save template');
+      setSaveError(['Failed to save template (network error).']);
     }
   };
 
-  // Kick off durable execution of the saved template via the DBOS engine, then
-  // poll status until the run completes or fails.
+  // Kick off durable execution of the saved template via the DBOS engine with
+  // the chosen run options (exec system / queue / paths), then poll status.
   const handleRun = async () => {
     if (!templateData) return;
+    setRunSettingsOpened(false);
     setRunning(true);
     setRunState('PENDING');
     setRunSteps([]);
@@ -276,7 +373,11 @@ function Flow() {
     try {
       const res = await fetch(
         `http://localhost:8002/api/pipeline-runs/${templateData.template_version_id}/execute`,
-        { method: 'POST', headers: { 'Content-Type': 'application/json' } }
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(runOptions),
+        }
       );
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -329,9 +430,9 @@ function Flow() {
               <Button
                 color="green"
                 leftSection={running ? <Loader size={14} color="white" /> : <IconPlayerPlay size={16} />}
-                onClick={handleRun}
+                onClick={() => setRunSettingsOpened(true)}
                 disabled={running}
-                title="Execute this workflow"
+                title="Configure and run this workflow"
               >
                 {running ? 'Running…' : 'Run Workflow'}
               </Button>
@@ -372,6 +473,18 @@ function Flow() {
             </div>
           );
         })}
+
+        {/* Data Sinks — outputs, the write-side complement of Data Sources */}
+        {stepTypes.some((s: any) => s.category === 'sink') && (
+          <div style={{ marginBottom: 18 }}>
+            <Text fw={600} mb="xs">Data Sinks</Text>
+            <Stack gap="xs">
+              {stepTypes.filter((s: any) => s.category === 'sink').map((step: any) => (
+                <StepCard key={step.step_type_key} step={step} variant="sink" />
+              ))}
+            </Stack>
+          </div>
+        )}
       </AppShell.Aside>
 
       <AppShell.Main>
@@ -444,20 +557,102 @@ function Flow() {
         </div>
       </AppShell.Main>
 
-      <Drawer opened={drawerOpened} onClose={() => setDrawerOpened(false)} title="Save Workflow Template" position="right">
+      <Drawer opened={drawerOpened} onClose={() => { setDrawerOpened(false); setSaveError([]); setOutputWarnings([]); }} title="Save Workflow Template" position="right">
         <Stack>
-          <TextInput 
-            label="Template Name" 
-            value={formData.name} 
-            onChange={(e) => setFormData({ ...formData, name: e.currentTarget.value })} 
-            required 
+          <TextInput
+            label="Template Name"
+            value={formData.name}
+            onChange={(e) => setFormData({ ...formData, name: e.currentTarget.value })}
+            required
           />
-          <Textarea 
-            label="Description" 
-            value={formData.description} 
-            onChange={(e) => setFormData({ ...formData, description: e.currentTarget.value })} 
+          <Textarea
+            label="Description"
+            value={formData.description}
+            onChange={(e) => setFormData({ ...formData, description: e.currentTarget.value })}
           />
-          <Button fullWidth onClick={handleSave} mt="md">Confirm Save</Button>
+          {saveError.length > 0 && (
+            <Alert color="red" icon={<IconAlertTriangle size={18} />} title="Workflow incomplete — cannot save">
+              <Text size="sm" mb={saveError.length > 1 ? 'xs' : 0}>
+                Every required input must be connected to an upstream output or a data source.
+              </Text>
+              {saveError.length > 1 ? (
+                <List size="sm" spacing={2}>
+                  {saveError.map((p, i) => <List.Item key={i}>{p}</List.Item>)}
+                </List>
+              ) : (
+                <Text size="sm">{saveError[0]}</Text>
+              )}
+            </Alert>
+          )}
+          {outputWarnings.length > 0 && (
+            <Alert color="yellow" icon={<IconAlertTriangle size={18} />} title="Some outputs aren't saved">
+              <Text size="sm" mb="xs">
+                These node outputs aren't connected to a sink, so their results won't be
+                written anywhere. If that's intentional you can proceed; otherwise add a
+                sink (e.g. "Write Results") to keep them.
+              </Text>
+              <List size="sm" spacing={2}>
+                {outputWarnings.map((p, i) => <List.Item key={i}>{p}</List.Item>)}
+              </List>
+            </Alert>
+          )}
+          {outputWarnings.length > 0 ? (
+            <Group grow mt="md">
+              <Button variant="default" onClick={() => setOutputWarnings([])}>Go Back</Button>
+              <Button color="yellow" onClick={() => handleSave(true)}>Save Anyway</Button>
+            </Group>
+          ) : (
+            <Button fullWidth onClick={() => handleSave()} mt="md">Confirm Save</Button>
+          )}
+        </Stack>
+      </Drawer>
+
+      {/* Run Settings — where/how the workflow's Tapis jobs execute. Prefilled
+          with OSC Pitzer defaults; user reviews/edits, then launches. */}
+      <Drawer opened={runSettingsOpened} onClose={() => setRunSettingsOpened(false)} title="Run Settings" position="right">
+        <Stack>
+          <Text size="sm" c="dimmed">
+            Where this workflow's jobs run on Tapis. Defaults target OSC Pitzer.
+          </Text>
+          <TextInput
+            label="Exec system"
+            description="Tapis compute system (e.g. pitzer-tapis, ascend-tapis)"
+            value={runOptions.exec_system}
+            onChange={(e) => setRunOptions({ ...runOptions, exec_system: e.currentTarget.value })}
+          />
+          <TextInput
+            label="Queue"
+            description="Scheduler queue (OSC: cpu / gpu / nextgen)"
+            value={runOptions.exec_queue}
+            onChange={(e) => setRunOptions({ ...runOptions, exec_queue: e.currentTarget.value })}
+          />
+          <TextInput
+            label="Slurm account"
+            description="Allocation to charge (e.g. PAS2699)"
+            value={runOptions.slurm_account}
+            onChange={(e) => setRunOptions({ ...runOptions, slurm_account: e.currentTarget.value })}
+          />
+          <TextInput
+            label="Work dir"
+            description="Absolute scratch/project base path for job working dirs"
+            value={runOptions.work_dir}
+            onChange={(e) => setRunOptions({ ...runOptions, work_dir: e.currentTarget.value })}
+          />
+          <TextInput
+            label="Archive system"
+            description="Where step outputs are archived (unless a sink node overrides it)"
+            value={runOptions.archive_system}
+            onChange={(e) => setRunOptions({ ...runOptions, archive_system: e.currentTarget.value })}
+          />
+          <TextInput
+            label="Archive dir"
+            description="Absolute path for run output (must be under your project space)"
+            value={runOptions.archive_dir}
+            onChange={(e) => setRunOptions({ ...runOptions, archive_dir: e.currentTarget.value })}
+          />
+          <Button color="green" fullWidth mt="md" leftSection={<IconPlayerPlay size={16} />} onClick={handleRun}>
+            Launch Run
+          </Button>
         </Stack>
       </Drawer>
     </AppShell>

@@ -148,3 +148,183 @@ GET  /api/pipeline-runs/status/{dbos_workflow_id}          # poll status + progr
 To pass run-level values (allocation, archive location), include them in the
 execute request's config so they flow into `frozen_config` and get substituted:
 `slurm_account`, `archive_system`, `archive_dir`.
+
+---
+
+## OSC (Pitzer/Ascend) execution — findings
+
+Expanse is blocked by MFA on Tapis's automated SSH login. **OSC works**: the
+`icicleai` tenant has `pitzer-tapis` / `ascend-tapis` systems (`canExec=true`,
+`effectiveUserId` = the user's OSC login), and a Tapis→OSC credential is already
+registered, so real jobs submit, SSH into OSC, and stage/schedule successfully.
+
+Run an OSC job by passing these RunOptions to the execute endpoint (or via the
+UI "Run Settings" drawer):
+- `exec_system`: `pitzer-tapis` (or `ascend-tapis`)
+- `exec_queue`: OSC queue — `cpu` / `gpu` / `nextgen` (NOT Expanse's tapisGPU*)
+- `work_dir`: an ABSOLUTE project path, e.g. `/fs/ess/PAS2699/<user>`
+- `archive_dir`: an ABSOLUTE path under your project (a root-relative value makes
+  Tapis try to `mkdir` at `/` on the host → FILES_REMOTE_MKDIRS_ERROR)
+- `slurm_account`: e.g. `PAS2699`
+
+## Debugging a failed harvest-inference job on OSC
+
+Verified working (do NOT re-investigate these):
+- Source→step edge data flow, real submission, OSC SSH login, input staging.
+- The inference `.sif` postit is ALIVE and a valid Singularity image
+  (`#!/usr/bin/env run-singularity`). Downloads fine.
+- Model files map correctly: `${model}/config.json` and `${model}/saved_model.pth`
+  both exist in `/fs/ess/PAS2699/harvest_trained_models/2024-9-10-22-7-54`.
+- Env vars (`WORKDIR=$PWD/workdir`, `DATADIR=$PWD/data`) and binds match the
+  legacy working config.
+
+Fixed in our template (was an Expanse-ism):
+- Removed `--bind $CUDAHOME:/cuda` from inference containerArgs — `/cuda` doesn't
+  exist on Pitzer, so Singularity aborted at container creation:
+  `FATAL: container creation failed: mount /cuda->/cuda ... doesn't exist`.
+  GPU access still works via the app's `--nv` flag. (Read from the failed job's
+  `tapisjob.out` via GET /v3/jobs/{uuid}/output/download/tapisjob.out.)
+
+Open issues (app-owner territory, NOT the orchestrator):
+- The sample model's `config.json` has hardcoded absolute paths to ANOTHER user's
+  dir (`/users/PAS2581/potlapally2/...`) for `data_dir` / `model_save_path`. If the
+  inference code reads these, it will look in the wrong place. A portable model
+  config (or a model trained/configured for the running user's paths) is needed.
+- The model is a ViT regression model (`google/vit-base-patch16-224-in21k`,
+  task=regression, num_classes=1). The container must match this architecture.
+- Staging the 343MB `saved_model.pth` over SSH to OSC is slow (minutes) and is the
+  main iteration bottleneck — use a small model/dataset for quick container tests.
+
+To read any failed job's actual container output:
+  GET /v3/jobs/{uuid}/output/list/
+  GET /v3/jobs/{uuid}/output/download/tapisjob.out
+
+## Inference container internals (harvest-inference v0.1.7)
+
+The .sif is an NVIDIA Triton Inference Server image
+(`nvcr.io/nvidia/tritonserver:24.03-py3`, built 2025-06-20). Its %runscript is
+`/app/entrypoint.sh`; app files: entrypoint.sh, inf_util.py, pytriton_server.py,
+pytriton_client.py, inf_server.py, inference_backend/, build_model/, dali_224/96/32.
+(The `entrypoint.sh` in the harvest-webservers repo root is the OLD Flask webapp
+container, NOT this Triton one — do not confuse them.)
+
+Model config path handling:
+- Our template mounts `${model}/config.json` -> workdir/models/saved_model.json,
+  and `${model}/saved_model.pth` -> workdir/models_convert/saved_model.pth.
+  Container binds `$PWD/workdir:/job_dir`, `$PWD/data:/dataset`, so the container
+  reads config at /job_dir/models/saved_model.json.
+- The sample models' config.json contain HARDCODED absolute paths to another
+  user's dir (/users/PAS2581/potlapally2/...) for data_dir / model_save_path /
+  dataset. The old InfWorker.parse_uploaded_model() reads conf["model_save_path"],
+  so these paths likely DO matter to the container.
+
+To make a run complete (recommended, user-doable on OSC):
+1. Copy a model dir's saved_model.pth + config.json into your own space
+   (e.g. /fs/ess/PAS2699/<user>/models/soy1/).
+2. Edit config.json paths to the in-container mount targets (inferred):
+     data_dir / dataset -> /dataset
+     model_save_path     -> /job_dir/models_convert/saved_model.pth
+3. Point the source_model node at your copy; run; read tapisjob.out and iterate.
+The exact expected config is known only to the container's author (harvest team) —
+ask them to avoid guesswork on the in-container paths.
+
+## ROOT CAUSE of harvest-inference failures (definitive, 2026-07-05)
+
+Not the data paths, not the input dataset. The inference container FAILS AT MODEL
+LOAD with a state_dict key mismatch, then idles (count:0) until Slurm TIMEOUT.
+
+From the container's tapisjob.out:
+    File "/app/build_model/build_model.py", line 54, in build_model
+        model.load_state_dict(torch.load(weight_path, map_location='cuda:0'))
+    RuntimeError: Error(s) in loading state_dict for ViTForImageClassification:
+        Missing key(s):    "vit.embeddings.cls_token", ...
+        Unexpected key(s): "module.vit.embeddings.cls_token", ...
+
+The sample models' saved_model.pth were trained with torch.nn.DataParallel/DDP,
+which prefixes every weight key with "module.". The container loads the bare model
+(no DataParallel), so every key mismatches -> build_model.py crashes -> Triton never
+serves the model -> inf server returns {'count':0} forever -> job hits maxMinutes.
+
+Confirmed NOT the cause (ruled out by testing):
+- Input dataset: real soybean .jpg images gave the identical count:0 / TIMEOUT.
+- Source-node path / DATADIR: model load crashes before any data is read.
+- config.json hardcoded /users/PAS2581/... paths: printed but harmless — weights
+  load from the mounted /job_dir/models/saved_model.json (log: "Found convertion
+  pending model: /job_dir/models/saved_model.json").
+
+To get a successful run, need ONE of:
+  1. A model checkpoint saved WITHOUT DataParallel (no "module." prefix), OR
+  2. The container's build_model.py fixed to strip "module." before load_state_dict
+     (e.g. {k.replace('module.',''): v}) — container-owner change, OR
+  3. A model known to be compatible with harvest-inference v0.1.7.
+
+Also fixed this session: maxMinutes lowered 210->20 for fast iteration; the poller
+now refreshes the token on 401 and tolerates transient errors so a long job isn't
+falsely marked failed mid-run.
+
+## Custom YOLO inference app (clean replacement for harvest-inference)
+
+Because the legacy harvest-inference container fails at model load (DataParallel
+"module." prefix, unfixable without the container owner), we built our own simple
+YOLO inference app. Artifacts in repo: jobs/yolo_inference/{yolo_infer.py,
+yolo_infer.def, requirements.txt}.
+
+Design — RUN-WORKSPACE OUTPUT MODEL (how node outputs are handled):
+  Every step writes outputs to a per-run/per-node dir; the output port's value IS
+  that path (a tapis:// URI). Downstream consumption is uniform:
+    - passed to a next node  -> edge resolves the upstream output dir into the
+      next step's input sourceUrl (already works via _resolve_inputs)
+    - written to a sink      -> sink_path overrides the step's archiveSystemDir to
+      the user's path (already works via get_downstream_sink_path)
+    - left hanging           -> output still exists in the run workspace, unconsumed
+  This is type-agnostic (predictions json, trained model, image dir all handled
+  the same) and reproducible. The YOLO app writes results to /out (bind-mounted),
+  which maps to the node workspace -> sink relocates to the user path.
+
+The app takes ALL paths as ARGS (--model ${model} --images ${images} --output /out),
+so the COCO/YOLO paths live only in the source-node configs, never hardcoded.
+
+Build/register steps (need OSC shell + fresh token):
+  3. apptainer build yolo_infer.sif yolo_infer.def   (on OSC)
+  4. POST /v3/files/postits/pitzer-tapis/<path>/yolo_infer.sif -> redeem URL
+  5. register Tapis app 'yolo-inference' v1.0 (SINGULARITY_RUN, containerImage=postit URL,
+     appArgs model/images/output, containerArgs --nv)
+Then steps/yolo_inference/step.json wires ${images}/${model} -> the app; workflow:
+  source_image_dir + source_model -> yolo_inference -> sink_path(wf_run_outputs).
+
+Test inputs (in source-node configs, NOT hardcoded):
+  images: tapis://pitzer-tapis/users/PAS2699/shyama02/coco8-multispectral/images/val
+  model:  tapis://pitzer-tapis/users/PAS2699/shyama02/yolo26n/yolo26n.pt
+
+## YOLO app — first end-to-end run result (2026-07-09)
+
+FULL PIPELINE WORKED. Built yolo-inference app (sif+postit+app registered), ran
+workflow source_image_dir+source_model -> yolo_inference -> sink on OSC GPU.
+Container ran, script found the 4 images, loaded yolo26n.pt, ran YOLO forward.
+
+Only failure (real ML data issue, fixed in OUR script):
+  RuntimeError: expected input[1, 3, ...] to have 3 channels, but got 10 channels
+The coco8-MULTISPECTRAL images are 10-channel; YOLO wants 3-channel RGB.
+Fix: yolo_infer.py now converts any multiband/grayscale image to 3ch RGB via
+cv2.IMREAD_UNCHANGED -> first 3 bands -> normalize to uint8 (load_rgb()).
+Requires rebuilding yolo_infer.sif on OSC (script is baked in at build time);
+postit + app unchanged (same sif path). Workflow template kept (id 28).
+
+## ✅ FIRST FULLY SUCCESSFUL END-TO-END RUN (2026-07-09)
+
+Workflow: source_image_dir + source_model -> yolo_inference -> sink_path
+On OSC Pitzer GPU. Statuses: STAGING -> QUEUED -> RUNNING -> ARCHIVING -> FINISHED,
+run COMPLETED, all nodes green.
+
+Outputs written to the SINK dir /users/PAS2699/shyama02/wf_run_outputs:
+  predictions.json, summary.json, annotated/*.tiff (4 annotated images), tapisjob.out
+Real detections: 8 across 4 images (person, horse x2, elephant x2, umbrella, cell phone).
+
+This proves the whole orchestrator: config-driven step (step.json), source nodes
+provide paths (no hardcoding), edge data flow, real Tapis app submission on OSC,
+sink relocates output to a user path. Model/data/output paths all come from nodes.
+
+Note: after rebuilding the sif, REGENERATE the postit and PATCH the app's
+containerImage to the new redeem URL (postits can cache old content):
+  POST /v3/files/postits/<sys>/<sifpath>   -> new redeemUrl
+  PATCH /v3/apps/yolo-inference/1.0  {"containerImage": <new redeemUrl>}

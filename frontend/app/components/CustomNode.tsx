@@ -100,20 +100,39 @@ export default function CustomNode({ id, data }: any) {
   const portRowHeight = 28;
 
   const isSource = fullConfig.category === 'source';
-  
-  const headerBg = isSource 
+
+  // Read-only run-status mode: when data.runStatus is present, the node is being
+  // shown on the live run page. Tint its border/glow by status and hide the
+  // interactive Run/Settings/Delete controls.
+  const runStatus: string | undefined = data.runStatus;
+  const STATUS_STYLE: Record<string, { color: string; label: string; glow: string }> = {
+    completed: { color: '#10b981', label: 'Completed', glow: '0 0 0 3px rgba(16,185,129,0.25)' },
+    running:   { color: '#3b82f6', label: 'Running',   glow: '0 0 0 3px rgba(59,130,246,0.35)' },
+    failed:    { color: '#ef4444', label: 'Failed',    glow: '0 0 0 3px rgba(239,68,68,0.30)' },
+    cancelled: { color: '#f97316', label: 'Cancelled', glow: 'none' },
+    pending:   { color: '#94a3b8', label: 'Pending',   glow: 'none' },
+  };
+  const statusStyle = runStatus ? (STATUS_STYLE[runStatus] || STATUS_STYLE.pending) : null;
+
+  const headerBg = isSource
     ? 'linear-gradient(135deg, #d1fae5, #a7f3d0)' // Emerald theme for sources
     : 'linear-gradient(135deg, #e0f2fe, #dbeafe)'; // Blue theme for processing
-    
+
   const headerBorder = isSource ? '#6ee7b7' : '#bfdbfe';
   const textColor = isSource ? 'teal.9' : 'blue.8';
-  const nodeBorder = isSource ? '1px solid #10b981' : '1px solid #d0d7de';
+  const nodeBorder = statusStyle
+    ? `2px solid ${statusStyle.color}`
+    : (isSource ? '1px solid #10b981' : '1px solid #d0d7de');
 
   return (
     <>
       <div style={{
         background: 'white', borderRadius: '10px', border: nodeBorder,
-        minWidth: '280px', boxShadow: '0 4px 12px rgba(0,0,0,0.08)',
+        minWidth: '280px',
+        boxShadow: statusStyle && statusStyle.glow !== 'none'
+          ? `0 4px 12px rgba(0,0,0,0.08), ${statusStyle.glow}`
+          : '0 4px 12px rgba(0,0,0,0.08)',
+        opacity: runStatus === 'pending' ? 0.6 : 1,
         position: 'relative',
       }}>
         {/* Node Header */}
@@ -124,17 +143,23 @@ export default function CustomNode({ id, data }: any) {
         }}>
           <Group justify="space-between" wrap="nowrap">
             <Text fw={700} size="sm" c={textColor}>{fullConfig.display_name || data.nodeType}</Text>
-            <Group gap={4} wrap="nowrap">
-              <ActionIcon variant="light" color="green" size="sm" onClick={handleRun} title="Run Step">
-                <IconPlayerPlay size={14} />
-              </ActionIcon>
-              <ActionIcon variant="light" color="blue" size="sm" onClick={() => setOpened(true)} title="Settings">
-                <IconSettings size={14} />
-              </ActionIcon>
-              <ActionIcon variant="light" color="red" size="sm" onClick={handleDelete} title="Delete">
-                <IconTrash size={14} />
-              </ActionIcon>
-            </Group>
+            {statusStyle ? (
+              <Badge size="sm" variant="filled" style={{ backgroundColor: statusStyle.color }}>
+                {runStatus === 'running' ? '● ' : ''}{statusStyle.label}
+              </Badge>
+            ) : (
+              <Group gap={4} wrap="nowrap">
+                <ActionIcon variant="light" color="green" size="sm" onClick={handleRun} title="Run Step">
+                  <IconPlayerPlay size={14} />
+                </ActionIcon>
+                <ActionIcon variant="light" color="blue" size="sm" onClick={() => setOpened(true)} title="Settings">
+                  <IconSettings size={14} />
+                </ActionIcon>
+                <ActionIcon variant="light" color="red" size="sm" onClick={handleDelete} title="Delete">
+                  <IconTrash size={14} />
+                </ActionIcon>
+              </Group>
+            )}
           </Group>
         </Box>
 

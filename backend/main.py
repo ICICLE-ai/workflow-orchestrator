@@ -104,10 +104,15 @@ def sync_step_registry(db: Session):
         # ones, and remove ports that were renamed/deleted in the JSON. Without
         # the removal step, ports renamed during development accumulate forever
         # and the node would render extra/wrong handles.
-        json_ports = {}  # (port_name, direction) -> data_type
+        json_ports = {}  # (port_name, direction) -> {"type", "required"}
         for direction, port_list in [("input", data.get("inputs", [])), ("output", data.get("outputs", []))]:
             for p in port_list:
-                json_ports[(p["name"], direction)] = p["type"]
+                # Inputs default to required; a port is optional only if step.json
+                # sets "required": false. (Outputs' is_required is not meaningful.)
+                json_ports[(p["name"], direction)] = {
+                    "type": p["type"],
+                    "required": p.get("required", True),
+                }
 
         try:
             existing_ports = db.query(StepTypePort).filter_by(step_type_key=step_key).all()
@@ -119,13 +124,20 @@ def sync_step_registry(db: Session):
                 if key not in json_ports:
                     _delete_port_with_dependents(db, port)
 
-            # Add new ports and update changed data types
-            for (port_name, direction), data_type in json_ports.items():
+            # Add new ports, and update changed data type / required flag.
+            for (port_name, direction), spec in json_ports.items():
                 existing = existing_by_key.get((port_name, direction))
                 if existing is None:
-                    db.add(StepTypePort(step_type_key=step_key, port_name=port_name, data_type=data_type, direction=direction))
-                elif existing.data_type != data_type:
-                    existing.data_type = data_type
+                    db.add(StepTypePort(
+                        step_type_key=step_key, port_name=port_name,
+                        data_type=spec["type"], direction=direction,
+                        is_required=spec["required"],
+                    ))
+                else:
+                    if existing.data_type != spec["type"]:
+                        existing.data_type = spec["type"]
+                    if existing.is_required != spec["required"]:
+                        existing.is_required = spec["required"]
 
             db.commit()
         except Exception as e:
@@ -253,6 +265,7 @@ def get_port_data_types(db: Session = Depends(get_db)):
 @app.get("/api/workflow-templates")
 def list_workflow_templates(db: Session = Depends(get_db)):
     # Group by template_id to get the latest version of each template
+    print("I am in here ... LLALALALALALA !!!!!!!! SHIRORORORORORO!!!!!!!!!!!!!!!")
     subquery = db.query(
         WorkflowTemplate.template_id,
         func.max(WorkflowTemplate.version).label("max_version")
@@ -296,6 +309,7 @@ def get_workflow_template_history(template_id: int, db: Session = Depends(get_db
 
 @app.get("/api/workflow-templates/{template_version_id}")
 def get_workflow_template(template_version_id: int, db: Session = Depends(get_db)):
+    print("I am in here ... LLALALALALALA !!!!!!!! RHORHRORHRORHRORHRORHRORHRORHRORHRO!!!!!!!!!!!!!!!")
     template = db.query(WorkflowTemplate).filter(WorkflowTemplate.template_version_id == template_version_id).first()
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
@@ -329,8 +343,54 @@ def get_workflow_template(template_version_id: int, db: Session = Depends(get_db
         "edges": edge_list
     }
 
+def _validate_no_hanging_inputs(template: WorkflowTemplateCreate, db: Session):
+    """Reject templates with unsatisfied required inputs.
+
+    Every REQUIRED input port on every node must be fed by an incoming edge
+    (from an upstream node's output or a data-source node). Optional ports
+    (is_required=False) may be left unconnected. Raises HTTP 400 with a
+    human-readable list of the unsatisfied inputs so the designer knows exactly
+    what to wire up.
+    """
+    # Required input ports per step type: {step_type_key: set(port_name)}
+    ports = db.query(StepTypePort).filter(StepTypePort.direction == "input").all()
+    required_inputs = {}
+    for p in ports:
+        if p.is_required:
+            required_inputs.setdefault(p.step_type_key, set()).add(p.port_name)
+
+    # node id -> step_type_key (frontend node type is the step_type_key)
+    node_type = {n.id: n.type for n in template.nodes}
+
+    # Which (node id, target port) pairs are satisfied by an edge.
+    satisfied = set()
+    for e in template.edges:
+        if e.targetHandle is not None:
+            satisfied.add((e.target, e.targetHandle))
+
+    problems = []
+    for n in template.nodes:
+        needed = required_inputs.get(n.type, set())
+        for port_name in sorted(needed):
+            if (n.id, port_name) not in satisfied:
+                label = n.data.get("node_label") or n.type
+                problems.append(f'"{label}" is missing required input "{port_name}"')
+
+    if problems:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Workflow is incomplete and cannot be saved — every required input "
+                "must be connected to an upstream output or a data source. "
+                "Unresolved inputs: " + "; ".join(problems)
+            ),
+        )
+
+
 @app.post("/api/workflow-templates")
 def create_workflow_template(template: WorkflowTemplateCreate, db: Session = Depends(get_db)):
+    _validate_no_hanging_inputs(template, db)
+
     # 1. Get next template_id
     max_id = db.query(func.max(WorkflowTemplate.template_id)).scalar() or 0
     next_id = max_id + 1
@@ -395,6 +455,8 @@ def create_workflow_template(template: WorkflowTemplateCreate, db: Session = Dep
 
 @app.post("/api/workflow-templates/{template_id}/versions")
 def create_template_version(template_id: int, template: WorkflowTemplateCreate, db: Session = Depends(get_db)):
+    _validate_no_hanging_inputs(template, db)
+
     max_version = db.query(func.max(WorkflowTemplate.version)).filter(WorkflowTemplate.template_id == template_id).scalar() or 0
     next_version = max_version + 1
     
@@ -457,14 +519,112 @@ def create_template_version(template_id: int, template: WorkflowTemplateCreate, 
 @app.get("/api/pipeline-runs")
 def list_pipeline_runs(db: Session = Depends(get_db)):
     runs = db.query(PipelineRun).order_by(PipelineRun.created_at.desc()).all()
+    # Join the template name so the history page can show which workflow ran.
+    templates = {t.template_version_id: t.name for t in db.query(WorkflowTemplate).all()}
     return [
         {
             "run_id": r.run_id,
             "name": r.name,
             "status": r.status,
-            "created_at": r.created_at
+            "created_at": r.created_at,
+            "template_version_id": r.template_version_id,
+            "template_name": templates.get(r.template_version_id),
+            "dbos_workflow_id": r.dbos_workflow_id,
         } for r in runs
     ]
+
+
+@app.get("/api/pipeline-runs/{run_id}/detail")
+def get_pipeline_run_detail(run_id: int, db: Session = Depends(get_db)):
+    """Per-run detail by run_id: overall status + each step's status/outputs.
+    Used by the history page to show which node is running/completed/failed."""
+    from models import RunStep, WfNode
+    run = db.query(PipelineRun).filter(PipelineRun.run_id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    steps = db.query(RunStep).filter(RunStep.run_id == run_id).order_by(RunStep.run_step_id).all()
+    # Map node_id -> step_type_key for readable labels.
+    node_keys = {n.node_id: n.step_type_key for n in db.query(WfNode).filter(
+        WfNode.template_version_id == run.template_version_id).all()}
+    return {
+        "run_id": run.run_id,
+        "name": run.name,
+        "status": run.status,
+        "created_at": run.created_at,
+        "template_version_id": run.template_version_id,
+        "dbos_workflow_id": run.dbos_workflow_id,
+        "steps": [
+            {
+                "node_id": s.node_id,
+                "step_type": node_keys.get(s.node_id, "?"),
+                "status": s.status,
+                "tapis_job_uuid": s.tapis_job_uuid,
+                "tapis_job_status": s.tapis_job_status,
+                "error_message": s.error_message,
+                "outputs": s.outputs,
+            } for s in steps
+        ],
+    }
+
+@app.get("/api/pipeline-runs/{run_id}/step/{node_id}/logs")
+def get_step_logs(run_id: int, node_id: int, db: Session = Depends(get_db)):
+    """Fetch detailed failure logs for a step: the DBOS error we recorded, plus
+    the underlying Tapis job's lastMessage and its container stdout/stderr
+    (tapisjob.out). Best-effort — degrades gracefully if the token is stale or
+    the job output isn't reachable."""
+    from models import RunStep
+    import httpx as _httpx
+    from engine import tapis_auth
+
+    step = db.query(RunStep).filter(
+        RunStep.run_id == run_id, RunStep.node_id == node_id
+    ).first()
+    if not step:
+        raise HTTPException(status_code=404, detail="Step not found")
+
+    result = {
+        "node_id": node_id,
+        "status": step.status,
+        "tapis_job_uuid": step.tapis_job_uuid,
+        "tapis_job_status": step.tapis_job_status,
+        "error_message": step.error_message,   # DBOS-level error we captured
+        "tapis_last_message": None,            # Tapis' own summary of the outcome
+        "job_output": None,                    # container stdout/stderr
+        "logs_note": None,
+    }
+
+    uuid = step.tapis_job_uuid
+    if not uuid:
+        result["logs_note"] = "This step ran no Tapis job (e.g. a data source/sink), so there are no job logs."
+        return result
+
+    token = tapis_auth.get_token()
+    if not token:
+        result["logs_note"] = "No valid Tapis token configured; cannot fetch job logs."
+        return result
+
+    base = tapis_auth.TAPIS_BASE_URL
+    headers = {"X-Tapis-Token": token}
+    try:
+        jr = _httpx.get(f"{base}/v3/jobs/{uuid}", headers=headers, timeout=30)
+        if jr.status_code == 200:
+            jd = jr.json().get("result", {})
+            result["tapis_last_message"] = jd.get("lastMessage")
+            result["tapis_job_status"] = jd.get("status") or result["tapis_job_status"]
+        # Container stdout/stderr — the most useful thing for a real failure.
+        out = _httpx.get(f"{base}/v3/jobs/{uuid}/output/download/tapisjob.out",
+                         headers=headers, timeout=30)
+        if out.status_code == 200:
+            text = out.text
+            # Keep the tail — the error is almost always at the end.
+            result["job_output"] = text[-8000:] if len(text) > 8000 else text
+        else:
+            result["logs_note"] = f"Container output not available (HTTP {out.status_code})."
+    except Exception as e:
+        result["logs_note"] = f"Could not reach Tapis for logs: {type(e).__name__}"
+
+    return result
+
 
 class NodeExecutionRequest(BaseModel):
     template_version_id: int
@@ -477,6 +637,7 @@ def execute_single_node(req: NodeExecutionRequest, db: Session = Depends(get_db)
     # For now, we simulate execution
     import time
     time.sleep(1) # simulate some processing
+    print("I am in here ... LLALALALALALA !!!!!!!! GHIREKHESHISHISHISHISHISHISHISHISHI!!!!!!!!!!!!!!!")
     
     return {
         "message": "Node execution completed successfully",
@@ -530,6 +691,13 @@ class RunOptions(BaseModel):
     # and stored on the run's frozen_config. All optional; sensible defaults
     # apply when omitted (see engine.transactions.get_run_archive_context).
     slurm_account: Optional[str] = None
+    # Exec-system selection — lets a run target OSC (pitzer-tapis / ascend-tapis)
+    # or Expanse (expanse-tapis) without code changes. exec_queue is the site's
+    # queue name (OSC: cpu/gpu/nextgen; Expanse: tapisGPUshared/...). work_dir is
+    # the base scratch/project path for OSC execSystem*Dir fields.
+    exec_system: Optional[str] = None
+    exec_queue: Optional[str] = None
+    work_dir: Optional[str] = None
     archive_system: Optional[str] = None
     archive_dir: Optional[str] = None
 
@@ -547,8 +715,10 @@ def execute_workflow(template_version_id: int, options: Optional[RunOptions] = N
     are merged into the dag_config, which the orchestrator stores as frozen_config
     and the engine reads when rendering each step's Tapis job spec.
     """
+    print("I am in here ... LLALALALALALA !!!!!!!! MAMAMA .... Croquembuche!!!!!!!!!!!!!!!")
     dag_config = _build_dag_config(db, template_version_id)
 
+    print(dag_config)
     if options is not None:
         for key, value in options.model_dump(exclude_none=True).items():
             dag_config[key] = value
@@ -558,6 +728,51 @@ def execute_workflow(template_version_id: int, options: Optional[RunOptions] = N
         "message": "Workflow execution started",
         "dbos_workflow_id": handle.get_workflow_id(),
         "template_version_id": template_version_id,
+    }
+
+
+@app.post("/api/pipeline-runs/{run_id}/stop")
+def stop_pipeline_run(run_id: int, db: Session = Depends(get_db)):
+    """Stop a running pipeline run: cancel the DBOS workflow (and its child
+    node-workflows), cancel any in-flight Tapis job, and mark the run + its
+    non-terminal steps as cancelled."""
+    from models import RunStep
+    from engine.tapis import cancel_tapis_job
+
+    run = db.query(PipelineRun).filter(PipelineRun.run_id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    terminal = {"COMPLETED", "FAILED", "CANCELLED"}
+    if (run.status or "").upper() in terminal:
+        return {"message": f"Run is already {run.status}; nothing to stop.", "run_id": run_id}
+
+    # 1. Cancel the DBOS orchestrator + its child workflows (unwinds the polling loops).
+    if run.dbos_workflow_id:
+        try:
+            DBOS.cancel_workflow(run.dbos_workflow_id, cancel_children=True)
+        except Exception as e:
+            print(f"[stop] DBOS.cancel_workflow failed for {run.dbos_workflow_id}: {type(e).__name__}")
+
+    # 2. Cancel any in-flight Tapis jobs for this run's steps.
+    steps = db.query(RunStep).filter(RunStep.run_id == run_id).all()
+    cancelled_jobs = 0
+    for s in steps:
+        if s.tapis_job_uuid and (s.status or "") not in ("completed", "failed"):
+            if cancel_tapis_job(s.tapis_job_uuid):
+                cancelled_jobs += 1
+
+    # 3. Mark run + non-terminal steps as cancelled.
+    run.status = "CANCELLED"
+    for s in steps:
+        if (s.status or "") not in ("completed", "failed"):
+            s.status = "cancelled"
+    db.commit()
+
+    return {
+        "message": "Run stopped.",
+        "run_id": run_id,
+        "tapis_jobs_cancelled": cancelled_jobs,
     }
 
 
@@ -590,4 +805,9 @@ def get_workflow_run_status(dbos_workflow_id: str, format: str = "json"):
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8002, reload=True)
+    # reload spawns a child process, which breaks step debuggers (PyCharm/pdb):
+    # the debugger attaches to the parent while the app runs in the child.
+    # Default to no reload so `python main.py` is debuggable; opt back in with
+    # UVICORN_RELOAD=true for normal hot-reload dev.
+    reload = os.getenv("UVICORN_RELOAD", "false").lower() == "true"
+    uvicorn.run("main:app", host="127.0.0.1", port=8002, reload=reload)

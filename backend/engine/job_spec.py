@@ -26,12 +26,36 @@ def _sub_string(s: str, context: dict) -> str:
     return _PLACEHOLDER.sub(repl, s)
 
 
-def render(template, context: dict):
+def _render_value(template, context: dict):
     """Recursively substitute ${...} placeholders throughout a template value."""
     if isinstance(template, str):
         return _sub_string(template, context)
     if isinstance(template, dict):
-        return {k: render(v, context) for k, v in template.items()}
+        return {k: _render_value(v, context) for k, v in template.items()}
     if isinstance(template, list):
-        return [render(v, context) for v in template]
+        return [_render_value(v, context) for v in template]
     return template
+
+
+# Fields that only apply to OSC-style exec systems. When work_dir is not provided
+# (e.g. an Expanse run), we drop them so they don't render as broken paths.
+_OSC_DIR_FIELDS = ("execSystemExecDir", "execSystemInputDir", "execSystemOutputDir")
+
+
+def render(template, context: dict):
+    """Render a Tapis job template: substitute placeholders, then drop fields that
+    don't apply to the chosen exec system.
+
+    - If work_dir is empty/missing, remove the execSystem*Dir fields (OSC-only).
+    - If execSystemLogicalQueue rendered empty, drop it (let the app default apply).
+    """
+    rendered = _render_value(template, context)
+
+    if isinstance(rendered, dict):
+        if not context.get("work_dir"):
+            for f in _OSC_DIR_FIELDS:
+                rendered.pop(f, None)
+        if rendered.get("execSystemLogicalQueue", None) in ("", None):
+            rendered.pop("execSystemLogicalQueue", None)
+
+    return rendered

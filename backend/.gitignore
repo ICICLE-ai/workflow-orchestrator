@@ -10,3 +10,7 @@ __pycache__/
 
 # Mock Tapis local job state
 tapis_jobs.json
+
+# Tapis Expanse SSH credential (dedicated key — never commit)
+.tapis_expanse_key
+.tapis_expanse_key.pub

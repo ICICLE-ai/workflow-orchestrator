@@ -62,7 +62,7 @@ export default function Dashboard() {
               <Text mt="sm" c="dimmed" size="sm">
                 View execution history, logs, and outputs for all pipeline runs.
               </Text>
-              <Button variant="light" color="teal" fullWidth mt="md" radius="md">
+              <Button variant="light" color="teal" fullWidth mt="md" radius="md" onClick={() => navigate('/runs')}>
                 View History
               </Button>
             </Card>

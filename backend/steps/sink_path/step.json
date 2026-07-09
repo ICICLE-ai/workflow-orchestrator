@@ -1,0 +1,18 @@
+{
+  "step_type_key": "sink_path",
+  "display_name": "💾 Write Results (JSON)",
+  "description": "Writes a json_results output (predictions, detections, metrics) to a destination path.",
+  "category": "sink",
+  "icon": "download",
+  "inputs": [
+    { "name": "data", "type": "json_results" }
+  ],
+  "outputs": [],
+  "config_schema": {
+    "path": {
+      "type": "string",
+      "description": "Destination Tapis URI where the upstream step's output is written (e.g. tapis://pitzer-tapis/fs/ess/PAS2699/shyama/results/run1).",
+      "default": ""
+    }
+  }
+}

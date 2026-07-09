@@ -161,6 +161,27 @@ def get_node_tapis_template(node_key: str) -> dict:
 
 
 @ds.transaction(isolation_level="READ COMMITTED")
+def get_node_output_ports(node_key: str) -> list:
+    """Return the output-port names for a node's step type.
+
+    Used for source (data-provider) nodes: the engine exposes the node's
+    configured path on each of these output ports so downstream steps can
+    consume it via the connecting edge.
+    """
+    session = ds.sql_session()
+    wf_node = session.execute(
+        select(WfNode).where(WfNode.node_id == int(node_key))
+    ).scalars().one()
+    ports = session.execute(
+        select(StepTypePort).where(
+            StepTypePort.step_type_key == wf_node.step_type_key,
+            StepTypePort.direction == "output",
+        )
+    ).scalars().all()
+    return [p.port_name for p in ports]
+
+
+@ds.transaction(isolation_level="READ COMMITTED")
 def get_incoming_edges(run_id: int, node_key: str) -> list:
     """Return the edges feeding into a node, resolved to port names.
 
@@ -204,25 +225,85 @@ def get_incoming_edges(run_id: int, node_key: str) -> list:
 
 
 @ds.transaction(isolation_level="READ COMMITTED")
-def get_run_archive_context(run_id: int) -> dict:
-    """Return run-level substitution values: slurm_account + archive location.
+def get_downstream_sink_path(run_id: int, node_key: str) -> str:
+    """If this step feeds a sink node, return that sink's configured path.
 
-    For a first real run these come from the run's frozen_config (so they can be
-    passed at execute time) with safe defaults matching the legacy setup.
+    A sink node (any step type with category 'sink' — sink_path, sink_model,
+    sink_image_dir, etc.) is a data-provider in reverse: it names WHERE this
+    step's output should be written. We look for an outgoing edge to any sink
+    node and return the path from that sink's run_step.config. Returns '' if
+    there is no downstream sink.
+    """
+    session = ds.sql_session()
+    run = session.execute(
+        select(PipelineRun).where(PipelineRun.run_id == run_id)
+    ).scalars().one()
+
+    # Outgoing edges from this node.
+    edges = session.execute(
+        select(WfEdge).where(
+            WfEdge.template_version_id == run.template_version_id,
+            WfEdge.source_node_id == int(node_key),
+        )
+    ).scalars().all()
+
+    for e in edges:
+        target = session.execute(
+            select(WfNode).where(WfNode.node_id == e.target_node_id)
+        ).scalars().one()
+        step_type = session.execute(
+            select(StepTypeRegistry).where(
+                StepTypeRegistry.step_type_key == target.step_type_key
+            )
+        ).scalars().one_or_none()
+        if step_type and step_type.category == "sink":
+            sink_step = session.execute(
+                select(RunStep).where(
+                    RunStep.run_id == run_id, RunStep.node_id == target.node_id
+                )
+            ).scalars().one_or_none()
+            path = (sink_step.config or {}).get("path", "") if sink_step else ""
+            if path:
+                return path
+    return ""
+
+
+@ds.transaction(isolation_level="READ COMMITTED")
+def get_run_archive_context(run_id: int) -> dict:
+    """Return run-level substitution values for the Tapis job spec.
+
+    These come from the run's frozen_config (passed at execute time via
+    RunOptions) with safe defaults. Supports targeting different exec systems
+    (e.g. OSC pitzer-tapis vs expanse-tapis): the caller supplies exec_system,
+    exec_queue, work_dir, and archive location, which get substituted into the
+    template's ${...} placeholders (execSystemId, queue, execSystem*Dir, etc.).
+    ${JobUUID} is intentionally left in work-dir paths — it's a Tapis-side
+    variable the renderer leaves untouched.
     """
     session = ds.sql_session()
     run = session.execute(
         select(PipelineRun).where(PipelineRun.run_id == run_id)
     ).scalars().one()
     cfg = run.frozen_config or {}
-    archive_system = cfg.get("archive_system", "expanse-tapis")
+
+    exec_system = cfg.get("exec_system", "expanse-tapis")
+    exec_queue = cfg.get("exec_queue", "")
+    # Archive defaults to the exec system unless overridden.
+    archive_system = cfg.get("archive_system", exec_system)
     archive_dir = cfg.get("archive_dir", f"harvest_jobs/run-{run_id}")
+    # work_dir is the base scratch/project path for OSC-style execSystem*Dir
+    # fields; empty for systems (like Expanse) that don't need them.
+    work_dir = cfg.get("work_dir", "")
+
     return {
+        "run_id": run_id,
         "slurm_account": cfg.get("slurm_account", ""),
+        "exec_system": exec_system,
+        "exec_queue": exec_queue,
+        "work_dir": work_dir,
         "archive_system": archive_system,
         "archive_dir": archive_dir,
         "archive_uri": f"tapis://{archive_system}/{archive_dir}",
-        "run_id": run_id,
     }
 
 
