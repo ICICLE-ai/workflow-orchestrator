@@ -1,0 +1,60 @@
+{
+  "step_type_key": "class_histogram",
+  "display_name": "Class Histogram",
+  "description": "Bar chart of per-class detection counts (COCO 80) from YOLO predictions.",
+  "category": "Visualization",
+  "tapis_app_id": "class-histogram",
+  "inputs": [
+    { "name": "predictions", "type": "json_results" }
+  ],
+  "outputs": [
+    { "name": "chart", "type": "image_dir", "output_path": "chart" },
+    { "name": "counts", "type": "json_results", "output_path": "class_counts.json" }
+  ],
+  "config_schema": {
+    "title": {
+      "type": "string",
+      "description": "Chart title.",
+      "default": "Detections per class (COCO 80)"
+    },
+    "exec_queue": {
+      "type": "string",
+      "description": "Scheduler queue. This is a CPU-only job, so it defaults to a CPU queue (overrides the run-level queue).",
+      "default": "cpu"
+    }
+  },
+  "tapis_job": {
+    "name": "class-histogram",
+    "appId": "class-histogram",
+    "appVersion": "1.0",
+    "description": "Per-class detection histogram from predictions.json",
+    "execSystemId": "${exec_system}",
+    "execSystemLogicalQueue": "${exec_queue}",
+    "execSystemExecDir": "${work_dir}/new_jobs/${JobUUID}",
+    "execSystemInputDir": "${work_dir}/new_jobs/${JobUUID}",
+    "execSystemOutputDir": "${work_dir}/new_jobs/${JobUUID}/output",
+    "archiveSystemId": "${archive_system}",
+    "archiveSystemDir": "${archive_dir}",
+    "nodeCount": 1,
+    "coresPerNode": 2,
+    "memoryMB": 8000,
+    "maxMinutes": 15,
+    "fileInputs": [
+      { "name": "predictions", "autoMountLocal": true, "sourceUrl": "${predictions}", "targetPath": "data/predictions.json" }
+    ],
+    "parameterSet": {
+      "appArgs": [
+        { "name": "predictions", "arg": "--predictions /job/data/predictions.json" },
+        { "name": "output", "arg": "--output /job/output" },
+        { "name": "title", "arg": "--title '${title}'" }
+      ],
+      "containerArgs": [
+        { "name": "binding", "arg": "--bind $PWD:/job" }
+      ],
+      "schedulerOptions": [
+        { "arg": "-A ${slurm_account}", "name": "slurm account" }
+      ],
+      "archiveFilter": { "includeLaunchFiles": false }
+    }
+  }
+}

@@ -13,8 +13,9 @@ from engine.transactions import (
     update_step_inputs,
     get_node_tapis_template,
     get_node_output_ports,
+    get_node_step_type,
+    get_config_schema_defaults,
     get_incoming_edges,
-    get_downstream_sink_path,
     get_run_archive_context,
     get_run_steps_status,
     get_node_output,
@@ -22,7 +23,7 @@ from engine.transactions import (
     update_run_status,
     update_run_step_status,
 )
-from engine.tapis import TapisV3
+from engine.tapis import TapisV3, copy_tapis_path
 from engine import job_spec
 
 
@@ -35,7 +36,11 @@ def _resolve_inputs(run_id: int, node_key: str, node_config: dict) -> dict:
     upstream outputs — this is the edge-driven data flow. The node's own config
     (e.g. epochs) is merged in too, so config-derived placeholders resolve.
     """
-    resolved = dict(node_config or {})
+    # Start from config_schema defaults, then let the node's own config override
+    # them, then edge inputs override those. This ensures params the user didn't
+    # set still get their declared default (e.g. imgsz=640).
+    resolved = get_config_schema_defaults(node_key)
+    resolved.update(node_config or {})
     for edge in get_incoming_edges(run_id, node_key):
         src_outputs = get_node_output(run_id, edge["source_node_key"])
         src_port = edge["source_port"]
@@ -81,21 +86,49 @@ def _source_node_outputs(run_id: int, node_key: str, node_config: dict) -> dict:
     """
     path = (node_config or {}).get("path", "")
     outputs = {"path": path}
-    for port_name in get_node_output_ports(node_key):
-        outputs[port_name] = path
+    for port in get_node_output_ports(node_key):
+        outputs[port["name"]] = path
     return outputs
 
 
-def _derive_outputs(node_key: str, template: dict, ctx: dict, job_uuid: str) -> dict:
-    """Compute this step's output values as Tapis URIs under its archive dir.
+def _run_sink_node(run_id: int, node_key: str, node_config: dict) -> dict:
+    """Execute a sink node: copy its single incoming artifact to the user path.
 
-    Each declared output port becomes a path the next step can consume. We key
-    them by the job's archive location so downstream fileInputs resolve to real
-    produced data. (Output port names come from the rendered template's notion of
-    outputs is not present, so we expose a generic archive uri plus per-call uuid.)
+    A sink has one input fed by an upstream output port. That port already
+    resolved to a concrete Tapis URI (in _resolve_inputs, stored on run_step
+    config as the 'data' input). We copy that source path to the sink's
+    configured destination path via the Tapis Files API. This is what makes a
+    specific output (e.g. just 'predictions') land at a user-chosen location,
+    independent of where the producing step archived.
     """
-    archive_uri = ctx.get("archive_uri", "")
-    return {"archive_uri": archive_uri, "output_dir": f"{archive_uri}/output", "job_uuid": job_uuid}
+    dest = (node_config or {}).get("path", "")
+    # The resolved input value for this sink's 'data' port (set by _resolve_inputs).
+    resolved = get_step_input(run_id, node_key)  # includes resolved input ports
+    src = resolved.get("data") or resolved.get("path") or ""
+    if not src or not dest:
+        return {"path": dest, "copied": False, "note": "missing source or destination"}
+    # replace=True clears the destination first, so the sink dir reflects only
+    # this run's wired output — no residue from prior runs with older layouts.
+    ok = copy_tapis_path(src, dest, replace=True)
+    print(f"[sink] copy {src} -> {dest} (replace): {'OK' if ok else 'FAILED'}")
+    return {"path": dest, "source": src, "copied": bool(ok)}
+
+
+def _derive_outputs(run_id: str, node_key: str, ctx: dict, job_uuid: str) -> dict:
+    """Compute each output PORT's Tapis URI under this step's archive dir.
+
+    The step archived its whole job output to ctx['archive_uri']
+    (= tapis://<sys>/<workspace>/<node_id>). Each declared output port maps to a
+    specific artifact via its output_path (e.g. predictions -> predictions.json),
+    so a downstream node/sink connecting to that port gets exactly that path.
+    Ports without an output_path fall back to the whole archive dir.
+    """
+    archive_uri = (ctx.get("archive_uri") or "").rstrip("/")
+    outputs = {"archive_uri": archive_uri, "job_uuid": job_uuid}
+    for port in get_node_output_ports(node_key):
+        sub = port.get("output_path")
+        outputs[port["name"]] = f"{archive_uri}/{sub}" if sub else archive_uri
+    return outputs
 
 
 @DBOS.workflow()
@@ -110,30 +143,23 @@ def execute_node_workflow(node_key: str, run_id: int, orchestrator_workflow_id: 
     update_step_inputs(run_id, node_key, resolved)
 
     # 2. Fetch the step's Tapis job template. A step with NO template is a
-    #    "source" node (data-provider): it runs no Tapis job — it simply exposes
-    #    its configured `path` on its output port(s) for downstream steps, then
-    #    completes immediately.
+    #    data-provider/consumer node handled specially:
+    #      - source node: exposes its configured `path` on its output port(s)
+    #      - sink node:   copies its incoming artifact to its configured `path`
     template = get_node_tapis_template(node_key)
     if not template:
-        outputs = _source_node_outputs(run_id, node_key, node_config)
+        step_type = get_node_step_type(node_key)
+        if step_type and step_type.startswith("sink"):
+            outputs = _run_sink_node(run_id, node_key, node_config)
+        else:
+            outputs = _source_node_outputs(run_id, node_key, node_config)
         complete_run_step(run_id, node_key, outputs)
         DBOS.send(destination_id=orchestrator_workflow_id, message=node_key, topic="step_complete")
         return outputs
 
-    # 3. Build the substitution context and render the Tapis job spec.
-    ctx = {**get_run_archive_context(run_id), **resolved}
-
-    # If this step feeds a "Write to Path" (sink_path) node, that sink's path
-    # becomes where the step's output is archived — overriding the run-level
-    # archive location. This is how a sink node writes output to a chosen path.
-    sink_path = get_downstream_sink_path(run_id, node_key)
-    if sink_path:
-        sys_id, sub_dir = _parse_tapis_uri(sink_path)
-        if sys_id:
-            ctx["archive_system"] = sys_id
-        ctx["archive_dir"] = sub_dir
-        ctx["archive_uri"] = sink_path
-
+    # 3. Build the substitution context. The step archives to its own per-node
+    #    dir in the run workspace; per-port output paths are derived from that.
+    ctx = {**get_run_archive_context(run_id, node_key), **resolved}
     rendered = job_spec.render(template, ctx)
     rendered.setdefault("name", f"run-{run_id}-{node_key}")
 
@@ -173,8 +199,8 @@ def execute_node_workflow(node_key: str, run_id: int, orchestrator_workflow_id: 
                 raise RuntimeError(f"Tapis Job {job_uuid} failed with status: {status}")
             DBOS.sleep(3)
 
-        # 4. Record outputs (Tapis URIs) for downstream steps.
-        outputs = _derive_outputs(node_key, template, ctx, job_uuid)
+        # 4. Record each output port's path (Tapis URI) for downstream steps.
+        outputs = _derive_outputs(run_id, node_key, ctx, job_uuid)
         complete_run_step(run_id, node_key, outputs)
 
         DBOS.send(destination_id=orchestrator_workflow_id, message=node_key, topic="step_complete")

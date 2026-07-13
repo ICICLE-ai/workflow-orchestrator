@@ -97,3 +97,88 @@ def cancel_tapis_job(job_uuid: str) -> bool:
     except Exception as e:
         print(f"[tapis] cancel_tapis_job {job_uuid} failed: {type(e).__name__}")
         return False
+
+
+def _split_uri(uri: str):
+    """tapis://system/abs/path -> (system, /abs/path). Bare path -> (None, path)."""
+    if uri.startswith("tapis://"):
+        rest = uri[len("tapis://"):]
+        sys_id, _, path = rest.partition("/")
+        return sys_id, "/" + path
+    return None, uri
+
+
+def _clear_tapis_dir_contents(sys_id: str, dir_path: str, headers: dict) -> None:
+    """Delete every child of a destination directory, leaving the dir itself.
+
+    Used to make a sink destination reflect ONLY the current run's wired output:
+    stale artifacts from prior runs (which may have used a different output
+    layout) are removed before the fresh copy lands. We delete the dir's
+    *contents* rather than the dir node so its existence/permissions/parent
+    linkage survive. If the dir doesn't exist yet, listing 404s and we no-op.
+    """
+    base = tapis_auth.TAPIS_BASE_URL
+    list_url = f"{base}/v3/files/ops/{sys_id}{dir_path}"
+    try:
+        r = httpx.get(list_url, headers=headers, timeout=60)
+    except Exception as e:
+        print(f"[tapis] clear-dir list error {dir_path}: {type(e).__name__}")
+        return
+    if r.status_code == 404:
+        return  # nothing there yet — clean by definition
+    if r.status_code != 200:
+        print(f"[tapis] clear-dir list HTTP {r.status_code}: {r.text[:150]}")
+        return
+    for item in r.json().get("result", []):
+        name = item.get("name")
+        if not name or name in (".", ".."):
+            continue
+        child = f"{dir_path.rstrip('/')}/{name}"
+        try:
+            d = httpx.delete(f"{base}/v3/files/ops/{sys_id}{child}",
+                             headers=headers, timeout=120)
+            if d.status_code not in (200, 204):
+                print(f"[tapis] clear-dir delete {name} HTTP {d.status_code}")
+        except Exception as e:
+            print(f"[tapis] clear-dir delete {name} error: {type(e).__name__}")
+
+
+@DBOS.step()
+def copy_tapis_path(src_uri: str, dest_uri: str, replace: bool = False) -> bool:
+    """Copy a file or directory from src to dest via the Tapis Files API.
+
+    Used by sink nodes to place a specific upstream artifact at a user-chosen
+    path. Same-system copy (both on the same Tapis storage system) uses the
+    Files ops COPY operation. Returns True on success. A DBOS step so the copy
+    is recorded durably and not repeated on recovery.
+
+    When ``replace`` is True, the destination directory's existing contents are
+    cleared first, so the sink reflects ONLY this run's wired output (no residue
+    from earlier runs that may have used a different output layout).
+    """
+    if not _use_real():
+        print(f"[tapis] (mock) copy {src_uri} -> {dest_uri}{' (replace)' if replace else ''}")
+        return True
+    src_sys, src_path = _split_uri(src_uri)
+    dest_sys, dest_path = _split_uri(dest_uri)
+    token = tapis_auth.get_token()
+    headers = {"X-Tapis-Token": token, "Content-Type": "application/json"}
+    try:
+        # Ensure the destination parent exists (COPY needs a valid target dir).
+        parent = dest_path.rsplit("/", 1)[0] or "/"
+        httpx.post(f"{tapis_auth.TAPIS_BASE_URL}/v3/files/ops/{dest_sys}{parent}",
+                   json={"path": parent}, headers=headers, timeout=60)  # mkdir (idempotent)
+        if replace:
+            # Wipe the destination dir's contents so only this run's output remains.
+            _clear_tapis_dir_contents(dest_sys, dest_path, headers)
+        # Same-system COPY.
+        url = f"{tapis_auth.TAPIS_BASE_URL}/v3/files/ops/{src_sys}{src_path}"
+        resp = httpx.put(url, json={"operation": "COPY", "newPath": dest_path},
+                         headers=headers, timeout=300)
+        if resp.status_code == 200:
+            return True
+        print(f"[tapis] copy failed HTTP {resp.status_code}: {resp.text[:200]}")
+        return False
+    except Exception as e:
+        print(f"[tapis] copy_tapis_path error: {type(e).__name__}: {e}")
+        return False

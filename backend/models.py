@@ -68,6 +68,10 @@ class StepTypePort(Base):
     data_type = Column(String, ForeignKey('port_data_type.type_key'), nullable=False)
     is_required = Column(Boolean, default=True)
     description = Column(String, default='')
+    # For OUTPUT ports: the artifact's subpath within the step's job output dir
+    # (e.g. 'predictions.json' or 'annotated'). Lets a step expose multiple
+    # distinct outputs, each routable to its own downstream node / sink.
+    output_path = Column(String, default=None)
 
     __table_args__ = (
         UniqueConstraint('step_type_key', 'port_name', 'direction', name='uix_step_port'),

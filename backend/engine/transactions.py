@@ -161,12 +161,42 @@ def get_node_tapis_template(node_key: str) -> dict:
 
 
 @ds.transaction(isolation_level="READ COMMITTED")
-def get_node_output_ports(node_key: str) -> list:
-    """Return the output-port names for a node's step type.
+def get_node_step_type(node_key: str) -> str:
+    """Return a node's step_type_key (e.g. 'sink_path', 'yolo_inference')."""
+    session = ds.sql_session()
+    wf_node = session.execute(
+        select(WfNode).where(WfNode.node_id == int(node_key))
+    ).scalars().one()
+    return wf_node.step_type_key
 
-    Used for source (data-provider) nodes: the engine exposes the node's
-    configured path on each of these output ports so downstream steps can
-    consume it via the connecting edge.
+
+@ds.transaction(isolation_level="READ COMMITTED")
+def get_config_schema_defaults(node_key: str) -> dict:
+    """Return {param: default} for the node's step-type config_schema.
+
+    Applied so a config param the user didn't set still gets its declared default
+    (e.g. imgsz=640), rather than rendering to an empty ${imgsz} and breaking the
+    job's arg parsing."""
+    session = ds.sql_session()
+    wf_node = session.execute(
+        select(WfNode).where(WfNode.node_id == int(node_key))
+    ).scalars().one()
+    step_type = session.execute(
+        select(StepTypeRegistry).where(
+            StepTypeRegistry.step_type_key == wf_node.step_type_key
+        )
+    ).scalars().one_or_none()
+    schema = (step_type.config_schema or {}) if step_type else {}
+    return {k: v.get("default") for k, v in schema.items() if isinstance(v, dict) and "default" in v}
+
+
+@ds.transaction(isolation_level="READ COMMITTED")
+def get_node_output_ports(node_key: str) -> list:
+    """Return this node's output ports as {name, output_path} dicts.
+
+    output_path is the artifact's subpath within the step's job output dir
+    (e.g. 'predictions.json'); None for source nodes / single-artifact steps.
+    Used to expose each output port's specific path to downstream nodes/sinks.
     """
     session = ds.sql_session()
     wf_node = session.execute(
@@ -178,7 +208,7 @@ def get_node_output_ports(node_key: str) -> list:
             StepTypePort.direction == "output",
         )
     ).scalars().all()
-    return [p.port_name for p in ports]
+    return [{"name": p.port_name, "output_path": p.output_path} for p in ports]
 
 
 @ds.transaction(isolation_level="READ COMMITTED")
@@ -269,16 +299,19 @@ def get_downstream_sink_path(run_id: int, node_key: str) -> str:
 
 
 @ds.transaction(isolation_level="READ COMMITTED")
-def get_run_archive_context(run_id: int) -> dict:
-    """Return run-level substitution values for the Tapis job spec.
+def get_run_archive_context(run_id: int, node_key: str = None) -> dict:
+    """Return substitution values for a step's Tapis job spec.
 
-    These come from the run's frozen_config (passed at execute time via
-    RunOptions) with safe defaults. Supports targeting different exec systems
-    (e.g. OSC pitzer-tapis vs expanse-tapis): the caller supplies exec_system,
-    exec_queue, work_dir, and archive location, which get substituted into the
-    template's ${...} placeholders (execSystemId, queue, execSystem*Dir, etc.).
-    ${JobUUID} is intentionally left in work-dir paths — it's a Tapis-side
-    variable the renderer leaves untouched.
+    Exec-system values come from frozen_config (RunOptions). For OUTPUT location
+    we use a per-run workspace so every step's artifacts are isolated and
+    downstream steps can find them deterministically:
+
+        workspace = <work_dir>/wf_runs/<run_id>            (on the exec/archive system)
+        this step archives to  <workspace>/<node_id>
+
+    The archive dir is derived per-node — never supplied via run options. A run
+    can move the workspace base by setting frozen_config['work_dir']. ${JobUUID}
+    in exec-dir paths is left for Tapis to fill.
     """
     session = ds.sql_session()
     run = session.execute(
@@ -288,12 +321,16 @@ def get_run_archive_context(run_id: int) -> dict:
 
     exec_system = cfg.get("exec_system", "expanse-tapis")
     exec_queue = cfg.get("exec_queue", "")
-    # Archive defaults to the exec system unless overridden.
     archive_system = cfg.get("archive_system", exec_system)
-    archive_dir = cfg.get("archive_dir", f"harvest_jobs/run-{run_id}")
-    # work_dir is the base scratch/project path for OSC-style execSystem*Dir
-    # fields; empty for systems (like Expanse) that don't need them.
     work_dir = cfg.get("work_dir", "")
+
+    # Per-run workspace, then per-node archive dir within it. The archive
+    # location is always derived here (never taken from run options) so every
+    # step's output is isolated and downstream steps can find it deterministically.
+    ws_base = (work_dir.rstrip("/") + "/wf_runs") if work_dir else "wf_runs"
+    workspace = f"{ws_base}/{run_id}"
+    # Per-node dir for a specific step; the workspace root when no node is given.
+    archive_dir = f"{workspace}/{node_key}" if node_key is not None else workspace
 
     return {
         "run_id": run_id,
@@ -301,9 +338,11 @@ def get_run_archive_context(run_id: int) -> dict:
         "exec_system": exec_system,
         "exec_queue": exec_queue,
         "work_dir": work_dir,
+        "workspace": workspace,
         "archive_system": archive_system,
         "archive_dir": archive_dir,
-        "archive_uri": f"tapis://{archive_system}/{archive_dir}",
+        # Avoid a double slash when archive_dir is absolute (starts with '/').
+        "archive_uri": f"tapis://{archive_system}/{archive_dir.lstrip('/')}",
     }
 
 

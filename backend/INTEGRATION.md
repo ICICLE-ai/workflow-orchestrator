@@ -328,3 +328,59 @@ Note: after rebuilding the sif, REGENERATE the postit and PATCH the app's
 containerImage to the new redeem URL (postits can cache old content):
   POST /v3/files/postits/<sys>/<sifpath>   -> new redeemUrl
   PATCH /v3/apps/yolo-inference/1.0  {"containerImage": <new redeemUrl>}
+
+## ✅ MULTI-OUTPUT + NODE-TO-NODE + PER-PORT SINK — verified end-to-end (2026-07-11)
+
+Workflow (template 31): source_image_dir + source_model -> yolo_inference
+-> [predictions] -> class_histogram -> sink_image_dir. Ran COMPLETED on OSC.
+
+Proved ALL of the requested design:
+- Multi-output step: yolo_inference declares 3 output ports (predictions.json,
+  summary.json, annotated/), each mapped to its own artifact via `output_path`.
+- Node-to-node flow WITHOUT a sink between: 'predictions' fed class_histogram
+  directly. Intermediate outputs live in the per-run workspace
+  /fs/ess/PAS2699/shyama/wf_runs/<run_id>/<node_id>/; the downstream step's
+  fileInput sourceUrl resolves to that exact path (e.g. .../<yolo_node>/predictions.json).
+- Two outputs left hanging: 'summary' and 'annotations' stayed in the yolo
+  workspace, unconsumed — no error.
+- Per-port sink: class_histogram's 'chart' output (image_dir) -> sink copies it to
+  the user path /users/PAS2699/shyama02/viz_output. Verified: class_histogram.png
+  (2400x960) + class_counts.json landed there. Counts: person 2, horse 2,
+  elephant 2, umbrella 1, cell phone 1.
+
+New Tapis app: class-histogram v1.0 (matplotlib, CPU). jobs/class_histogram/.
+
+Two bugs fixed to get here:
+1. config_schema DEFAULTS weren't applied — a param the user omitted (imgsz)
+   rendered as empty ${imgsz} and broke argparse. Now _resolve_inputs seeds from
+   get_config_schema_defaults() (defaults < node config < edge inputs).
+2. Per-step QUEUE: a CPU-only step inheriting the run's exec_queue=gpu hit Slurm
+   'QOSMinGRES' (gpu partition requires a GPU). A step can now set exec_queue in
+   its config_schema (default overrides the run-level queue); class_histogram
+   defaults to 'cpu'.
+
+Also: input paths on OSC were moved by the user (coco8-multispectral/yolo26n ->
+my_new_images/my_new_model); source-node paths just point at the new locations.
+
+## OUTPUT-PORT CONTRACT — enforced (2026-07-11)
+
+RULE (so complex graphs stay consistent): each declared output PORT maps to
+exactly one artifact of its declared type. A step with >1 output must give each
+port a distinct, non-empty `output_path`; no two ports may share a path; a
+`*_dir` port must be a directory of ONLY that type, a scalar type a single file.
+
+Enforcement: main.py `validate_step_output_contract()` runs in the sync. A
+step.json that violates the contract is SKIPPED (logged, not registered) so it
+can't corrupt downstream edge routing.
+
+Fixed to comply:
+- class_histogram: was 1 output 'chart'(image_dir) but wrote BOTH a PNG and a
+  JSON into it (mixed types). Now TWO ports: chart(image_dir -> chart/, images
+  only) + counts(json_results -> class_counts.json). Script writes PNG into
+  chart/ and the JSON separately. >> class_histogram.sif MUST BE REBUILT on OSC
+  (script changed) before re-running.
+- training: 2 outputs (model, metrics) both had empty output_path (would
+  collide). Now model->'model', metrics->'metrics.json'.
+
+Negative-tested: validator rejects (a) multi-output with empty paths and
+(b) two ports sharing a path; passes valid multi/single-output configs.

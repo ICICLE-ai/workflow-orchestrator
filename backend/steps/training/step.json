@@ -8,8 +8,8 @@
     { "name": "dataset", "type": "image_dir" }
   ],
   "outputs": [
-    { "name": "model", "type": "pytorch_model" },
-    { "name": "metrics", "type": "json_results" }
+    { "name": "model", "type": "pytorch_model", "output_path": "model" },
+    { "name": "metrics", "type": "json_results", "output_path": "metrics.json" }
   ],
   "config_schema": {
     "epochs": {

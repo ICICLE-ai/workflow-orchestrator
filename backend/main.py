@@ -68,14 +68,62 @@ def _delete_port_with_dependents(db: Session, port):
     db.delete(port)
 
 
+def validate_step_output_contract(data: dict) -> list:
+    """Enforce the output-port contract so complex graphs stay consistent.
+
+    Each output port must map to exactly ONE artifact of its declared type:
+      - A step with MORE THAN ONE output port must give each a distinct,
+        non-empty `output_path` (so ports don't collide on the same location).
+      - No two output ports may share an `output_path`.
+      - A single-file (scalar) output type SHOULD point at a file path, and a
+        directory type (`*_dir`) at a directory — we warn but don't hard-fail on
+        this heuristic since some containers legitimately vary.
+
+    Returns a list of hard-error strings (empty == valid). Steps that fail are
+    skipped by the sync so a broken definition never enters the registry.
+    """
+    outs = data.get("outputs", []) or []
+    errors = []
+    paths = [o.get("output_path") for o in outs]
+
+    if len(outs) > 1:
+        for o in outs:
+            if not o.get("output_path"):
+                errors.append(
+                    f"output port '{o.get('name')}' has no output_path — a step with "
+                    f"multiple outputs must give each its own distinct output_path")
+        non_empty = [p for p in paths if p]
+        if len(set(non_empty)) != len(non_empty):
+            errors.append("two or more output ports share the same output_path")
+
+    # A path may not be shared even across a mix of empty/non-empty.
+    seen = {}
+    for o in outs:
+        p = o.get("output_path")
+        if p and p in seen:
+            errors.append(f"output ports '{seen[p]}' and '{o.get('name')}' share output_path '{p}'")
+        if p:
+            seen[p] = o.get("name")
+    return errors
+
+
 def sync_step_registry(db: Session):
     print("Syncing step registry from JSON files...")
     step_files = glob.glob(os.path.join(os.path.dirname(__file__), "steps", "*", "step.json"))
     for file_path in step_files:
         with open(file_path, "r") as f:
             data = json.load(f)
-            
+
         step_key = data["step_type_key"]
+
+        # Enforce the output-port contract; skip steps that violate it so a
+        # broken definition can't corrupt downstream edge routing.
+        contract_errors = validate_step_output_contract(data)
+        if contract_errors:
+            print(f"  ✗ SKIPPING step '{step_key}' — invalid output contract:")
+            for e in contract_errors:
+                print(f"      - {e}")
+            continue
         
         # Upsert Registry entry (always safe)
         registry_entry = db.query(StepTypeRegistry).filter_by(step_type_key=step_key).first()
@@ -112,6 +160,7 @@ def sync_step_registry(db: Session):
                 json_ports[(p["name"], direction)] = {
                     "type": p["type"],
                     "required": p.get("required", True),
+                    "output_path": p.get("output_path"),
                 }
 
         try:
@@ -132,12 +181,15 @@ def sync_step_registry(db: Session):
                         step_type_key=step_key, port_name=port_name,
                         data_type=spec["type"], direction=direction,
                         is_required=spec["required"],
+                        output_path=spec.get("output_path"),
                     ))
                 else:
                     if existing.data_type != spec["type"]:
                         existing.data_type = spec["type"]
                     if existing.is_required != spec["required"]:
                         existing.is_required = spec["required"]
+                    if existing.output_path != spec.get("output_path"):
+                        existing.output_path = spec.get("output_path")
 
             db.commit()
         except Exception as e:
@@ -265,7 +317,6 @@ def get_port_data_types(db: Session = Depends(get_db)):
 @app.get("/api/workflow-templates")
 def list_workflow_templates(db: Session = Depends(get_db)):
     # Group by template_id to get the latest version of each template
-    print("I am in here ... LLALALALALALA !!!!!!!! SHIRORORORORORO!!!!!!!!!!!!!!!")
     subquery = db.query(
         WorkflowTemplate.template_id,
         func.max(WorkflowTemplate.version).label("max_version")
@@ -309,7 +360,6 @@ def get_workflow_template_history(template_id: int, db: Session = Depends(get_db
 
 @app.get("/api/workflow-templates/{template_version_id}")
 def get_workflow_template(template_version_id: int, db: Session = Depends(get_db)):
-    print("I am in here ... LLALALALALALA !!!!!!!! RHORHRORHRORHRORHRORHRORHRORHRORHRO!!!!!!!!!!!!!!!")
     template = db.query(WorkflowTemplate).filter(WorkflowTemplate.template_version_id == template_version_id).first()
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
@@ -637,8 +687,7 @@ def execute_single_node(req: NodeExecutionRequest, db: Session = Depends(get_db)
     # For now, we simulate execution
     import time
     time.sleep(1) # simulate some processing
-    print("I am in here ... LLALALALALALA !!!!!!!! GHIREKHESHISHISHISHISHISHISHISHISHI!!!!!!!!!!!!!!!")
-    
+
     return {
         "message": "Node execution completed successfully",
         "node_id": req.node_id,
@@ -699,7 +748,6 @@ class RunOptions(BaseModel):
     exec_queue: Optional[str] = None
     work_dir: Optional[str] = None
     archive_system: Optional[str] = None
-    archive_dir: Optional[str] = None
 
 
 @app.post("/api/pipeline-runs/{template_version_id}/execute")
@@ -711,14 +759,12 @@ def execute_workflow(template_version_id: int, options: Optional[RunOptions] = N
     the status endpoint. The pipeline_run row (with dbos_workflow_id) is created
     inside the orchestrator's first transaction.
 
-    Optional run-level Tapis values (slurm_account, archive_system, archive_dir)
+    Optional run-level Tapis values (slurm_account, archive_system, work_dir, …)
     are merged into the dag_config, which the orchestrator stores as frozen_config
-    and the engine reads when rendering each step's Tapis job spec.
+    and the engine reads when rendering each step's Tapis job spec. The per-step
+    archive location is derived automatically (work_dir/wf_runs/<run_id>/<node>).
     """
-    print("I am in here ... LLALALALALALA !!!!!!!! MAMAMA .... Croquembuche!!!!!!!!!!!!!!!")
     dag_config = _build_dag_config(db, template_version_id)
-
-    print(dag_config)
     if options is not None:
         for key, value in options.model_dump(exclude_none=True).items():
             dag_config[key] = value

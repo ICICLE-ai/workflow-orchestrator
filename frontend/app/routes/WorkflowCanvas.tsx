@@ -134,7 +134,6 @@ function Flow() {
     exec_system: 'pitzer-tapis',
     exec_queue: 'gpu',
     work_dir: '/fs/ess/PAS2699/shyama',
-    archive_dir: '/fs/ess/PAS2699/shyama/harvest_jobs/ui-run',
     archive_system: 'pitzer-tapis',
     slurm_account: 'PAS2699',
   });
@@ -643,12 +642,6 @@ function Flow() {
             description="Where step outputs are archived (unless a sink node overrides it)"
             value={runOptions.archive_system}
             onChange={(e) => setRunOptions({ ...runOptions, archive_system: e.currentTarget.value })}
-          />
-          <TextInput
-            label="Archive dir"
-            description="Absolute path for run output (must be under your project space)"
-            value={runOptions.archive_dir}
-            onChange={(e) => setRunOptions({ ...runOptions, archive_dir: e.currentTarget.value })}
           />
           <Button color="green" fullWidth mt="md" leftSection={<IconPlayerPlay size={16} />} onClick={handleRun}>
             Launch Run

@@ -9,7 +9,9 @@
     { "name": "model", "type": "pytorch_model" }
   ],
   "outputs": [
-    { "name": "predictions", "type": "json_results" }
+    { "name": "predictions", "type": "json_results", "output_path": "predictions.json" },
+    { "name": "summary", "type": "json_results", "output_path": "summary.json" },
+    { "name": "annotations", "type": "image_dir", "output_path": "annotated" }
   ],
   "config_schema": {
     "conf": {
