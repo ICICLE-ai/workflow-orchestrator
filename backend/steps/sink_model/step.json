@@ -1,0 +1,18 @@
+{
+  "step_type_key": "sink_model",
+  "display_name": "💾 Write Model",
+  "description": "Writes a trained model (pytorch_model) output to a destination path.",
+  "category": "sink",
+  "icon": "download",
+  "inputs": [
+    { "name": "data", "type": "pytorch_model" }
+  ],
+  "outputs": [],
+  "config_schema": {
+    "path": {
+      "type": "string",
+      "description": "Destination Tapis URI where the model is written (e.g. tapis://pitzer-tapis/fs/ess/PAS2699/shyama/models/run1).",
+      "default": ""
+    }
+  }
+}

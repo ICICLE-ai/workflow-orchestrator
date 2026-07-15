@@ -1,0 +1,48 @@
+Bootstrap: docker
+From: pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime
+
+%files
+    yolo_infer.py /app/yolo_infer.py
+    requirements.txt /app/requirements.txt
+
+%environment
+    export PATH="/usr/local/bin:/app:$PATH"
+    export LC_ALL=C.UTF-8
+    export LANG=C.UTF-8
+    # Ultralytics writes config/cache to $HOME; point it somewhere writable in-job.
+    export YOLO_CONFIG_DIR=/tmp/ultralytics
+    export MPLCONFIGDIR=/tmp/mpl
+
+%post
+    echo "Setting up environment for yolo_infer.py"
+    apt-get update
+    echo "Installing libGL and common X11/graphics dependencies for OpenCV..."
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        git \
+        libgl1-mesa-glx \
+        libglib2.0-0 \
+        libxext6 \
+        libxrender1 \
+        libfontconfig1 \
+        libsm6 \
+        libice6
+    rm -rf /var/lib/apt/lists/*
+    echo "Installing required Python packages"
+    cd /app
+    python3 -m pip install --upgrade pip
+    pip install --no-cache-dir -r requirements.txt
+    echo "Python dependencies installed."
+    chmod 755 /app/yolo_infer.py
+    echo "Setup complete."
+
+%runscript
+    echo "yolo_infer.py"
+    cd /app
+    python3 yolo_infer.py "$@"
+
+%labels
+    Maintainer "Shyama Arunachalam <arunachalam.31@osu.edu>"
+    Version "1.0"
+    Appname "YOLO Inference"
+    Description "Ultralytics YOLO object detection over an image directory; paths passed as args"

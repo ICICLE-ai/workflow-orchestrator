@@ -1,0 +1,34 @@
+Bootstrap: docker
+From: python:3.12-bullseye
+
+%files
+    class_histogram.py /app/class_histogram.py
+    requirements.txt /app/requirements.txt
+
+%environment
+    export PATH="/usr/local/bin:/app:$PATH"
+    export LC_ALL=C.UTF-8
+    export LANG=C.UTF-8
+    export MPLCONFIGDIR=/tmp/mpl
+
+%post
+    echo "Setting up environment for class_histogram.py"
+    apt-get update
+    apt-get install -y --no-install-recommends ca-certificates
+    rm -rf /var/lib/apt/lists/*
+    cd /app
+    python3 -m pip install --upgrade pip
+    pip install --no-cache-dir -r requirements.txt
+    chmod 755 /app/class_histogram.py
+    echo "Setup complete."
+
+%runscript
+    echo "class_histogram.py"
+    cd /app
+    python3 class_histogram.py "$@"
+
+%labels
+    Maintainer "Shyama Arunachalam <arunachalam.31@osu.edu>"
+    Version "1.0"
+    Appname "Class Histogram"
+    Description "Bar chart of per-class detection counts (COCO 80) from a YOLO predictions.json"

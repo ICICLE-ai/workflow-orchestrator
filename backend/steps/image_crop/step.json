@@ -1,0 +1,57 @@
+{
+  "step_type_key": "image_crop",
+  "display_name": "Image Crop",
+  "description": "Crops a directory of images, applying perspective correction.",
+  "category": "Data Pre-processing",
+  "icon": "crop",
+  "tapis_app_id": "image-extract-perspective-4",
+  "inputs": [
+    { "name": "images", "type": "image_dir" }
+  ],
+  "outputs": [
+    { "name": "cropped_images", "type": "image_dir" }
+  ],
+  "config_schema": {
+    "crop_width": {
+      "type": "int",
+      "description": "Target crop width in pixels.",
+      "default": 640
+    },
+    "crop_height": {
+      "type": "int",
+      "description": "Target crop height in pixels.",
+      "default": 480
+    }
+  },
+  "tapis_job": {
+    "name": "image-extract-perspective",
+    "appId": "image-extract-perspective-4",
+    "appVersion": "1.0.0",
+    "description": "Crop images with perspective correction",
+    "execSystemId": "expanse-tapis",
+    "execSystemLogicalQueue": "tapisGPUshared",
+    "archiveSystemId": "${archive_system}",
+    "archiveSystemDir": "${archive_dir}",
+    "nodeCount": 1,
+    "coresPerNode": 4,
+    "memoryMB": 16000,
+    "maxMinutes": 120,
+    "fileInputs": [
+      { "name": "images", "envKey": "images", "autoMountLocal": true, "sourceUrl": "${images}", "targetPath": "input" }
+    ],
+    "parameterSet": {
+      "schedulerOptions": [
+        { "name": "slurm account", "arg": "-A ${slurm_account}" },
+        { "name": "job name", "arg": "--job-name=image-crop" }
+      ],
+      "containerArgs": [
+        { "name": "binding", "arg": "--bind $PWD/output:/output" }
+      ],
+      "envVariables": [
+        { "key": "CROP_WIDTH", "value": "${crop_width}" },
+        { "key": "CROP_HEIGHT", "value": "${crop_height}" }
+      ],
+      "archiveFilter": { "includeLaunchFiles": false }
+    }
+  }
+}

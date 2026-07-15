@@ -1,0 +1,10 @@
+*.md
+*.txt
+*.svg
+*.png
+*.jpg
+*.css
+*.html
+.*
+package.json
+package-lock.json

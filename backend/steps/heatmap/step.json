@@ -1,0 +1,90 @@
+{
+  "step_type_key": "heatmap",
+  "display_name": "Heatmap Generation",
+  "description": "Generates a spatial heatmap (residue/weed density) from results + imagery.",
+  "category": "Visualization",
+  "icon": "map",
+  "tapis_app_id": "harvest-Custom-Shapefile-gupta1543",
+  "inputs": [
+    { "name": "results", "type": "json_results" },
+    { "name": "images", "type": "image_dir", "required": false }
+  ],
+  "outputs": [
+    { "name": "heatmap", "type": "heatmap_image" }
+  ],
+  "config_schema": {
+    "grid_width": {
+      "type": "int",
+      "description": "Number of grid cells across the width.",
+      "default": 30
+    },
+    "grid_height": {
+      "type": "int",
+      "description": "Number of grid cells across the height.",
+      "default": 30
+    },
+    "spray_mode": {
+      "type": "string",
+      "description": "Spray output mode (e.g. binary or graduated).",
+      "default": "binary"
+    },
+    "generator_mode": {
+      "type": "string",
+      "description": "Heatmap source mode: 'detection' (use images) or 'results'.",
+      "default": "detection"
+    },
+    "fov_width_ft": {
+      "type": "float",
+      "description": "Camera field-of-view width in feet.",
+      "default": 29.0
+    },
+    "fov_height_ft": {
+      "type": "float",
+      "description": "Camera field-of-view height in feet.",
+      "default": 22.0
+    }
+  },
+  "tapis_job": {
+    "name": "harvest-heatmap",
+    "appId": "harvest-Custom-Shapefile-gupta1543",
+    "appVersion": "1.0.0",
+    "description": "Generate spatial heatmap from results",
+    "execSystemId": "expanse-tapis",
+    "execSystemLogicalQueue": "tapisShared",
+    "archiveSystemId": "${archive_system}",
+    "archiveSystemDir": "${archive_dir}",
+    "nodeCount": 1,
+    "coresPerNode": 12,
+    "memoryMB": 8192,
+    "maxMinutes": 200,
+    "fileInputs": [
+      { "name": "results", "envKey": "results", "autoMountLocal": true, "sourceUrl": "${results}", "targetPath": "input/results.json" },
+      { "name": "images", "envKey": "images", "autoMountLocal": true, "sourceUrl": "${images}", "targetPath": "input/images" }
+    ],
+    "parameterSet": {
+      "appArgs": [
+        { "name": "grid width", "arg": "--grid-width" },
+        { "name": "grid width value", "arg": "${grid_width}" },
+        { "name": "grid height", "arg": "--grid-height" },
+        { "name": "grid height value", "arg": "${grid_height}" },
+        { "name": "spray mode", "arg": "--spray-mode" },
+        { "name": "spray mode value", "arg": "${spray_mode}" }
+      ],
+      "schedulerOptions": [
+        { "name": "slurm account", "arg": "-A ${slurm_account}" },
+        { "name": "job name", "arg": "--job-name=heatmap-gen" },
+        { "name": "cpu cores", "arg": "--cpus-per-task=10" }
+      ],
+      "containerArgs": [
+        { "name": "binding", "arg": "--bind $PWD/output:/output" }
+      ],
+      "envVariables": [
+        { "key": "OMP_NUM_THREADS", "value": "10" },
+        { "key": "MKL_NUM_THREADS", "value": "10" },
+        { "key": "FOV_WIDTH_FT", "value": "${fov_width_ft}" },
+        { "key": "FOV_HEIGHT_FT", "value": "${fov_height_ft}" }
+      ],
+      "archiveFilter": { "includeLaunchFiles": false }
+    }
+  }
+}

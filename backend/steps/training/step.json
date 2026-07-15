@@ -1,0 +1,65 @@
+{
+  "step_type_key": "training",
+  "display_name": "Model Training",
+  "description": "Trains a machine learning model on the provided dataset.",
+  "category": "Training",
+  "tapis_app_id": "harvest-train",
+  "inputs": [
+    { "name": "dataset", "type": "image_dir" }
+  ],
+  "outputs": [
+    { "name": "model", "type": "pytorch_model", "output_path": "model" },
+    { "name": "metrics", "type": "json_results", "output_path": "metrics.json" }
+  ],
+  "config_schema": {
+    "epochs": {
+      "type": "int",
+      "description": "Number of full passes through the training dataset.",
+      "default": 50
+    },
+    "learning_rate": {
+      "type": "float",
+      "description": "Step size at each iteration while moving toward a minimum of a loss function.",
+      "default": 0.001
+    },
+    "batch_size": {
+      "type": "int",
+      "description": "Number of training examples utilized in one iteration.",
+      "default": 32
+    }
+  },
+  "tapis_job": {
+    "name": "harvest-training",
+    "appId": "harvest-train",
+    "appVersion": "0.2.6",
+    "description": "Harvest model training",
+    "execSystemId": "${exec_system}",
+    "execSystemLogicalQueue": "${exec_queue}",
+    "execSystemExecDir": "${work_dir}/new_jobs/${JobUUID}",
+    "execSystemInputDir": "${work_dir}/new_jobs/${JobUUID}",
+    "execSystemOutputDir": "${work_dir}/new_jobs/${JobUUID}/output",
+    "archiveSystemId": "${archive_system}",
+    "archiveSystemDir": "${archive_dir}",
+    "nodeCount": 1,
+    "coresPerNode": 16,
+    "memoryMB": 92160,
+    "maxMinutes": 300,
+    "fileInputs": [
+      { "name": "dataset", "envKey": "dataset", "autoMountLocal": true, "sourceUrl": "${dataset}", "targetPath": "dataset" },
+      { "name": "workdir", "envKey": "workdir", "autoMountLocal": true, "sourceUrl": "${archive_uri}", "targetPath": "workingdir" }
+    ],
+    "parameterSet": {
+      "schedulerOptions": [
+        { "arg": "--gpus 4", "name": "number of gpus" },
+        { "arg": "-A ${slurm_account}", "name": "slurm account" }
+      ],
+      "envVariables": [
+        { "key": "PREPROCESS_WORKING_DIR", "value": "$PWD/workingdir" },
+        { "key": "DATASET_DIR", "value": "$PWD/dataset" },
+        { "key": "TRAINER_PARAMS", "value": "/app/ssl_trainer.py --task classification --dataset /app/workingdir --epoch ${epochs} --lr ${learning_rate} --batch ${batch_size}" },
+        { "key": "PPN", "value": "$SLURM_GPUS_ON_NODE" }
+      ],
+      "archiveFilter": { "includeLaunchFiles": false }
+    }
+  }
+}

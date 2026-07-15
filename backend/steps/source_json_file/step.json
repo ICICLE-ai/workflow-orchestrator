@@ -1,0 +1,18 @@
+{
+  "step_type_key": "source_json_file",
+  "display_name": "📄 JSON File",
+  "description": "Provides a path to a JSON file as input to the pipeline.",
+  "category": "source",
+  "icon": "file-text",
+  "inputs": [],
+  "outputs": [
+    { "name": "json_data", "type": "json_results" }
+  ],
+  "config_schema": {
+    "path": {
+      "type": "string",
+      "description": "Path or Tapis URI to the JSON file (e.g. tapis://storage-system/data/annotations.json)",
+      "default": ""
+    }
+  }
+}

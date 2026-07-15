@@ -1,0 +1,12 @@
+# macOS
+.DS_Store
+
+# IDE / editor
+.idea/
+
+# Local reference copies of the legacy codebase (not part of this project)
+harvest-webservers/
+tapis-ui/
+
+# Reference docs kept locally only
+backend/Harvest Workflow Orchestrator - Schema Redesign.pdf

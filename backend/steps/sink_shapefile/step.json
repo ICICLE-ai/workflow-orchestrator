@@ -1,0 +1,21 @@
+{
+  "step_type_key": "sink_shapefile",
+  "display_name": "\ud83d\udcbe Write Shapefile",
+  "description": "Writes a shapefile output to a destination path.",
+  "category": "sink",
+  "icon": "download",
+  "inputs": [
+    {
+      "name": "data",
+      "type": "shapefile"
+    }
+  ],
+  "outputs": [],
+  "config_schema": {
+    "path": {
+      "type": "string",
+      "description": "Destination Tapis URI where the shapefile is written (e.g. tapis://pitzer-tapis/fs/ess/PAS2699/shyama/shapefiles/run1).",
+      "default": ""
+    }
+  }
+}

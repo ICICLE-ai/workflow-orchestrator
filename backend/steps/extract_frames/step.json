@@ -1,0 +1,62 @@
+{
+  "step_type_key": "extract_frames",
+  "display_name": "Extract Frames",
+  "description": "Extracts image frames from a video stream/file for downstream processing.",
+  "category": "Data Collection",
+  "icon": "video",
+  "tapis_app_id": "extract-frames-from-stream",
+  "inputs": [
+    { "name": "video", "type": "video_file" }
+  ],
+  "outputs": [
+    { "name": "frames", "type": "image_dir" }
+  ],
+  "config_schema": {
+    "stream_url": {
+      "type": "string",
+      "description": "RTSPS stream URL to pull frames from (if not using a file input).",
+      "default": ""
+    },
+    "results_basename": {
+      "type": "string",
+      "description": "Base name for the results manifest written by the extractor.",
+      "default": "results"
+    }
+  },
+  "tapis_job": {
+    "name": "extract-frames-from-stream",
+    "appId": "extract-frames-from-stream",
+    "appVersion": "1.1.0",
+    "description": "Extract frames from an ARA-Harvest video stream",
+    "execSystemId": "expanse-tapis",
+    "execSystemLogicalQueue": "tapisGPUshared",
+    "archiveSystemId": "${archive_system}",
+    "archiveSystemDir": "${archive_dir}",
+    "nodeCount": 1,
+    "coresPerNode": 2,
+    "memoryMB": 8000,
+    "maxMinutes": 210,
+    "fileInputs": [
+      { "name": "container SIF", "envKey": "sifpath", "autoMountLocal": true, "sourceUrl": "https://icicleai.tapis.io/v3/files/postits/redeem/17772bec-0a2d-476e-a212-b65adabfacdb-010", "targetPath": "extract_frames.sif" }
+    ],
+    "parameterSet": {
+      "appArgs": [
+        { "name": "Destination Directory", "arg": "--destDir" },
+        { "name": "Destination value", "arg": "/output" }
+      ],
+      "schedulerOptions": [
+        { "arg": "-G 1", "name": "gpu_per_node" },
+        { "name": "slurm account", "arg": "-A ${slurm_account}" },
+        { "name": "job name", "arg": "--job-name=extract-frames" }
+      ],
+      "containerArgs": [
+        { "name": "binding", "arg": "--bind $PWD/output:/output" }
+      ],
+      "envVariables": [
+        { "key": "RTSPS_URL", "value": "${stream_url}" },
+        { "key": "RESULTS_BASENAME", "value": "${results_basename}" }
+      ],
+      "archiveFilter": { "includeLaunchFiles": false }
+    }
+  }
+}

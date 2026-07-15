@@ -1,0 +1,21 @@
+{
+  "step_type_key": "sink_csv",
+  "display_name": "\ud83d\udcbe Write CSV",
+  "description": "Writes a csv_data output to a destination path.",
+  "category": "sink",
+  "icon": "download",
+  "inputs": [
+    {
+      "name": "data",
+      "type": "csv_data"
+    }
+  ],
+  "outputs": [],
+  "config_schema": {
+    "path": {
+      "type": "string",
+      "description": "Destination Tapis URI where the csv_data is written (e.g. tapis://pitzer-tapis/fs/ess/PAS2699/shyama/csv/run1).",
+      "default": ""
+    }
+  }
+}

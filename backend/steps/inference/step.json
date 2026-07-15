@@ -1,0 +1,113 @@
+{
+  "step_type_key": "inference",
+  "display_name": "Model Inference",
+  "description": "Runs a trained model on new data to generate predictions.",
+  "category": "Inference",
+  "tapis_app_id": "harvest-inference",
+  "inputs": [
+    {
+      "name": "model",
+      "type": "pytorch_model"
+    },
+    {
+      "name": "images",
+      "type": "image_dir"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "predictions",
+      "type": "json_results"
+    }
+  ],
+  "config_schema": {
+    "confidence_threshold": {
+      "type": "float",
+      "description": "Minimum confidence score to retain a prediction.",
+      "default": 0.5
+    },
+    "device": {
+      "type": "string",
+      "description": "Compute device to use (cpu or cuda).",
+      "default": "cuda"
+    }
+  },
+  "tapis_job": {
+    "name": "harvest-inference",
+    "appId": "harvest-inference",
+    "appVersion": "0.1.7",
+    "description": "Harvest model inference",
+    "execSystemId": "${exec_system}",
+    "execSystemLogicalQueue": "${exec_queue}",
+    "execSystemExecDir": "${work_dir}/new_jobs/${JobUUID}",
+    "execSystemInputDir": "${work_dir}/new_jobs/${JobUUID}",
+    "execSystemOutputDir": "${work_dir}/new_jobs/${JobUUID}/output",
+    "archiveSystemId": "${archive_system}",
+    "archiveSystemDir": "${archive_dir}",
+    "nodeCount": 1,
+    "coresPerNode": 8,
+    "memoryMB": 64000,
+    "maxMinutes": 20,
+    "fileInputs": [
+      {
+        "name": "data",
+        "envKey": "data",
+        "autoMountLocal": true,
+        "sourceUrl": "${images}",
+        "targetPath": "data"
+      },
+      {
+        "name": "model json",
+        "envKey": "model",
+        "autoMountLocal": true,
+        "sourceUrl": "${model}/config.json",
+        "targetPath": "workdir/models/saved_model.json"
+      },
+      {
+        "name": "model pth",
+        "envKey": "modelpth",
+        "autoMountLocal": true,
+        "sourceUrl": "${model}/saved_model.pth",
+        "targetPath": "workdir/models_convert/saved_model.pth"
+      },
+      {
+        "name": "sif path",
+        "envKey": "sifpath",
+        "autoMountLocal": true,
+        "sourceUrl": "https://icicleai.tapis.io/v3/files/postits/redeem/c4db6fc3-67fb-4bd0-aaab-0d97b0b2fd50-010",
+        "targetPath": "inf.sif"
+      }
+    ],
+    "parameterSet": {
+      "schedulerOptions": [
+        {
+          "arg": "-G 1",
+          "name": "gpu_per_node"
+        },
+        {
+          "arg": "-A ${slurm_account}",
+          "name": "slurm account"
+        }
+      ],
+      "containerArgs": [
+        {
+          "name": "binding",
+          "arg": "--bind $PWD/output:/out"
+        }
+      ],
+      "envVariables": [
+        {
+          "key": "WORKDIR",
+          "value": "$PWD/workdir"
+        },
+        {
+          "key": "DATADIR",
+          "value": "$PWD/data"
+        }
+      ],
+      "archiveFilter": {
+        "includeLaunchFiles": false
+      }
+    }
+  }
+}

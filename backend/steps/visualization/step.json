@@ -1,0 +1,39 @@
+{
+  "step_type_key": "visualization",
+  "display_name": "Visualization",
+  "description": "Generates visualization artifacts from results / processed data.",
+  "category": "Visualization",
+  "icon": "eye",
+  "tapis_app_id": "harvest-visualization",
+  "inputs": [
+    { "name": "results", "type": "json_results" }
+  ],
+  "outputs": [
+    { "name": "visualization", "type": "json_results" }
+  ],
+  "config_schema": {},
+  "tapis_job": {
+    "name": "harvest-visualization",
+    "appId": "harvest-visualization",
+    "appVersion": "0.2.9",
+    "description": "Generate visualization artifacts",
+    "execSystemId": "expanse-tapis",
+    "execSystemLogicalQueue": "tapisShared",
+    "archiveSystemId": "${archive_system}",
+    "archiveSystemDir": "${archive_dir}",
+    "nodeCount": 1,
+    "coresPerNode": 32,
+    "memoryMB": 100000,
+    "maxMinutes": 300,
+    "fileInputs": [
+      { "name": "results", "envKey": "results", "autoMountLocal": true, "sourceUrl": "${results}", "targetPath": "inputdir" }
+    ],
+    "parameterSet": {
+      "schedulerOptions": [
+        { "arg": "-A ${slurm_account}", "name": "slurm account" },
+        { "arg": "--job-name=visualization", "name": "job_name" }
+      ],
+      "archiveFilter": { "includeLaunchFiles": false }
+    }
+  }
+}
