@@ -1,63 +1,91 @@
 {
   "step_type_key": "training",
   "display_name": "Model Training",
-  "description": "Trains a machine learning model on the provided dataset.",
+  "description": "Trains YOLO or HuggingFace models for classification, detection and segmentation.",
   "category": "Training",
-  "tapis_app_id": "harvest-train",
+  "tapis_app_id": "workflow-orchestrator-trainer-v2",
   "inputs": [
     { "name": "dataset", "type": "image_dir" }
   ],
   "outputs": [
-    { "name": "model", "type": "pytorch_model", "output_path": "model" },
+    { "name": "model", "type": "pytorch_model", "output_path": "best_model" },
     { "name": "metrics", "type": "json_results", "output_path": "metrics.json" }
   ],
   "config_schema": {
+    "framework": {
+      "type": "str",
+      "description": "Training framework: yolo or huggingface",
+      "default": "huggingface"
+    },
+    "model": {
+      "type": "str",
+      "description": "Model name e.g. google/vit-base-patch16-224 or yolov8n.pt",
+      "default": "google/vit-base-patch16-224"
+    },
+    "task": {
+      "type": "str",
+      "description": "Task type: classify, detect or segment",
+      "default": "classify"
+    },
     "epochs": {
       "type": "int",
-      "description": "Number of full passes through the training dataset.",
-      "default": 50
-    },
-    "learning_rate": {
-      "type": "float",
-      "description": "Step size at each iteration while moving toward a minimum of a loss function.",
-      "default": 0.001
+      "description": "Number of training epochs",
+      "default": 10
     },
     "batch_size": {
       "type": "int",
-      "description": "Number of training examples utilized in one iteration.",
-      "default": 32
+      "description": "Batch size per device",
+      "default": 16
+    },
+    "device": {
+      "type": "str",
+      "description": "Device: cuda or cpu",
+      "default": "cuda"
     }
   },
   "tapis_job": {
-    "name": "harvest-training",
-    "appId": "harvest-train",
-    "appVersion": "0.2.6",
-    "description": "Harvest model training",
+    "name": "workflow-orchestrator-training",
+    "appId": "workflow-orchestrator-trainer-v2",
+    "appVersion": "1.0",
+    "description": "Workflow Orchestrator model training",
     "execSystemId": "${exec_system}",
     "execSystemLogicalQueue": "${exec_queue}",
-    "execSystemExecDir": "${work_dir}/new_jobs/${JobUUID}",
-    "execSystemInputDir": "${work_dir}/new_jobs/${JobUUID}",
-    "execSystemOutputDir": "${work_dir}/new_jobs/${JobUUID}/output",
+    "execSystemExecDir": "${work_dir}/harvest_jobs/${JobUUID}",
+    "execSystemInputDir": "${work_dir}/harvest_jobs/${JobUUID}",
+    "execSystemOutputDir": "${work_dir}/harvest_jobs/${JobUUID}/output",
     "archiveSystemId": "${archive_system}",
     "archiveSystemDir": "${archive_dir}",
     "nodeCount": 1,
-    "coresPerNode": 16,
-    "memoryMB": 92160,
-    "maxMinutes": 300,
+    "coresPerNode": 8,
+    "memoryMB": 64000,
+    "maxMinutes": 120,
     "fileInputs": [
-      { "name": "dataset", "envKey": "dataset", "autoMountLocal": true, "sourceUrl": "${dataset}", "targetPath": "dataset" },
-      { "name": "workdir", "envKey": "workdir", "autoMountLocal": true, "sourceUrl": "${archive_uri}", "targetPath": "workingdir" }
+      {
+        "name": "container SIF",
+        "envKey": "sifpath",
+        "autoMountLocal": true,
+        "sourceUrl": "https://icicleai.tapis.io/v3/files/postits/redeem/48caa51f-8cbb-49e7-a7c7-349d9ce6f4ab-010",
+        "targetPath": "trainer.sif"
+      }
     ],
     "parameterSet": {
-      "schedulerOptions": [
-        { "arg": "--gpus 4", "name": "number of gpus" },
-        { "arg": "-A ${slurm_account}", "name": "slurm account" }
+      "appArgs": [
+        { "name": "framework",   "arg": "--framework ${framework}" },
+        { "name": "model",       "arg": "--model ${model}" },
+        { "name": "task",        "arg": "--task ${task}" },
+        { "name": "data",        "arg": "--data ${dataset}" },
+        { "name": "output_path", "arg": "--output_path ${archive_dir}" },
+        { "name": "epochs",      "arg": "--epochs ${epochs}" },
+        { "name": "batch",       "arg": "--batch ${batch_size}" },
+        { "name": "device",      "arg": "--device ${device}" }
       ],
-      "envVariables": [
-        { "key": "PREPROCESS_WORKING_DIR", "value": "$PWD/workingdir" },
-        { "key": "DATASET_DIR", "value": "$PWD/dataset" },
-        { "key": "TRAINER_PARAMS", "value": "/app/ssl_trainer.py --task classification --dataset /app/workingdir --epoch ${epochs} --lr ${learning_rate} --batch ${batch_size}" },
-        { "key": "PPN", "value": "$SLURM_GPUS_ON_NODE" }
+      "containerArgs": [
+        { "name": "hf_cache", "arg": "--bind /fs/scratch/PAS2699/yolo_training/mod/hf_cache:/app/hf_cache" }
+      ],
+      "schedulerOptions": [
+        { "name": "account",  "arg": "-A ${slurm_account}" },
+        { "name": "job name", "arg": "--job-name=workflow-orchestrator-training" },
+        { "name": "gpu",      "arg": "-G 1" }
       ],
       "archiveFilter": { "includeLaunchFiles": false }
     }
