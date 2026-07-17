@@ -5,7 +5,7 @@ services:
     image: postgis/postgis:14-3.3
     container_name: harvest_db
     environment:
-      POSTGRES_USER: postgres
+      POSTGRES_USER: wo
       POSTGRES_PASSWORD: password
       POSTGRES_DB: harvest
     ports:

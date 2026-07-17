@@ -11,7 +11,10 @@ import type { Route } from "./+types/root";
 import "./app.css";
 import "@mantine/core/styles.css";
 import "@xyflow/react/dist/style.css";
-import { MantineProvider, ColorSchemeScript } from "@mantine/core";
+import { MantineProvider, ColorSchemeScript, Button, Group, Text, Paper } from "@mantine/core";
+import { useEffect, useState } from "react";
+import { fetchCurrentUser, loginUrl, logout } from "./lib/api";
+import { Notifications } from "@mantine/notifications";
 
 export const links: Route.LinksFunction = () => [
   { rel: "preconnect", href: "https://fonts.googleapis.com" },
@@ -45,11 +48,55 @@ export function Layout({ children }: { children: React.ReactNode }) {
   );
 }
 
+// Small fixed control showing the signed-in Tapis user, with login/logout.
+// Sits above the per-route AppShell headers so it's visible everywhere.
+function AuthWidget() {
+  const [user, setUser] = useState<{ username: string } | null>(null);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    fetchCurrentUser().then((u) => {
+      setUser(u);
+      setLoaded(true);
+    });
+  }, []);
+
+  if (!loaded) return null;
+
+  return (
+    <Paper
+      shadow="xs"
+      p={6}
+      radius="md"
+      withBorder
+      style={{ position: "fixed", top: 10, right: 12, zIndex: 1000 }}
+    >
+      {user ? (
+        <Group gap="xs">
+          <Text size="sm" fw={500}>{user.username}</Text>
+          <Button size="compact-xs" variant="light" color="gray" onClick={() => logout()}>
+            Logout
+          </Button>
+        </Group>
+      ) : (
+        <Button size="compact-xs" variant="light" component="a" href={loginUrl()}>
+          Login with Tapis
+        </Button>
+      )}
+    </Paper>
+  );
+}
+
 export default function App() {
   return (
+
     <MantineProvider defaultColorScheme="light">
-      <Outlet />
+      <Notifications />
+        <AuthWidget />
+        <Outlet />
     </MantineProvider>
+
+
   );
 }
 

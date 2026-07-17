@@ -20,7 +20,8 @@ def seed_database():
             {"type_key": "pytorch_model", "description": "PyTorch model weights (.pth)"},
             {"type_key": "csv_data", "description": "CSV dataset"},
             {"type_key": "shapefile", "description": "Geospatial shapefile"},
-            {"type_key": "heatmap_image", "description": "Generated heatmap image"}
+            {"type_key": "heatmap_image", "description": "Generated heatmap image"},
+            {"type_key": "file_path", "description": "File path"},
         ]
 
         for dt in data_types:

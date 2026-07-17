@@ -1,18 +1,20 @@
-"""Tapis credential resolution.
+"""Tapis OAuth2 credential handling (authorization-code flow, per-user tokens).
 
-Resolves a Tapis JWT to use as the X-Tapis-Token header, from environment /
-.env, in priority order:
-  1. TAPIS_TOKEN  -> used directly.
-  2. TAPIS_USERNAME + TAPIS_PASSWORD -> exchanged for a JWT via the Tapis
-     tokens API (password grant).
-  3. Neither -> returns None, and callers fall back to the mock client.
+The app authenticates users through Tapis' OAuth2 authorization-code flow using a
+confidential client (TAPIS_CLIENT_ID + TAPIS_CLIENT_KEY). The login handler
+(backend/auth.py) exchanges the returned `code` for an access + refresh token,
+which are stored per-user on AppUser. The DBOS engine resolves the *run owner's*
+token via get_token_for_run() so each job is submitted as the user who launched
+it, refreshing transparently when the short-lived access token expires mid-run.
 
-Secrets are never printed. `describe_credentials()` reports only what KIND of
-credential is configured and whether a token could be obtained/validated.
+Secrets (tokens, client key) are never printed. `describe_credentials()` reports
+only which client is configured, never any secret material.
 """
 import os
+from datetime import datetime, timedelta, timezone
 
 import httpx
+from jose import jwt
 
 try:  # load .env if python-dotenv is available (it is, via fastapi[standard])
     from dotenv import load_dotenv
@@ -26,50 +28,179 @@ except Exception:
 TAPIS_BASE_URL = os.getenv("TAPIS_BASE_URL", "https://icicleai.tapis.io").rstrip("/")
 TAPIS_TENANT = os.getenv("TAPIS_TENANT", "icicleai")
 
-_cached_token: str | None = None
+# Confidential OAuth2 client credentials (registered with Tapis, with a
+# callback_url of {APP_BASE_URL}/oauth2/callback).
+TAPIS_CLIENT_ID = os.getenv("TAPIS_CLIENT_ID")
+TAPIS_CLIENT_KEY = os.getenv("TAPIS_CLIENT_KEY")
+
+# Refresh a token this many seconds before it actually expires, so a token that
+# is about to lapse is renewed proactively rather than after a mid-request 401.
+_EXPIRY_SKEW_SECONDS = 60
 
 
-def _mint_token_from_password(username: str, password: str) -> str | None:
-    """Exchange username/password for a short-lived JWT via the Tapis tokens API."""
-    url = f"{TAPIS_BASE_URL}/v3/oauth2/tokens"
-    payload = {
-        "username": username,
-        "password": password,
-        "grant_type": "password",
-    }
+def oauth_client_configured() -> bool:
+    """True when a confidential OAuth2 client is configured for real Tapis auth."""
+    return bool(TAPIS_CLIENT_ID and TAPIS_CLIENT_KEY)
+
+
+def _token_endpoint() -> str:
+    return f"{TAPIS_BASE_URL}/v3/oauth2/tokens"
+
+
+def _expiry_from_token_block(block: dict) -> datetime | None:
+    """Derive a timezone-aware expiry from a Tapis access_token block.
+
+    Tapis returns both `expires_in` (seconds) and `expires_at` (ISO string). We
+    prefer `expires_in` (immune to client/server clock skew), falling back to
+    parsing `expires_at`.
+    """
+    expires_in = block.get("expires_in")
+    if isinstance(expires_in, (int, float)):
+        return datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))
+    expires_at = block.get("expires_at")
+    if expires_at:
+        try:
+            # Tapis uses e.g. "2024-01-01T00:00:00.000000+00:00" or trailing "Z".
+            return datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return None
+
+
+def _post_token_grant(payload: dict) -> dict | None:
+    """POST a grant to the Tapis token endpoint with HTTP Basic client auth.
+
+    Returns a normalized dict {access_token, refresh_token, expires_at} on
+    success, or None on failure. Never logs secret material.
+    """
+    if not oauth_client_configured():
+        print("[tapis_auth] No OAuth client configured (TAPIS_CLIENT_ID/KEY unset)")
+        return None
     try:
-        resp = httpx.post(url, json=payload, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-        # Tapis returns result.access_token.access_token
-        return (
-            data.get("result", {})
-            .get("access_token", {})
-            .get("access_token")
+        resp = httpx.post(
+            _token_endpoint(),
+            json=payload,
+            auth=(TAPIS_CLIENT_ID, TAPIS_CLIENT_KEY),
+            timeout=30,
         )
+        resp.raise_for_status()
+        result = resp.json().get("result", {})
+        access_block = result.get("access_token", {}) or {}
+        refresh_block = result.get("refresh_token", {}) or {}
+        access_token = access_block.get("access_token")
+        if not access_token:
+            print("[tapis_auth] Token grant returned no access_token")
+            return None
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_block.get("refresh_token"),
+            "expires_at": _expiry_from_token_block(access_block),
+        }
     except Exception as e:
-        print(f"[tapis_auth] Could not mint token from password: {type(e).__name__}")
+        print(f"[tapis_auth] Token grant '{payload.get('grant_type')}' failed: {type(e).__name__}")
         return None
 
 
-def get_token(force_refresh: bool = False) -> str | None:
-    """Return a usable Tapis JWT, or None if no credentials are configured."""
-    global _cached_token
-    if _cached_token and not force_refresh:
-        return _cached_token
+def exchange_code_for_tokens(code: str, redirect_uri: str) -> dict | None:
+    """Exchange an OAuth2 authorization code for tokens (authorization_code grant).
 
-    token = os.getenv("TAPIS_TOKEN")
-    if token:
-        _cached_token = token.strip()
-        return _cached_token
+    Returns {access_token, refresh_token, expires_at} or None on failure.
+    """
+    return _post_token_grant({
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": redirect_uri,
+    })
 
-    username = os.getenv("TAPIS_USERNAME")
-    password = os.getenv("TAPIS_PASSWORD")
-    if username and password:
-        _cached_token = _mint_token_from_password(username, password)
-        return _cached_token
 
-    return None
+def refresh_user_token(user, db) -> str | None:
+    """Mint a fresh access token for `user` from their stored refresh token and
+    persist the new access/refresh/expiry. Returns the new access token, or None
+    if no refresh token is stored or the refresh grant fails (user must re-login).
+    """
+    if not user or not user.tapis_refresh_token:
+        return None
+    tokens = _post_token_grant({
+        "grant_type": "refresh_token",
+        "refresh_token": user.tapis_refresh_token,
+    })
+    if not tokens:
+        return None
+    _store_tokens(user, tokens)
+    db.commit()
+    return tokens["access_token"]
+
+
+def _store_tokens(user, tokens: dict) -> None:
+    """Copy a normalized token dict onto an AppUser (does not commit). A refresh
+    grant may omit a new refresh_token; keep the existing one in that case."""
+    user.tapis_access_token = tokens["access_token"]
+    if tokens.get("refresh_token"):
+        user.tapis_refresh_token = tokens["refresh_token"]
+    user.tapis_token_expires_at = tokens.get("expires_at")
+
+
+def store_tokens(user, tokens: dict, db) -> None:
+    """Public helper for the login handler: persist exchanged tokens on a user."""
+    _store_tokens(user, tokens)
+    db.commit()
+
+
+def _token_is_fresh(user) -> bool:
+    """True if the user's stored access token exists and isn't within the skew
+    window of expiring. A token with no known expiry is treated as stale so it
+    gets validated/refreshed rather than trusted blindly."""
+    if not user.tapis_access_token or not user.tapis_token_expires_at:
+        return False
+    expires_at = user.tapis_token_expires_at
+    if expires_at.tzinfo is None:  # normalize naive DB values to UTC
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    return expires_at > datetime.now(timezone.utc) + timedelta(seconds=_EXPIRY_SKEW_SECONDS)
+
+
+def get_token_for_user(user, db) -> str | None:
+    """Return a usable access token for `user`, refreshing if it's expired/expiring.
+    Returns None if the user has no tokens and can't refresh (must re-login)."""
+    if user is None:
+        return None
+    if _token_is_fresh(user):
+        return user.tapis_access_token
+    return refresh_user_token(user, db)
+
+
+def get_token_for_run(run_id: int) -> str | None:
+    """Resolve the access token of the run's owner. Called by the DBOS engine,
+    which has no request/session context — it opens its own short DB session,
+    resolves and (if needed) refreshes the token, and returns it. Resolving fresh
+    at each call lets long durable workflows survive access-token expiry.
+    """
+    # Imported lazily to avoid importing the app DB layer at module import time.
+    from db import SessionLocal
+    from models import PipelineRun, AppUser
+
+    db = SessionLocal()
+    try:
+        run = db.query(PipelineRun).filter(PipelineRun.run_id == run_id).first()
+        if not run or not run.user_id:
+            return None
+        user = db.query(AppUser).filter(AppUser.user_id == run.user_id).first()
+        return get_token_for_user(user, db)
+    finally:
+        db.close()
+
+
+def username_from_jwt(token: str) -> str | None:
+    """Extract the Tapis username from a JWT without verifying its signature
+    (the token was just issued to us by Tapis over TLS). Falls back to the
+    userinfo endpoint if the claim can't be read."""
+    try:
+        claims = jwt.get_unverified_claims(token)
+        username = claims.get("tapis/username") or claims.get("sub")
+        if username:
+            return username
+    except Exception:
+        pass
+    return validate_token(token).get("username")
 
 
 def validate_token(token: str) -> dict:
@@ -91,30 +222,15 @@ def validate_token(token: str) -> dict:
 
 
 def describe_credentials() -> dict:
-    """Report what kind of credential is configured and whether it works.
-    Safe to log — contains no secret material."""
+    """Report how Tapis auth is configured. Safe to log — no secret material."""
     use_mock = os.getenv("TAPIS_USE_MOCK", "false").lower() == "true"
     if use_mock:
         return {"mode": "mock", "reason": "TAPIS_USE_MOCK=true"}
-
-    if os.getenv("TAPIS_TOKEN"):
-        kind = "token"
-    elif os.getenv("TAPIS_USERNAME") and os.getenv("TAPIS_PASSWORD"):
-        kind = "password"
-    else:
-        return {"mode": "mock", "reason": "no TAPIS_TOKEN or TAPIS_USERNAME/PASSWORD set"}
-
-    token = get_token()
-    if not token:
-        return {"mode": "mock", "reason": f"{kind} present but no JWT could be obtained"}
-
-    check = validate_token(token)
+    if not oauth_client_configured():
+        return {"mode": "mock", "reason": "no OAuth client configured (set TAPIS_CLIENT_ID/KEY)"}
     return {
-        "mode": "real" if check["valid"] else "mock",
-        "credential_kind": kind,
+        "mode": "oauth",
+        "client_id": TAPIS_CLIENT_ID,
         "base_url": TAPIS_BASE_URL,
         "tenant": TAPIS_TENANT,
-        "token_valid": check["valid"],
-        "username": check["username"],
-        "detail": check["detail"],
     }

@@ -109,7 +109,7 @@ def _run_sink_node(run_id: int, node_key: str, node_config: dict) -> dict:
         return {"path": dest, "copied": False, "note": "missing source or destination"}
     # replace=True clears the destination first, so the sink dir reflects only
     # this run's wired output — no residue from prior runs with older layouts.
-    ok = copy_tapis_path(src, dest, replace=True)
+    ok = copy_tapis_path(src, dest, run_id, replace=True)
     print(f"[sink] copy {src} -> {dest} (replace): {'OK' if ok else 'FAILED'}")
     return {"path": dest, "source": src, "copied": bool(ok)}
 
@@ -165,7 +165,7 @@ def execute_node_workflow(node_key: str, run_id: int, orchestrator_workflow_id: 
 
     try:
         # 3. Submit and poll.
-        job_uuid = TapisV3.submit_job(rendered)
+        job_uuid = TapisV3.submit_job(rendered, run_id)
         update_run_step_status(
             run_id, node_key, "running",
             tapis_job_uuid=job_uuid, tapis_job_status="PENDING",
@@ -179,7 +179,7 @@ def execute_node_workflow(node_key: str, run_id: int, orchestrator_workflow_id: 
         consecutive_poll_errors = 0
         while True:
             try:
-                status = TapisV3.check_job_status(job_uuid)
+                status = TapisV3.check_job_status(job_uuid, run_id)
                 consecutive_poll_errors = 0
             except Exception as poll_err:
                 consecutive_poll_errors += 1

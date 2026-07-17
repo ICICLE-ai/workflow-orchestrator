@@ -3,9 +3,10 @@ import { AppShell, Container, Title, Text, Button, Group, Card, ThemeIcon, Actio
 import { IconActivity, IconArrowLeft, IconRefresh, IconChevronDown, IconChevronRight, IconPlayerStop, IconFileText } from "@tabler/icons-react";
 import { useNavigate } from "react-router";
 import { useState, useEffect, useCallback } from "react";
+import { apiFetch } from "../lib/api";
 
 export async function clientLoader() {
-  const res = await fetch("http://localhost:8002/api/pipeline-runs");
+  const res = await apiFetch("/api/pipeline-runs");
   if (!res.ok) throw new Error("Failed to load runs");
   return res.json();
 }
@@ -36,7 +37,7 @@ export function StepLogsModal({ runId, nodeId, stepType, opened, onClose }:
   useEffect(() => {
     if (!opened || nodeId == null) return;
     setLoading(true); setLogs(null);
-    fetch(`http://localhost:8002/api/pipeline-runs/${runId}/step/${nodeId}/logs`)
+    apiFetch(`/api/pipeline-runs/${runId}/step/${nodeId}/logs`)
       .then((r) => r.ok ? r.json() : null)
       .then((d) => setLogs(d))
       .catch(() => setLogs(null))
@@ -94,7 +95,7 @@ function RunDetail({ runId }: { runId: number }) {
 
   const load = useCallback(async () => {
     try {
-      const r = await fetch(`http://localhost:8002/api/pipeline-runs/${runId}/detail`);
+      const r = await apiFetch(`/api/pipeline-runs/${runId}/detail`);
       if (r.ok) setDetail(await r.json());
     } catch { /* ignore */ }
   }, [runId]);
@@ -153,7 +154,7 @@ export default function Runs({ loaderData }: Route.ComponentProps) {
   const refresh = useCallback(async () => {
     setRefreshing(true);
     try {
-      const r = await fetch("http://localhost:8002/api/pipeline-runs");
+      const r = await apiFetch("/api/pipeline-runs");
       if (r.ok) setRuns(await r.json());
     } catch { /* ignore */ }
     setRefreshing(false);
@@ -163,7 +164,7 @@ export default function Runs({ loaderData }: Route.ComponentProps) {
     if (!window.confirm(`Stop run #${runId}? This cancels the workflow and any running Tapis job. This cannot be undone.`)) return;
     setStopping(runId);
     try {
-      await fetch(`http://localhost:8002/api/pipeline-runs/${runId}/stop`, { method: "POST" });
+      await apiFetch(`/api/pipeline-runs/${runId}/stop`, { method: "POST" });
     } catch { /* ignore */ }
     setStopping(null);
     refresh();
