@@ -1,0 +1,70 @@
+{
+   "step_type_key": "image-preprocess-studio",
+   "display_name": "Image preprocessing studio",
+   "description": "Visualize OpenCV operations & submit a batch job for pre-processing",
+   "category": "Data Pre-processing",
+   "tapis_app_id": "opencv-preprocess",
+   "inputs": [
+      { "name": "source image directory", "type": "image_dir" },
+      { "name": "output directory", "type": "image_dir" }
+   ],
+   "outputs": [{ "name": "output directory", "type": "image_dir" }],
+   "config_schema": {
+      "source_dir": {
+         "type": "image_dir",
+         "description": "image source directory",
+         "default": "/fs/ess/PAS2699/samples/"
+      },
+      "pipeline_path": {
+         "type": "string",
+         "description": "Target height for resizing images."
+      },
+      "output_path": {
+         "type": "string",
+         "description": "Target height for resizing images."
+      }
+   },
+   "tapis_job": {
+      "name": "opencv-preprocess-20260716-1530",
+      "appId": "opencv-preprocess",
+      "appVersion": "1.0.0",
+      "description": "Recursive OpenCV pre-processing from the Image Playground",
+      "execSystemId": "${exec_system}",
+      "execSystemLogicalQueue": "${exec_queue}",
+      "archiveSystemId": "${exec_system}",
+      "archiveSystemDir": "${output_path}",
+      "archiveOnAppError": true,
+      "nodeCount": 1,
+      "coresPerNode": 1,
+      "memoryMB": 4096,
+      "maxMinutes": 120,
+      "parameterSet": {
+         "appArgs": [
+            { "name": "input-dir", "arg": "--input input" },
+            { "name": "output-dir", "arg": "--output output" },
+            { "name": "pipeline", "arg": "--pipeline operations.json" }
+         ],
+         "envVariables": [
+            {
+               "key": "IMAGE_EXTENSIONS",
+               "value": ".jpg,.jpeg,.png,.bmp,.tiff,.tif"
+            }
+         ],
+         "schedulerOptions": [{ "name": "slurm account", "arg": "-A ${slurm_account}" }]
+      },
+      "fileInputs": [
+         {
+            "name": "input-images",
+            "sourceUrl": "tapis://${exec_system}/${source_dir}",
+            "targetPath": "input",
+            "autoMountLocal": true
+         },
+         {
+            "name": "pipeline",
+            "sourceUrl": "tapis://${exec_system}/${pipeline_path}",
+            "targetPath": "operations.json",
+            "autoMountLocal": true
+         }
+      ]
+   }
+}

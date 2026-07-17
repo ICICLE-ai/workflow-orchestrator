@@ -2,9 +2,10 @@ import type { Route } from "./+types/templates";
 import { AppShell, Container, Title, Text, Button, Group, Card, SimpleGrid, ThemeIcon, ActionIcon } from "@mantine/core";
 import { IconActivity, IconArrowLeft, IconPlus, IconEdit } from "@tabler/icons-react";
 import { useNavigate, Link } from "react-router";
+import { apiFetch } from "../lib/api";
 
 export async function clientLoader() {
-  const res = await fetch("http://localhost:8002/api/workflow-templates");
+  const res = await apiFetch("/api/workflow-templates");
   if (!res.ok) throw new Error("Failed to load templates");
   return res.json();
 }

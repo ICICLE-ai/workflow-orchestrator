@@ -6,19 +6,20 @@ import { useState, useEffect, useCallback } from "react";
 import { ReactFlow, ReactFlowProvider, Background, Controls } from "@xyflow/react";
 import CustomNode from "../components/CustomNode";
 import { StepLogsModal } from "./runs";
+import { apiFetch } from "../lib/api";
 
 const nodeTypes = { customNode: CustomNode };
 
 export async function clientLoader({ params }: { params: any }) {
   const runId = params.runId;
   // Fetch run detail first (gives template_version_id + per-node status).
-  const detailRes = await fetch(`http://localhost:8002/api/pipeline-runs/${runId}/detail`);
+  const detailRes = await apiFetch(`/api/pipeline-runs/${runId}/detail`);
   if (!detailRes.ok) throw new Error("Run not found");
   const detail = await detailRes.json();
 
   const [stepsRes, tmplRes] = await Promise.all([
-    fetch("http://localhost:8002/api/step-types"),
-    fetch(`http://localhost:8002/api/workflow-templates/${detail.template_version_id}`),
+    apiFetch("/api/step-types"),
+    apiFetch(`/api/workflow-templates/${detail.template_version_id}`),
   ]);
   const stepTypes = await stepsRes.json();
   const template = tmplRes.ok ? await tmplRes.json() : null;
@@ -39,7 +40,7 @@ function Flow({ runId, initialDetail, stepTypes, template }: any) {
   // Poll run detail while the run is active so node statuses update live.
   const load = useCallback(async () => {
     try {
-      const r = await fetch(`http://localhost:8002/api/pipeline-runs/${runId}/detail`);
+      const r = await apiFetch(`/api/pipeline-runs/${runId}/detail`);
       if (r.ok) setDetail(await r.json());
     } catch { /* ignore */ }
   }, [runId]);
