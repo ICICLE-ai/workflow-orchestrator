@@ -4,10 +4,10 @@ import { ActionIcon, Group, Text, Box, Badge } from '@mantine/core';
 import { IconSettings, IconPlayerPlay, IconTrash } from '@tabler/icons-react';
 import { apiFetch } from '../lib/api';
 import StepSettingsModal from './StepSettingsModal';
-import type { StepMeta } from '../pages/types';
+import type { StepMeta, ConnectedInput } from '../pages/types';
 
 export default function CustomNode({ id, data }: any) {
-  const { setNodes, setEdges } = useReactFlow();
+  const { setNodes, setEdges, getEdges, getNode } = useReactFlow();
   const [opened, setOpened] = useState(false);
   const [config, setConfig] = useState(data.config_values || {});
 
@@ -48,6 +48,26 @@ export default function CustomNode({ id, data }: any) {
     inputs,
     outputs,
   };
+
+  // Resolve what's wired into each input port (computed when the settings modal
+  // is open). For each input, find the incoming edge and expose the upstream
+  // node's type + config_values so a panel can read the connected value.
+  const connectedInputs: Record<string, ConnectedInput> = {};
+  if (opened) {
+    const edges = getEdges();
+    for (const port of inputs) {
+      const edge = edges.find((e) => e.target === id && e.targetHandle === port.port_name);
+      if (!edge) continue;
+      const src = getNode(edge.source);
+      if (!src) continue;
+      connectedInputs[port.port_name] = {
+        sourceNodeId: edge.source,
+        sourceType: (src.data as any)?.nodeType,
+        sourcePort: edge.sourceHandle ?? '',
+        config: (src.data as any)?.config_values ?? {},
+      };
+    }
+  }
 
   const handleRun = async () => {
     try {
@@ -239,6 +259,7 @@ export default function CustomNode({ id, data }: any) {
         step={step}
         initialConfig={config}
         templateVersionId={data.template_version_id}
+        connectedInputs={connectedInputs}
         onSave={handleSaveConfig}
       />
     </>

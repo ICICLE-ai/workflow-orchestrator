@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Modal, Stack, Group, Button } from "@mantine/core";
-import type { StepMeta } from "../pages/types";
+import type { StepMeta, ConnectedInput } from "../pages/types";
 import { getStepPanel } from "../pages/registry";
 import GenericConfigForm from "../pages/GenericConfigForm";
 
@@ -15,6 +15,7 @@ export default function StepSettingsModal({
   step,
   initialConfig,
   templateVersionId,
+  connectedInputs = {},
   onSave,
 }: {
   opened: boolean;
@@ -23,6 +24,7 @@ export default function StepSettingsModal({
   step: StepMeta;
   initialConfig: Record<string, any>;
   templateVersionId?: number;
+  connectedInputs?: Record<string, ConnectedInput>;
   onSave: (config: Record<string, any>) => void;
 }) {
   const [config, setConfig] = useState<Record<string, any>>(initialConfig || {});
@@ -50,6 +52,7 @@ export default function StepSettingsModal({
       step={step}
       nodeId={nodeId}
       templateVersionId={templateVersionId}
+      connectedInputs={connectedInputs}
       onSave={handleSave}
       onClose={onClose}
     />

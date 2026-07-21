@@ -116,7 +116,7 @@ function Flow() {
   const [reactFlowInstance, setReactFlowInstance] = useState<any>(null);
   
   const [drawerOpened, setDrawerOpened] = useState(false);
-  const [formData, setFormData] = useState({ name: '', description: '', category: 'Custom' });
+  const [formData, setFormData] = useState({ name: '', description: '', category: 'Custom', allocation_account: 'uot260' });
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string[]>([]);
   const [outputWarnings, setOutputWarnings] = useState<string[]>([]);
@@ -154,8 +154,17 @@ function Flow() {
 
   useEffect(() => {
     if (templateData) {
-      setFormData({ name: templateData.name, description: templateData.description, category: templateData.category });
-      
+      setFormData({
+        name: templateData.name,
+        description: templateData.description,
+        category: templateData.category,
+        allocation_account: templateData.allocation_account || 'uot260',
+      });
+      // Prefill the run's charge account from the template's allocation account.
+      if (templateData.allocation_account) {
+        setRunOptions((prev) => ({ ...prev, slurm_account: templateData.allocation_account }));
+      }
+
       const hydratedNodes = templateData.nodes.map((n: any) => {
         const stepConfig = stepTypes.find((s: any) => s.step_type_key === n.data.nodeType);
         return {
@@ -569,6 +578,12 @@ function Flow() {
             label="Description"
             value={formData.description}
             onChange={(e) => setFormData({ ...formData, description: e.currentTarget.value })}
+          />
+          <TextInput
+            label="Allocation account"
+            description="Charge code for this template's runs (e.g. uot260)."
+            value={formData.allocation_account}
+            onChange={(e) => setFormData({ ...formData, allocation_account: e.currentTarget.value })}
           />
           {saveError.length > 0 && (
             <Alert color="red" icon={<IconAlertTriangle size={18} />} title="Workflow incomplete — cannot save">

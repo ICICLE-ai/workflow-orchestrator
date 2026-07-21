@@ -99,6 +99,9 @@ class WorkflowTemplate(Base):
     team_id = Column(Integer, ForeignKey('team.team_id'))
     is_shared = Column(Boolean, default=False)
     tapis_pipeline_id = Column(String)
+    # Allocation/charge account (e.g. 'uot260') set at template creation; used as
+    # the default slurm_account when running this template.
+    allocation_account = Column(String)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

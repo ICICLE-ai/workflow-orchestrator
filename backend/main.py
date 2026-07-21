@@ -304,6 +304,10 @@ def on_startup():
                 "ADD COLUMN IF NOT EXISTS tapis_refresh_token VARCHAR, "
                 "ADD COLUMN IF NOT EXISTS tapis_token_expires_at TIMESTAMPTZ;"
             ))
+            conn.execute(text(
+                "ALTER TABLE workflow_template "
+                "ADD COLUMN IF NOT EXISTS allocation_account VARCHAR;"
+            ))
         print("Database schema created.")
         
         # Sync Dynamic Steps
@@ -314,6 +318,18 @@ def on_startup():
     except Exception as e:
         print(f"Warning: Could not initialize database schema locally: {e}")
         print("This is expected if PostGIS is not installed natively. Please use Docker for DB.")
+
+    # Launch the DBOS durable-execution engine. The fastapi=app integration is
+    # meant to launch DBOS on the ASGI lifespan startup event, but that hook does
+    # not fire reliably alongside the deprecated @app.on_event("startup"); without
+    # launch, /execute fails with "System database accessed before DBOS was
+    # launched". DBOS.launch() is idempotent (guards on _launched), so if the
+    # library's own hook does fire it's a harmless no-op.
+    try:
+        DBOS.launch()
+        print("DBOS launched.")
+    except Exception as e:
+        print(f"Warning: DBOS.launch() failed: {e}")
 
 # Include the Authentication Router
 app.include_router(auth.router)
@@ -340,6 +356,7 @@ class WorkflowTemplateCreate(BaseModel):
     name: str
     description: Optional[str] = ""
     category: Optional[str] = "Custom"
+    allocation_account: Optional[str] = "uot260"
     nodes: List[NodeModel]
     edges: List[EdgeModel]
 
@@ -455,6 +472,7 @@ def get_workflow_template(template_version_id: int, db: Session = Depends(get_db
         "name": template.name,
         "description": template.description,
         "category": template.category,
+        "allocation_account": template.allocation_account,
         "nodes": [{"id": str(n.node_id), "type": "customNode", "position": {"x": n.position_x, "y": n.position_y}, "data": {"nodeType": n.step_type_key, "config_values": n.default_config}} for n in nodes],
         "edges": edge_list
     }
@@ -519,6 +537,7 @@ def create_workflow_template(template: WorkflowTemplateCreate, db: Session = Dep
         name=template.name,
         description=template.description,
         category=template.category,
+        allocation_account=template.allocation_account,
         owner_id=owner_id
     )
     db.add(new_template)
@@ -583,6 +602,7 @@ def create_template_version(template_id: int, template: WorkflowTemplateCreate, 
         name=template.name,
         description=template.description,
         category=template.category,
+        allocation_account=template.allocation_account,
         owner_id=owner_id
     )
     db.add(new_template)
@@ -833,6 +853,13 @@ def execute_workflow(template_version_id: int, options: Optional[RunOptions] = N
         for key, value in options.model_dump(exclude_none=True).items():
             dag_config[key] = value
 
+    # Default the charge account from the template's allocation_account when the
+    # run didn't specify one (RunOptions.slurm_account still overrides).
+    template = db.query(WorkflowTemplate).filter(
+        WorkflowTemplate.template_version_id == template_version_id
+    ).first()
+    dag_config.setdefault("slurm_account", (template and template.allocation_account) or "uot260")
+
     # Record the launching user so the run is owned by them and the engine can
     # resolve their Tapis token (get_token_for_run) when submitting jobs.
     dag_config["owner_id"] = user.user_id
@@ -1005,6 +1032,26 @@ def tapis_files_upload(body: TapisFileWrite, db: Session = Depends(get_db),
         code = 401 if resp.status_code == 401 else 502
         raise HTTPException(status_code=code, detail=f"Tapis upload failed (HTTP {resp.status_code}): {resp.text[:200]}")
     return {"ok": True, "path": body.path}
+
+
+@app.get("/api/tapis/whoami")
+def tapis_whoami(db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)):
+    """Diagnostic: report how Tapis auth is configured (mode) and whether the
+    resolved token actually validates against Tapis. Reaching this endpoint at all
+    means the APP session is fine; a bad token here means the Tapis credential is
+    the problem, not the login."""
+    from engine import tapis_auth
+    info = tapis_auth.describe_credentials()
+    token = tapis_auth.get_token_for_user(user, db)
+    if not token:
+        info["token_present"] = False
+        return info
+    check = tapis_auth.validate_token(token)
+    info["token_present"] = True
+    info["token_valid"] = check["valid"]
+    info["tapis_username"] = check["username"]
+    info["token_detail"] = check["detail"]
+    return info
 
 
 if __name__ == "__main__":

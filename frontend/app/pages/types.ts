@@ -33,6 +33,18 @@ export interface StepMeta {
   outputs: StepPort[];
 }
 
+// An upstream connection feeding one of this node's input ports (resolved from
+// the canvas at design time). Only *directly wired* nodes are resolved — a value
+// produced by an upstream job is a runtime artifact and isn't available in the
+// editor. `config` is the upstream node's config_values (e.g. a source node's
+// `path`), so the panel can read whatever it needs from it.
+export interface ConnectedInput {
+  sourceNodeId: string;
+  sourceType: string;   // upstream step_type_key
+  sourcePort: string;   // upstream output port_name
+  config: Record<string, any>;
+}
+
 export interface StepPanelProps {
   // Current working config for this node (starts from the node's config_values).
   config: Record<string, any>;
@@ -42,6 +54,10 @@ export interface StepPanelProps {
   step: StepMeta;
   // The canvas node id this config belongs to.
   nodeId: string;
+  // Upstream connections feeding this node's inputs, keyed by THIS node's input
+  // port_name. Empty when nothing is wired (or the source has no config). See
+  // ConnectedInput for the design-time-only caveat.
+  connectedInputs: Record<string, ConnectedInput>;
   // The template version this node lives in (undefined for an unsaved template).
   templateVersionId?: number;
   // Persist the working config to the node and close (the modal's Save action).

@@ -9,6 +9,7 @@ The real contract mirrors the legacy harvest-webservers code:
   POST {base}/v3/jobs/submit        with the full job spec dict
   GET  {base}/v3/jobs/{uuid}/status -> result.status
 """
+import json
 import os
 
 import httpx
@@ -19,15 +20,16 @@ from engine.mock_tapis import tapis_client as _mock_client
 
 
 def _use_real() -> bool:
-    """Real Tapis only when not forced to mock AND an OAuth client is configured.
+    """Real Tapis only when not forced to mock AND we have a way to authenticate:
+    a direct env token (TAPIS_ACCESS_TOKEN) OR a confidential OAuth client.
 
     Whether a given *user* has a valid token is resolved per-run at call time (via
     tapis_auth.get_token_for_run); this only decides real-vs-mock at the client
-    level so local dev without a registered client keeps using the mock.
+    level so local dev without credentials keeps using the mock.
     """
     if os.getenv("TAPIS_USE_MOCK", "false").lower() == "true":
         return False
-    return tapis_auth.oauth_client_configured()
+    return tapis_auth.env_token_mode() or tapis_auth.oauth_client_configured()
 
 
 class TapisAuthError(RuntimeError):
@@ -65,7 +67,15 @@ class TapisV3:
             headers = {"X-Tapis-Token": token, "Content-Type": "application/json"}
             print(f"[TapisV3] Submitting REAL job '{job_spec.get('name')}' appId={job_spec.get('appId')}")
             resp = httpx.post(url, json=job_spec, headers=headers, timeout=60)
-            resp.raise_for_status()
+            if resp.status_code >= 400:
+                # Tapis puts the validation reason in the body — surface it instead
+                # of a bare "400". Also dump the rendered spec so unresolved ${...}
+                # placeholders / bad fields are visible in the logs.
+                print(f"[TapisV3] Tapis REJECTED job (HTTP {resp.status_code}): {resp.text[:1500]}")
+                print(f"[TapisV3] Rendered job_spec was: {json.dumps(job_spec, default=str)[:2000]}")
+                raise RuntimeError(
+                    f"Tapis job submit failed (HTTP {resp.status_code}): {resp.text[:600]}"
+                )
             return resp.json()["result"]["uuid"]
 
         # Mock path

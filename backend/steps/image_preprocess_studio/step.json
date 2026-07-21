@@ -5,8 +5,8 @@
    "category": "Data Pre-processing",
    "tapis_app_id": "opencv-preprocess",
    "inputs": [
-      { "name": "source image directory", "type": "image_dir" },
-      { "name": "output directory", "type": "image_dir" }
+      { "name": "source_dir", "type": "image_dir" },
+      { "name": "output_path", "type": "image_dir" }
    ],
    "outputs": [{ "name": "output directory", "type": "image_dir" }],
    "config_schema": {
@@ -20,7 +20,7 @@
          "description": "Target height for resizing images."
       },
       "output_path": {
-         "type": "string",
+         "type": "image_dir",
          "description": "Target height for resizing images."
       }
    },
