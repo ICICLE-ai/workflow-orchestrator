@@ -107,11 +107,38 @@ def validate_step_output_contract(data: dict) -> list:
     return errors
 
 
+def sync_port_data_types(db: Session, step_files: list):
+    """Ensure every port data type referenced by a step's ports exists in
+    port_data_type before ports are synced.
+
+    step_type_port.data_type is a foreign key into port_data_type. The step.json
+    files are the single source of truth for which data types exist, so we derive
+    the set of referenced types from them and create any that are missing. This
+    keeps sync_step_registry self-sufficient on a fresh database instead of
+    depending on the separate seed_db.py script having been run first.
+    """
+    referenced = set()
+    for file_path in step_files:
+        with open(file_path, "r") as f:
+            data = json.load(f)
+        for port in data.get("inputs", []) + data.get("outputs", []):
+            if port.get("type"):
+                referenced.add(port["type"])
+
+    existing = {t.type_key for t in db.query(PortDataType.type_key).all()}
+    missing = referenced - existing
+    for type_key in sorted(missing):
+        db.add(PortDataType(type_key=type_key))
+    if missing:
+        db.commit()
+        print(f"  Seeded {len(missing)} missing port data type(s): {', '.join(sorted(missing))}")
+
+
 def sync_step_registry(db: Session):
     print("Syncing step registry from JSON files...")
     step_files = glob.glob(os.path.join(os.path.dirname(__file__), "steps", "*", "step.json"))
     for file_path in step_files:
-        with open(file_path, "r") as f:
+        with open(file_path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
         step_key = data["step_type_key"]

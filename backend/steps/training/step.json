@@ -8,8 +8,8 @@
     { "name": "dataset", "type": "image_dir" }
   ],
   "outputs": [
-    { "name": "model", "type": "pytorch_model", "output_path": "best_model" },
-    { "name": "metrics", "type": "json_results", "output_path": "metrics.json" }
+    { "name": "model",   "type": "pytorch_model", "output_path": "model" },
+    { "name": "metrics", "type": "json_results",  "output_path": "metrics.json" }
   ],
   "config_schema": {
     "framework": {
@@ -29,18 +29,53 @@
     },
     "epochs": {
       "type": "int",
-      "description": "Number of training epochs",
-      "default": 10
+      "description": "Number of full passes through the training dataset.",
+      "default": 50
     },
     "batch_size": {
       "type": "int",
-      "description": "Batch size per device",
+      "description": "Number of training examples utilized in one iteration.",
       "default": 16
+    },
+    "learning_rate": {
+      "type": "float",
+      "description": "Step size at each iteration while moving toward a minimum of a loss function.",
+      "default": 0.001
+    },
+    "warmup_steps": {
+      "type": "int",
+      "description": "Number of warmup steps",
+      "default": 0
+    },
+    "seed": {
+      "type": "int",
+      "description": "Random seed for reproducibility",
+      "default": 42
+    },
+    "patience": {
+      "type": "int",
+      "description": "Early stopping patience in epochs.",
+      "default": 3
     },
     "device": {
       "type": "str",
       "description": "Device: cuda or cpu",
       "default": "cuda"
+    },
+    "wandb_key": {
+      "type": "str",
+      "description": "W&B API key for live experiment tracking (optional)",
+      "default": ""
+    },
+    "wandb_project": {
+      "type": "str",
+      "description": "W&B project name",
+      "default": "workflow-orchestrator"
+    },
+    "extra_args": {
+      "type": "str",
+      "description": "Extra CLI arguments passed to train_main.py e.g. --lr 0.001 --seed 42",
+      "default": ""
     }
   },
   "tapis_job": {
@@ -70,14 +105,21 @@
     ],
     "parameterSet": {
       "appArgs": [
-        { "name": "framework",   "arg": "--framework ${framework}" },
-        { "name": "model",       "arg": "--model ${model}" },
-        { "name": "task",        "arg": "--task ${task}" },
-        { "name": "data",        "arg": "--data ${dataset}" },
-        { "name": "output_path", "arg": "--output_path ${archive_dir}" },
-        { "name": "epochs",      "arg": "--epochs ${epochs}" },
-        { "name": "batch",       "arg": "--batch ${batch_size}" },
-        { "name": "device",      "arg": "--device ${device}" }
+        { "name": "framework",      "arg": "--framework ${framework}"           },
+        { "name": "model",          "arg": "--model ${model}"                   },
+        { "name": "task",           "arg": "--task ${task}"                     },
+        { "name": "data",           "arg": "--data ${dataset}"                  },
+        { "name": "output_path",    "arg": "--output_path ${archive_dir}"       },
+        { "name": "epochs",         "arg": "--epochs ${epochs}"                 },
+        { "name": "batch",          "arg": "--batch ${batch_size}"              },
+        { "name": "device",         "arg": "--device ${device}"                 },
+        { "name": "lr",             "arg": "--lr ${learning_rate}"              },
+        { "name": "warmup_steps",   "arg": "--warmup_steps ${warmup_steps}"     },
+        { "name": "seed",           "arg": "--seed ${seed}"                     },
+        { "name": "patience",       "arg": "--patience ${patience}"             },
+        { "name": "wandb_key",      "arg": "--wandb_key ${wandb_key}"           },
+        { "name": "wandb_project",  "arg": "--wandb_project ${wandb_project}"   },
+        { "name": "extra_args",     "arg": "${extra_args}"                      }
       ],
       "containerArgs": [
         { "name": "hf_cache", "arg": "--bind /fs/scratch/PAS2699/yolo_training/mod/hf_cache:/app/hf_cache" }
