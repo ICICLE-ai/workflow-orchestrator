@@ -60,14 +60,20 @@ def create_run_for_template(dbos_workflow_id: str, dag_config: dict) -> int:
 
     template_version_id = dag_config["template_version_id"]
 
-    # Resolve an owner so the NOT NULL user_id on pipeline_run is satisfied.
-    user = session.execute(
-        select(AppUser).where(AppUser.username == "mock_user")
-    ).scalars().first()
+    # Owner of the run: the user who launched it (passed through dag_config by the
+    # execute endpoint). The engine resolves this user's Tapis token when
+    # submitting jobs. Fall back to mock_user so the NOT NULL user_id is satisfied
+    # in dev/seed paths that don't carry an owner_id.
+    owner_id = dag_config.get("owner_id")
+    if owner_id is None:
+        user = session.execute(
+            select(AppUser).where(AppUser.username == "mock_user")
+        ).scalars().first()
+        owner_id = user.user_id if user else None
 
     run = PipelineRun(
         template_version_id=template_version_id,
-        user_id=user.user_id if user else None,
+        user_id=owner_id,
         name=dag_config.get("name", "DAG Run"),
         status="RUNNING",
         dbos_workflow_id=dbos_workflow_id,

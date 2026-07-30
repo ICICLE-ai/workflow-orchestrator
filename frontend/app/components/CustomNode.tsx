@@ -1,7 +1,10 @@
 import React, { useState } from 'react';
 import { Handle, Position, useReactFlow } from '@xyflow/react';
-import { ActionIcon, Group, Text, Modal, Button, Stack, NumberInput, TextInput, Switch, Box, Badge } from '@mantine/core';
+import { ActionIcon, Group, Text, Box, Badge } from '@mantine/core';
 import { IconSettings, IconPlayerPlay, IconTrash } from '@tabler/icons-react';
+import { apiFetch } from '../lib/api';
+import StepSettingsModal from './StepSettingsModal';
+import type { StepMeta } from '../pages/types';
 
 export default function CustomNode({ id, data }: any) {
   const { setNodes, setEdges } = useReactFlow();
@@ -27,21 +30,28 @@ export default function CustomNode({ id, data }: any) {
     setEdges((eds) => eds.filter((e) => e.source !== id && e.target !== id));
   };
 
-  const handleSaveConfig = () => {
+  // Persist a saved config back onto this node, then close the settings modal.
+  const handleSaveConfig = (nextConfig: Record<string, any>) => {
+    setConfig(nextConfig);
     setNodes((nds) =>
-      nds.map((n) => {
-        if (n.id === id) {
-          return { ...n, data: { ...n.data, config_values: config } };
-        }
-        return n;
-      })
+      nds.map((n) => (n.id === id ? { ...n, data: { ...n.data, config_values: nextConfig } } : n))
     );
     setOpened(false);
   };
 
+  // Step metadata handed to the settings page (registry-resolved or generic).
+  const step: StepMeta = {
+    step_type_key: data.nodeType,
+    display_name: fullConfig.display_name || data.nodeType,
+    category: fullConfig.category,
+    config_schema: schema,
+    inputs,
+    outputs,
+  };
+
   const handleRun = async () => {
     try {
-      const res = await fetch("http://localhost:8002/api/pipeline-runs/execute-node", {
+      const res = await apiFetch("/api/pipeline-runs/execute-node", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -55,45 +65,6 @@ export default function CustomNode({ id, data }: any) {
     } catch (e) {
       alert("Failed to execute node.");
     }
-  };
-
-  // Dynamically render inputs based on config_schema
-  const renderInputs = () => {
-    return Object.entries(schema).map(([key, field]: [string, any]) => {
-      const value = config[key] !== undefined ? config[key] : field.default;
-
-      if (field.type === 'int' || field.type === 'float') {
-        return (
-          <NumberInput
-            key={key}
-            label={key}
-            description={field.description}
-            value={value}
-            onChange={(val) => setConfig({ ...config, [key]: val })}
-          />
-        );
-      }
-      if (field.type === 'boolean') {
-        return (
-          <Switch
-            key={key}
-            label={key}
-            description={field.description}
-            checked={value}
-            onChange={(e) => setConfig({ ...config, [key]: e.currentTarget.checked })}
-          />
-        );
-      }
-      return (
-        <TextInput
-          key={key}
-          label={key}
-          description={field.description}
-          value={value}
-          onChange={(e) => setConfig({ ...config, [key]: e.currentTarget.value })}
-        />
-      );
-    });
   };
 
   const maxPorts = Math.max(inputs.length, outputs.length, 1);
@@ -261,12 +232,15 @@ export default function CustomNode({ id, data }: any) {
         })}
       </div>
 
-      <Modal opened={opened} onClose={() => setOpened(false)} title={`${fullConfig.display_name} Configuration`}>
-        <Stack>
-          {Object.keys(schema).length > 0 ? renderInputs() : <Text c="dimmed">No configuration available for this step.</Text>}
-          <Button onClick={handleSaveConfig} fullWidth mt="md">Save Configuration</Button>
-        </Stack>
-      </Modal>
+      <StepSettingsModal
+        opened={opened}
+        onClose={() => setOpened(false)}
+        nodeId={id}
+        step={step}
+        initialConfig={config}
+        templateVersionId={data.template_version_id}
+        onSave={handleSaveConfig}
+      />
     </>
   );
 }

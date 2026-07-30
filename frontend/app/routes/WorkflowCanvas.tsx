@@ -4,21 +4,22 @@ import { AppShell, Group, Button, Text, ActionIcon, Stack, Title, Drawer, TextIn
 import { IconArrowLeft, IconDeviceFloppy, IconX, IconPlayerPlay, IconAlertTriangle } from '@tabler/icons-react';
 import { useNavigate, useParams, useLoaderData } from 'react-router';
 import CustomNode from '../components/CustomNode';
+import { apiFetch } from '../lib/api';
 
 const nodeTypes = { customNode: CustomNode };
 
 export async function clientLoader({ params }: { params: any }) {
   // Fetch step types and port data types from backend
   const [stepsRes, typesRes] = await Promise.all([
-    fetch("http://localhost:8002/api/step-types"),
-    fetch("http://localhost:8002/api/port-data-types"),
+    apiFetch("/api/step-types"),
+    apiFetch("/api/port-data-types"),
   ]);
   const stepTypes = await stepsRes.json();
   const portDataTypes = await typesRes.json();
 
   let templateData = null;
   if (params.id) {
-    const tRes = await fetch(`http://localhost:8002/api/workflow-templates/${params.id}`);
+    const tRes = await apiFetch(`/api/workflow-templates/${params.id}`);
     if (tRes.ok) templateData = await tRes.json();
   }
 
@@ -336,11 +337,11 @@ function Flow() {
     };
 
     const url = id && templateData
-      ? `http://localhost:8002/api/workflow-templates/${templateData.template_id}/versions`
-      : 'http://localhost:8002/api/workflow-templates';
+      ? `/api/workflow-templates/${templateData.template_id}/versions`
+      : '/api/workflow-templates';
 
     try {
-      const res = await fetch(url, {
+      const res = await apiFetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -370,8 +371,8 @@ function Flow() {
     setProgressGraph('');
 
     try {
-      const res = await fetch(
-        `http://localhost:8002/api/pipeline-runs/${templateData.template_version_id}/execute`,
+      const res = await apiFetch(
+        `/api/pipeline-runs/${templateData.template_version_id}/execute`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -387,7 +388,7 @@ function Flow() {
       if (pollRef.current) clearInterval(pollRef.current);
       pollRef.current = setInterval(async () => {
         try {
-          const sRes = await fetch(`http://localhost:8002/api/pipeline-runs/status/${dbos_workflow_id}`);
+          const sRes = await apiFetch(`/api/pipeline-runs/status/${dbos_workflow_id}`);
           if (!sRes.ok) return;
           const status = await sRes.json();
           const record = status.database_record || {};

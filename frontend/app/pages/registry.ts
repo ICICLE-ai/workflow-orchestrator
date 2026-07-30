@@ -4,6 +4,7 @@ import HeatmapPanel from "./heatmap";
 import ImagePlayground from "./imagePreprocessStudio";
 import TrainingPanel from "./TrainingPanel";
 import VisualizationPanel from "./VisualizationPanel";
+
 // Map of step_type_key -> custom settings page component.
 //
 // To add a custom interactive panel for a step: create a component under
@@ -12,7 +13,7 @@ import VisualizationPanel from "./VisualizationPanel";
 // Step types not listed here fall back to GenericConfigForm automatically.
 export const stepPanels: Record<string, ComponentType<StepPanelProps>> = {
   heatmap: HeatmapPanel,
-  "image-preprocess-studio": ImagePlayground
+  "image-preprocess-studio": ImagePlayground,
   training: TrainingPanel,
   visualization: VisualizationPanel,
 };

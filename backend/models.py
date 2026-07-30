@@ -27,6 +27,14 @@ class AppUser(Base):
     team_id = Column(Integer, ForeignKey('team.team_id'))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
+    # Per-user Tapis OAuth2 tokens. Populated by the /oauth2/callback exchange and
+    # refreshed on demand (see engine/tapis_auth.py). The DBOS engine resolves the
+    # run owner's token from here so jobs are submitted as the user who launched
+    # them, not a shared service account.
+    tapis_access_token = Column(String)
+    tapis_refresh_token = Column(String)
+    tapis_token_expires_at = Column(DateTime(timezone=True))
+
     team = relationship("Team", back_populates="users")
     workflows = relationship("WorkflowTemplate", back_populates="owner")
     pipeline_runs = relationship("PipelineRun", back_populates="user")

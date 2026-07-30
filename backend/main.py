@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Depends, Request, HTTPException
 from fastapi.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 import os
@@ -15,7 +16,8 @@ import json
 import glob
 
 from dbos import DBOS, DBOSConfig
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, Response
+import httpx
 
 app = FastAPI(title="Harvest Tapis Backend")
 
@@ -27,6 +29,31 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Signed, httponly session cookie that carries the logged-in username after the
+# Tapis OAuth flow (see auth.py). Defaults (same_site="lax", not Secure) suit an
+# all-localhost dev setup. When the frontend and backend are on different hosts
+# (e.g. frontend on localhost, backend behind a cloudflared tunnel), the browser
+# only sends the cookie on cross-site API calls if it's SameSite=None; Secure —
+# set SESSION_COOKIE_SAMESITE=none and SESSION_COOKIE_SECURE=true in that case.
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=os.getenv("SESSION_SECRET", "dev-insecure-session-secret-change-me"),
+    same_site=os.getenv("SESSION_COOKIE_SAMESITE", "lax"),
+    https_only=os.getenv("SESSION_COOKIE_SECURE", "false").lower() == "true",
+)
+
+
+def get_current_user(request: Request, db: Session = Depends(get_db)) -> AppUser:
+    """FastAPI dependency: resolve the signed-in AppUser from the session cookie,
+    or reject the request with 401. Attach to any route that requires auth."""
+    username = request.session.get("username")
+    if not username:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    user = db.query(AppUser).filter(AppUser.username == username).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="Session user no longer exists")
+    return user
 
 # --- DBOS durable-execution engine ---
 # Shares the harvest Postgres but keeps its internal bookkeeping in a dedicated
@@ -137,6 +164,8 @@ def sync_port_data_types(db: Session, step_files: list):
 def sync_step_registry(db: Session):
     print("Syncing step registry from JSON files...")
     step_files = glob.glob(os.path.join(os.path.dirname(__file__), "steps", "*", "step.json"))
+    # Port data types must exist before ports reference them (FK constraint).
+    sync_port_data_types(db, step_files)
     for file_path in step_files:
         with open(file_path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -265,6 +294,16 @@ def on_startup():
         
         # NOTE: In production, you would use Alembic migrations instead of create_all
         Base.metadata.create_all(bind=engine)
+        # create_all only adds *missing tables*, not new columns on existing ones.
+        # The per-user Tapis token columns were added after initial deploys, so
+        # patch existing app_user tables idempotently (no Alembic in this project).
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE app_user "
+                "ADD COLUMN IF NOT EXISTS tapis_access_token VARCHAR, "
+                "ADD COLUMN IF NOT EXISTS tapis_refresh_token VARCHAR, "
+                "ADD COLUMN IF NOT EXISTS tapis_token_expires_at TIMESTAMPTZ;"
+            ))
         print("Database schema created.")
         
         # Sync Dynamic Steps
@@ -307,7 +346,7 @@ class WorkflowTemplateCreate(BaseModel):
 # --- API Endpoints ---
 
 @app.get("/api/step-types")
-def get_step_types(db: Session = Depends(get_db)):
+def get_step_types(db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)):
     steps = db.query(StepTypeRegistry).filter(StepTypeRegistry.is_active == True).all()
     ports = db.query(StepTypePort).all()
     
@@ -330,7 +369,7 @@ def get_step_types(db: Session = Depends(get_db)):
     return result
 
 @app.get("/api/port-data-types")
-def get_port_data_types(db: Session = Depends(get_db)):
+def get_port_data_types(db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)):
     types = db.query(PortDataType).all()
     return [
         {
@@ -342,7 +381,7 @@ def get_port_data_types(db: Session = Depends(get_db)):
     ]
 
 @app.get("/api/workflow-templates")
-def list_workflow_templates(db: Session = Depends(get_db)):
+def list_workflow_templates(db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)):
     # Group by template_id to get the latest version of each template
     subquery = db.query(
         WorkflowTemplate.template_id,
@@ -368,7 +407,7 @@ def list_workflow_templates(db: Session = Depends(get_db)):
     ]
 
 @app.get("/api/workflow-templates/{template_id}/history")
-def get_workflow_template_history(template_id: int, db: Session = Depends(get_db)):
+def get_workflow_template_history(template_id: int, db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)):
     versions = db.query(WorkflowTemplate).filter(WorkflowTemplate.template_id == template_id).order_by(WorkflowTemplate.version.desc()).all()
     if not versions:
         raise HTTPException(status_code=404, detail="Template history not found")
@@ -386,7 +425,7 @@ def get_workflow_template_history(template_id: int, db: Session = Depends(get_db
     ]
 
 @app.get("/api/workflow-templates/{template_version_id}")
-def get_workflow_template(template_version_id: int, db: Session = Depends(get_db)):
+def get_workflow_template(template_version_id: int, db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)):
     template = db.query(WorkflowTemplate).filter(WorkflowTemplate.template_version_id == template_version_id).first()
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
@@ -465,15 +504,14 @@ def _validate_no_hanging_inputs(template: WorkflowTemplateCreate, db: Session):
 
 
 @app.post("/api/workflow-templates")
-def create_workflow_template(template: WorkflowTemplateCreate, db: Session = Depends(get_db)):
+def create_workflow_template(template: WorkflowTemplateCreate, db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)):
     _validate_no_hanging_inputs(template, db)
 
     # 1. Get next template_id
     max_id = db.query(func.max(WorkflowTemplate.template_id)).scalar() or 0
     next_id = max_id + 1
-    
-    user = db.query(AppUser).filter(AppUser.username == "mock_user").first()
-    owner_id = user.user_id if user else None
+
+    owner_id = user.user_id
 
     new_template = WorkflowTemplate(
         template_id=next_id,
@@ -531,14 +569,13 @@ def create_workflow_template(template: WorkflowTemplateCreate, db: Session = Dep
     return {"message": "Template created successfully", "template_version_id": new_template.template_version_id}
 
 @app.post("/api/workflow-templates/{template_id}/versions")
-def create_template_version(template_id: int, template: WorkflowTemplateCreate, db: Session = Depends(get_db)):
+def create_template_version(template_id: int, template: WorkflowTemplateCreate, db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)):
     _validate_no_hanging_inputs(template, db)
 
     max_version = db.query(func.max(WorkflowTemplate.version)).filter(WorkflowTemplate.template_id == template_id).scalar() or 0
     next_version = max_version + 1
-    
-    user = db.query(AppUser).filter(AppUser.username == "mock_user").first()
-    owner_id = user.user_id if user else None
+
+    owner_id = user.user_id
 
     new_template = WorkflowTemplate(
         template_id=template_id,
@@ -594,7 +631,7 @@ def create_template_version(template_id: int, template: WorkflowTemplateCreate, 
     return {"message": f"Version {next_version} saved successfully", "template_version_id": new_template.template_version_id}
 
 @app.get("/api/pipeline-runs")
-def list_pipeline_runs(db: Session = Depends(get_db)):
+def list_pipeline_runs(db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)):
     runs = db.query(PipelineRun).order_by(PipelineRun.created_at.desc()).all()
     # Join the template name so the history page can show which workflow ran.
     templates = {t.template_version_id: t.name for t in db.query(WorkflowTemplate).all()}
@@ -612,7 +649,7 @@ def list_pipeline_runs(db: Session = Depends(get_db)):
 
 
 @app.get("/api/pipeline-runs/{run_id}/detail")
-def get_pipeline_run_detail(run_id: int, db: Session = Depends(get_db)):
+def get_pipeline_run_detail(run_id: int, db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)):
     """Per-run detail by run_id: overall status + each step's status/outputs.
     Used by the history page to show which node is running/completed/failed."""
     from models import RunStep, WfNode
@@ -644,7 +681,7 @@ def get_pipeline_run_detail(run_id: int, db: Session = Depends(get_db)):
     }
 
 @app.get("/api/pipeline-runs/{run_id}/step/{node_id}/logs")
-def get_step_logs(run_id: int, node_id: int, db: Session = Depends(get_db)):
+def get_step_logs(run_id: int, node_id: int, db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)):
     """Fetch detailed failure logs for a step: the DBOS error we recorded, plus
     the underlying Tapis job's lastMessage and its container stdout/stderr
     (tapisjob.out). Best-effort — degrades gracefully if the token is stale or
@@ -675,9 +712,9 @@ def get_step_logs(run_id: int, node_id: int, db: Session = Depends(get_db)):
         result["logs_note"] = "This step ran no Tapis job (e.g. a data source/sink), so there are no job logs."
         return result
 
-    token = tapis_auth.get_token()
+    token = tapis_auth.get_token_for_run(run_id)
     if not token:
-        result["logs_note"] = "No valid Tapis token configured; cannot fetch job logs."
+        result["logs_note"] = "No valid Tapis token for this run's owner; cannot fetch job logs."
         return result
 
     base = tapis_auth.TAPIS_BASE_URL
@@ -709,7 +746,7 @@ class NodeExecutionRequest(BaseModel):
     config_values: dict
 
 @app.post("/api/pipeline-runs/execute-node")
-def execute_single_node(req: NodeExecutionRequest, db: Session = Depends(get_db)):
+def execute_single_node(req: NodeExecutionRequest, db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)):
     # In a real app, this would submit a Tapis job
     # For now, we simulate execution
     import time
@@ -778,7 +815,7 @@ class RunOptions(BaseModel):
 
 
 @app.post("/api/pipeline-runs/{template_version_id}/execute")
-def execute_workflow(template_version_id: int, options: Optional[RunOptions] = None, db: Session = Depends(get_db)):
+def execute_workflow(template_version_id: int, options: Optional[RunOptions] = None, db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)):
     """Kick off durable execution of a saved workflow template.
 
     Builds the DAG from the persisted template and starts the DBOS orchestrator
@@ -796,6 +833,10 @@ def execute_workflow(template_version_id: int, options: Optional[RunOptions] = N
         for key, value in options.model_dump(exclude_none=True).items():
             dag_config[key] = value
 
+    # Record the launching user so the run is owned by them and the engine can
+    # resolve their Tapis token (get_token_for_run) when submitting jobs.
+    dag_config["owner_id"] = user.user_id
+
     handle = DBOS.start_workflow(dag_orchestrator_workflow, dag_config)
     return {
         "message": "Workflow execution started",
@@ -805,7 +846,7 @@ def execute_workflow(template_version_id: int, options: Optional[RunOptions] = N
 
 
 @app.post("/api/pipeline-runs/{run_id}/stop")
-def stop_pipeline_run(run_id: int, db: Session = Depends(get_db)):
+def stop_pipeline_run(run_id: int, db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)):
     """Stop a running pipeline run: cancel the DBOS workflow (and its child
     node-workflows), cancel any in-flight Tapis job, and mark the run + its
     non-terminal steps as cancelled."""
@@ -832,7 +873,7 @@ def stop_pipeline_run(run_id: int, db: Session = Depends(get_db)):
     cancelled_jobs = 0
     for s in steps:
         if s.tapis_job_uuid and (s.status or "") not in ("completed", "failed"):
-            if cancel_tapis_job(s.tapis_job_uuid):
+            if cancel_tapis_job(s.tapis_job_uuid, run_id):
                 cancelled_jobs += 1
 
     # 3. Mark run + non-terminal steps as cancelled.
@@ -850,7 +891,7 @@ def stop_pipeline_run(run_id: int, db: Session = Depends(get_db)):
 
 
 @app.get("/api/pipeline-runs/status/{dbos_workflow_id}")
-def get_workflow_run_status(dbos_workflow_id: str, format: str = "json"):
+def get_workflow_run_status(dbos_workflow_id: str, format: str = "json", user: AppUser = Depends(get_current_user)):
     """Return live status of a workflow run: overall DBOS state, per-step detail,
     and an ASCII progress graph. `format=text` returns just the graph as text."""
     status = DBOS.get_workflow_status(dbos_workflow_id)
@@ -875,6 +916,95 @@ def get_workflow_run_status(dbos_workflow_id: str, format: str = "json"):
         "database_record": db_details,
         "progress_graph": progress_graph,
     }
+
+
+# --- Tapis Files proxy (Image Preprocessing Studio: browse a directory + save) ---
+# Proxies the Tapis Files API using the logged-in user's OAuth token so the studio
+# panel can browse a storage system's images and write operations.json to a path.
+# Requires a real Tapis session — in mock/logged-out state get_token_for_user
+# returns None and these return 401 (the panel surfaces "log in with Tapis").
+
+def _user_tapis_token(user: AppUser, db: Session) -> str:
+    from engine import tapis_auth
+    token = tapis_auth.get_token_for_user(user, db)
+    if not token:
+        raise HTTPException(
+            status_code=401,
+            detail="No valid Tapis token — log in with a real Tapis account to browse files.",
+        )
+    return token
+
+
+def _tapis_files_url(kind: str, system: str, path: str) -> str:
+    # kind is "ops" (list/write) or "content" (download). Tapis file paths may
+    # contain slashes; they belong in the URL path after the system id.
+    from engine import tapis_auth
+    return f"{tapis_auth.TAPIS_BASE_URL}/v3/files/{kind}/{system}/{path.lstrip('/')}"
+
+
+@app.get("/api/tapis-files/list")
+def tapis_files_list(system: str, path: str = "/", db: Session = Depends(get_db),
+                     user: AppUser = Depends(get_current_user)):
+    """List a directory on a Tapis storage system as the current user. Returns
+    Tapis' file objects: [{name, path, size, type: 'file'|'dir', mimeType}]."""
+    token = _user_tapis_token(user, db)
+    try:
+        resp = httpx.get(_tapis_files_url("ops", system, path),
+                         headers={"X-Tapis-Token": token}, timeout=30)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not reach Tapis: {type(e).__name__}")
+    if resp.status_code == 401:
+        raise HTTPException(status_code=401, detail="Tapis rejected the token (expired or unauthorized).")
+    if resp.status_code == 404:
+        raise HTTPException(status_code=404, detail="Path not found on Tapis.")
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Tapis list failed (HTTP {resp.status_code}).")
+    return {"result": resp.json().get("result", [])}
+
+
+@app.get("/api/tapis-files/content")
+def tapis_files_content(system: str, path: str, db: Session = Depends(get_db),
+                        user: AppUser = Depends(get_current_user)):
+    """Stream a file's bytes from a Tapis storage system as the current user."""
+    token = _user_tapis_token(user, db)
+    try:
+        resp = httpx.get(_tapis_files_url("content", system, path),
+                         headers={"X-Tapis-Token": token}, timeout=60)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not reach Tapis: {type(e).__name__}")
+    if resp.status_code != 200:
+        code = resp.status_code if resp.status_code in (401, 404) else 502
+        raise HTTPException(status_code=code, detail=f"Tapis content failed (HTTP {resp.status_code}).")
+    return Response(content=resp.content,
+                    media_type=resp.headers.get("content-type", "application/octet-stream"))
+
+
+class TapisFileWrite(BaseModel):
+    system: str
+    path: str
+    content: str  # text to write (e.g. serialized operations.json)
+
+
+@app.post("/api/tapis-files/upload")
+def tapis_files_upload(body: TapisFileWrite, db: Session = Depends(get_db),
+                       user: AppUser = Depends(get_current_user)):
+    """Write text content to a Tapis storage path as the current user (multipart
+    insert). Used to save the studio's operations.json where the job expects it."""
+    token = _user_tapis_token(user, db)
+    filename = body.path.rstrip("/").split("/")[-1] or "operations.json"
+    try:
+        resp = httpx.post(
+            _tapis_files_url("ops", body.system, body.path),
+            headers={"X-Tapis-Token": token},
+            files={"file": (filename, body.content.encode("utf-8"), "application/json")},
+            timeout=60,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not reach Tapis: {type(e).__name__}")
+    if resp.status_code not in (200, 201):
+        code = 401 if resp.status_code == 401 else 502
+        raise HTTPException(status_code=code, detail=f"Tapis upload failed (HTTP {resp.status_code}): {resp.text[:200]}")
+    return {"ok": True, "path": body.path}
 
 
 if __name__ == "__main__":
