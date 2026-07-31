@@ -31,6 +31,10 @@ export interface StepMeta {
   config_schema: Record<string, StepConfigField>;
   inputs: StepPort[];
   outputs: StepPort[];
+  // False for design-time-only steps (e.g. smart_labeler, geospatial_map) that
+  // never submit a Tapis job — the canvas hides Run Configuration for these.
+  // Defaults to true when the step type doesn't say otherwise.
+  submits_job?: boolean;
 }
 
 // An upstream connection feeding one of this node's input ports (resolved from
@@ -60,6 +64,13 @@ export interface StepPanelProps {
   connectedInputs: Record<string, ConnectedInput>;
   // The template version this node lives in (undefined for an unsaved template).
   templateVersionId?: number;
+  // The pipeline run this panel is being viewed against, when opened from the
+  // run page (runs.$runId.tsx) for a design-time-only step. Undefined when the
+  // panel is opened from the canvas at design time (no run exists yet) — a
+  // panel whose data is run-scoped (e.g. geospatialMap, which reads a
+  // completed run's generated GeoPackage) should treat that as "no run yet"
+  // rather than erroring.
+  runId?: number;
   // Persist the working config to the node and close (the modal's Save action).
   onSave: () => void;
   // Close without persisting (the modal's Cancel action).

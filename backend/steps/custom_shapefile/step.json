@@ -1,0 +1,128 @@
+{
+  "step_type_key": "custom_shapefile",
+  "display_name": "🌾 Custom Shapefile (Weed / Residue)",
+  "description": "Builds geospatial heatmaps and farm-boundary shapefiles from Harvest-style JSON: weed detection bounding boxes + image EXIF GPS, or residue sample points with lat/lon and residue fraction.",
+  "category": "Post-processing",
+  "icon": "map",
+  "tapis_app_id": "harvest-Custom-Shapefile-gupta1543",
+  "inputs": [
+    { "name": "results", "type": "json_results" },
+    { "name": "images", "type": "image_dir", "required": false }
+  ],
+  "outputs": [
+    { "name": "shapefile_output", "type": "shapefile" }
+  ],
+  "config_schema": {
+    "mode": {
+      "type": "string",
+      "description": "'weed' (bounding-box detections + image EXIF GPS) or 'residue' (lat/lon sample points with residue fraction).",
+      "default": "weed"
+    },
+    "grid_width": {
+      "type": "int",
+      "description": "Grid cell width in feet.",
+      "default": 30
+    },
+    "grid_height": {
+      "type": "int",
+      "description": "Grid cell height in feet.",
+      "default": 30
+    },
+    "spray_mode": {
+      "type": "string",
+      "description": "Weed mode only: 'binary' or 'custom' spray-decision banding.",
+      "default": "binary"
+    },
+    "spray_levels": {
+      "type": "string",
+      "description": "Weed mode, spray_mode=custom only: space-separated names for each spray band (e.g. 'low medium high').",
+      "default": ""
+    },
+    "spray_thresholds": {
+      "type": "string",
+      "description": "Weed mode, spray_mode=custom only: space-separated integer count thresholds, one per spray_levels entry.",
+      "default": ""
+    },
+    "fov_width_ft": {
+      "type": "float",
+      "description": "Weed mode: camera ground footprint width at flight altitude, in feet.",
+      "default": 29.0
+    },
+    "fov_height_ft": {
+      "type": "float",
+      "description": "Weed mode: camera ground footprint height at flight altitude, in feet.",
+      "default": 22.0
+    },
+    "gps_offset_x_ft": {
+      "type": "float",
+      "description": "Weed mode: east-west offset (feet) between an image's GPS tag and its optical center.",
+      "default": 0.0
+    },
+    "gps_offset_y_ft": {
+      "type": "float",
+      "description": "Weed mode: north-south offset (feet) between an image's GPS tag and its optical center.",
+      "default": 0.0
+    },
+    "image_width_px": {
+      "type": "int",
+      "description": "Weed mode: source image width in pixels, used for bounding-box-to-ground projection.",
+      "default": 4000
+    },
+    "image_height_px": {
+      "type": "int",
+      "description": "Weed mode: source image height in pixels, used for bounding-box-to-ground projection.",
+      "default": 3000
+    }
+  },
+  "tapis_job": {
+    "name": "custom-shapefile",
+    "appId": "harvest-Custom-Shapefile-gupta1543",
+    "appVersion": "1.0.0",
+    "description": "Generate weed/residue heatmap + farm-boundary shapefiles",
+    "execSystemId": "expanse-tapis",
+    "execSystemLogicalQueue": "tapisShared",
+    "archiveSystemId": "${archive_system}",
+    "archiveSystemDir": "${archive_dir}",
+    "nodeCount": 1,
+    "coresPerNode": 12,
+    "memoryMB": 8192,
+    "maxMinutes": 200,
+    "fileInputs": [
+      { "name": "results", "envKey": "results", "autoMountLocal": true, "sourceUrl": "${results}", "targetPath": "input/results.json" },
+      { "name": "images", "envKey": "images", "autoMountLocal": true, "sourceUrl": "${images}", "targetPath": "input/images" }
+    ],
+    "parameterSet": {
+      "appArgs": [
+        { "name": "mode", "arg": "--mode" },
+        { "name": "mode value", "arg": "${mode}" },
+        { "name": "grid width", "arg": "--grid-width" },
+        { "name": "grid width value", "arg": "${grid_width}" },
+        { "name": "grid height", "arg": "--grid-height" },
+        { "name": "grid height value", "arg": "${grid_height}" },
+        { "name": "spray mode", "arg": "--spray-mode" },
+        { "name": "spray mode value", "arg": "${spray_mode}" }
+      ],
+      "schedulerOptions": [
+        { "name": "slurm account", "arg": "-A ${slurm_account}" },
+        { "name": "job name", "arg": "--job-name=custom-shapefile" },
+        { "name": "cpu cores", "arg": "--cpus-per-task=10" }
+      ],
+      "containerArgs": [
+        { "name": "binding", "arg": "--bind $PWD/output:/output" }
+      ],
+      "envVariables": [
+        { "key": "OMP_NUM_THREADS", "value": "10" },
+        { "key": "MKL_NUM_THREADS", "value": "10" },
+        { "key": "FOV_WIDTH_FT", "value": "${fov_width_ft}" },
+        { "key": "FOV_HEIGHT_FT", "value": "${fov_height_ft}" },
+        { "key": "GPS_OFFSET_X_FT", "value": "${gps_offset_x_ft}" },
+        { "key": "GPS_OFFSET_Y_FT", "value": "${gps_offset_y_ft}" },
+        { "key": "IMAGE_WIDTH_PX", "value": "${image_width_px}" },
+        { "key": "IMAGE_HEIGHT_PX", "value": "${image_height_px}" },
+        { "key": "SPRAY_LEVELS", "value": "${spray_levels}" },
+        { "key": "SPRAY_THRESHOLDS", "value": "${spray_thresholds}" }
+      ],
+      "archiveFilter": { "includeLaunchFiles": false }
+    }
+  }
+}

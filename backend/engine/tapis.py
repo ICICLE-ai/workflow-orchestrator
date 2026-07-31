@@ -37,6 +37,18 @@ class TapisAuthError(RuntimeError):
     be submitted. Surfaced to the user as a step failure asking them to re-login."""
 
 
+def _redact(text: str, secret_values: list[str] | None) -> str:
+    """Replace any occurrence of a resolved secret value with a placeholder,
+    so a rendered job spec containing a "secret"-typed field (see
+    engine.workflows._resolve_secrets) never reaches stdout/error text —
+    including Tapis' own validation-error response, which can echo submitted
+    fields back."""
+    for value in secret_values or ():
+        if value:
+            text = text.replace(value, "***REDACTED***")
+    return text
+
+
 def _require_run_token(run_id: int) -> str:
     """Resolve the run owner's Tapis access token, or raise TapisAuthError."""
     token = tapis_auth.get_token_for_run(run_id)
@@ -53,13 +65,18 @@ class TapisV3:
 
     @staticmethod
     @DBOS.step()
-    def submit_job(job_spec: dict, run_id: int) -> str:
+    def submit_job(job_spec: dict, run_id: int, redact: list[str] | None = None) -> str:
         """Submit a fully-rendered Tapis job spec as the run owner; return the UUID.
 
         job_spec is the step's `tapis_job` template with all ${...} placeholders
         already substituted (see engine.job_spec). run_id identifies the run whose
         owner's Tapis token authorizes the submission. In mock mode the spec's
         appId is used to drive the simulated job.
+
+        redact: real values of any "secret"-typed config field this job spec had
+        substituted in (see engine.workflows._resolve_secrets) — masked out of
+        the debug logging below, which otherwise dumps the full rendered spec
+        (and Tapis' own response, which can echo submitted fields back).
         """
         if _use_real():
             token = _require_run_token(run_id)
@@ -71,10 +88,12 @@ class TapisV3:
                 # Tapis puts the validation reason in the body — surface it instead
                 # of a bare "400". Also dump the rendered spec so unresolved ${...}
                 # placeholders / bad fields are visible in the logs.
-                print(f"[TapisV3] Tapis REJECTED job (HTTP {resp.status_code}): {resp.text[:1500]}")
-                print(f"[TapisV3] Rendered job_spec was: {json.dumps(job_spec, default=str)[:2000]}")
+                resp_text = _redact(resp.text, redact)
+                spec_text = _redact(json.dumps(job_spec, default=str), redact)
+                print(f"[TapisV3] Tapis REJECTED job (HTTP {resp.status_code}): {resp_text[:1500]}")
+                print(f"[TapisV3] Rendered job_spec was: {spec_text[:2000]}")
                 raise RuntimeError(
-                    f"Tapis job submit failed (HTTP {resp.status_code}): {resp.text[:600]}"
+                    f"Tapis job submit failed (HTTP {resp.status_code}): {resp_text[:600]}"
                 )
             return resp.json()["result"]["uuid"]
 

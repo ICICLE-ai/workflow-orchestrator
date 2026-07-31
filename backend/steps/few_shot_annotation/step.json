@@ -1,0 +1,234 @@
+{
+   "step_type_key": "few_shot_annotation",
+   "display_name": "🎯 Few-Shot Annotation",
+   "description": "Bootstraps a few-shot object annotator from an initial annotation file and ground-truth examples, then proposes and embeds regions across the target dataset. Custom UI — Tapis app/job wiring to follow.",
+   "category": "Inference",
+   "icon": "target",
+   "inputs": [
+      { "name": "annotation_file", "type": "json_results" },
+      { "name": "ground_truth", "type": "image_dir" },
+      { "name": "dataset", "type": "image_dir" },
+      { "name": "output_path", "type": "image_dir" }
+   ],
+   "outputs": [
+      { "name": "dataset", "type": "image_dir", "output_path": "dataset" },
+      { "name": "annotations", "type": "json_results", "output_path": "annotations.json" }
+   ],
+   "config_schema": {
+      "annotation_file": {
+         "type": "string",
+         "description": "JSON file containing the initial few-shot annotations to bootstrap from.",
+         "default": ""
+      },
+      "ground_truth": {
+         "type": "string",
+         "description": "Directory of ground-truth images used to validate/calibrate the few-shot annotator.",
+         "default": ""
+      },
+      "dataset": {
+         "type": "string",
+         "description": "Directory of unlabeled images the few-shot annotator will run over.",
+         "default": ""
+      },
+      "proposer_model": {
+         "type": "string",
+         "description": "Patra model card used as the region PROPOSER — generates candidate regions/boxes before embedding & similarity matching against the few-shot examples.",
+         "default": ""
+      },
+      "embedder_model": {
+         "type": "string",
+         "description": "Patra model card used as the EMBEDDER — produces feature embeddings for proposed regions, compared against the few-shot examples' embeddings to assign labels.",
+         "default": ""
+      },
+      "use_sahi": {
+         "type": "boolean",
+         "description": "Enable SAHI (Slicing Aided Hyper Inference) — tiles large images into overlapping patches before inference, improving detection of small objects that would otherwise be missed at full-image scale.",
+         "default": false
+      },
+      "tile_size": {
+         "type": "int",
+         "description": "SAHI tile size in pixels — the side length of each square tile the image is sliced into. Only used when SAHI is enabled.",
+         "default": 640
+      },
+      "overlap_ratio": {
+         "type": "float",
+         "description": "SAHI tile overlap ratio (0-1) — how much each tile overlaps its neighbors, so an object spanning a tile boundary is still fully captured in at least one tile. Only used when SAHI is enabled.",
+         "default": 0.2
+      },
+      "batch_size": {
+         "type": "int",
+         "description": "Number of images processed per inference batch. Higher values are faster per-image but use more memory.",
+         "default": 8
+      },
+      "crop_size": {
+         "type": "int",
+         "description": "Side length in pixels each proposed region is resized/cropped to before embedding.",
+         "default": 224
+      },
+      "confidence_threshold": {
+         "type": "float",
+         "description": "Minimum detection confidence score (0-1) for a proposed region to be kept.",
+         "default": 0.3
+      },
+      "objectness_threshold": {
+         "type": "float",
+         "description": "Minimum objectness score (0-1) for the proposer to keep a candidate region before it's passed to the embedder.",
+         "default": 0.5
+      },
+      "similarity_threshold": {
+         "type": "float",
+         "description": "Minimum embedding similarity score (0-1) for a proposed region to be accepted as a match against a few-shot example.",
+         "default": 0.7
+      },
+      "nms_iou_threshold": {
+         "type": "float",
+         "description": "IoU threshold (0-1) for Non-Maximum Suppression — overlapping detections above this are collapsed to the single highest-scoring one.",
+         "default": 0.5
+      }
+   },
+   "tapis_app_id": "few_shot_detection",
+   "tapis_job": {
+      "name": "few-shot-detection-20260716-1530",
+      "appId": "few_shot_detection",
+      "appVersion": "1.0.0",
+      "description": "smart labeler few-shot detection",
+      "execSystemId": "${exec_system}",
+      "execSystemLogicalQueue": "${exec_queue}",
+      "archiveSystemId": "${archive_system}",
+      "archiveSystemDir": "${archive_dir}",
+      "archiveOnAppError": true,
+      "nodeCount": 1,
+      "coresPerNode": 8,
+      "memoryMB": 4096,
+      "maxMinutes": 120,
+      "parameterSet": {
+         "appArgs": [
+            {
+               "name": "ann_path",
+               "arg": "--ann_path /annotations.json"
+            },
+            {
+               "name": "gt_image_dir",
+               "arg": "--gt_image_dir /gt_images"
+            },
+            {
+               "name": "dataset_dir",
+               "arg": "--dataset_dir /dataset"
+            },
+            {
+               "name": "output_dir",
+               "arg": "--output_path /output"
+            },
+            {
+               "name": "embedder",
+               "arg": "--embedder ${embedder_model}"
+            },
+            {
+               "name": "proposers",
+               "arg": "--proposers ${proposer_model}"
+            },
+            {
+               "name": "crop_size",
+               "arg": "--crop_size ${crop_size}"
+            },
+            {
+               "name": "text_prompt",
+               "arg": "--text_prompt visual"
+            },
+            {
+               "name": "batch_size",
+               "arg": "--batch_size ${batch_size}"
+            },
+            {
+               "name": "is_sahi",
+               "arg": "--is_sahi",
+               "if": "use_sahi"
+            },
+            {
+               "name": "tile_size",
+               "arg": "--tile_size ${tile_size}",
+               "if": "use_sahi"
+            },
+            {
+               "name": "overlap_ratio",
+               "arg": "--overlap_ratio ${overlap_ratio}",
+               "if": "use_sahi"
+            },
+            {
+               "name": "confidence_threshold",
+               "arg": "--confidence_threshold ${confidence_threshold}"
+            },
+            {
+               "name": "objectness_threshold",
+               "arg": "--objectness_threshold ${objectness_threshold}"
+            },
+            {
+               "name": "similarity_threshold",
+               "arg": "--similarity_threshold ${similarity_threshold}"
+            },
+            {
+               "name": "nms_iou_threshold",
+               "arg": "--nms_iou_threshold ${nms_iou_threshold}"
+            },
+            {
+               "name": "device",
+               "arg": "--device cuda"
+            }
+         ],
+         "envVariables": [
+            {
+               "key": "HF_TOKEN",
+               "value": "${secrets.HF_TOKEN}"
+            }
+         ],
+         "schedulerOptions": [
+            {
+               "name": "gpu_per_node",
+               "arg": "-G 1"
+            },
+            { "name": "slurm account", "arg": "-A ${slurm_account}" }
+         ],
+         "containerArgs": [
+            {
+               "name": "binding_annotations",
+               "arg": "--bind $PWD/annotations.json:/annotations.json"
+            },
+            {
+               "name": "binding_gt_images",
+               "arg": "--bind $PWD/gt_images:/gt_images"
+            },
+            {
+               "name": "binding_dataset",
+               "arg": "--bind $PWD/dataset:/dataset"
+            },
+            {
+               "name": "binding_output",
+               "arg": "--bind $PWD/output:/output"
+            }
+         ]
+      },
+      "fileInputs": [
+         {
+            "name": "gt_annotations",
+            "description": "Optional: stage the GT annotation JSON in instead of reading it in place. If used, point --ann_path at ${JobWorkingDir}/input/annotations.json.",
+            "autoMountLocal": true,
+            "sourceUrl": "tapis://${exec_system}${annotation_file}",
+            "targetPath": "annotations.json"
+         },
+         {
+            "name": "gt_images",
+            "description": "Optional: stage the GT image directory in. If used, point --gt_image_dir at ${JobWorkingDir}/input/gt_images.",
+            "autoMountLocal": true,
+            "sourceUrl": "tapis://${exec_system}${ground_truth}",
+            "targetPath": "gt_images"
+         },
+         {
+            "name": "dataset_images",
+            "description": "Optional: stage the query image directory in. If used, point --dataset_dir at ${JobWorkingDir}/input/dataset.",
+            "autoMountLocal": true,
+            "sourceUrl": "tapis://${exec_system}${dataset}",
+            "targetPath": "dataset"
+         }
+      ]
+   }
+}

@@ -58,6 +58,14 @@ def create_run_for_template(dbos_workflow_id: str, dag_config: dict) -> int:
     """
     session = ds.sql_session()
 
+    # The HTTP layer creates the pipeline_run + run_step rows synchronously
+    # (before starting this workflow) so it can return a real run_id to the
+    # caller immediately. When that's the case, reuse it instead of creating
+    # a duplicate run.
+    existing_run_id = dag_config.get("run_id")
+    if existing_run_id is not None:
+        return existing_run_id
+
     template_version_id = dag_config["template_version_id"]
 
     # Owner of the run: the user who launched it (passed through dag_config by the
@@ -194,6 +202,24 @@ def get_config_schema_defaults(node_key: str) -> dict:
     ).scalars().one_or_none()
     schema = (step_type.config_schema or {}) if step_type else {}
     return {k: v.get("default") for k, v in schema.items() if isinstance(v, dict) and "default" in v}
+
+
+@ds.transaction(isolation_level="READ COMMITTED")
+def get_node_config_schema(node_key: str) -> dict:
+    """Return a node's step-type config_schema, raw (unlike
+    get_config_schema_defaults, which only extracts defaults). Used to find
+    "secret"-typed fields so their value (a secret KEY) can be resolved to the
+    real value at job-submission time."""
+    session = ds.sql_session()
+    wf_node = session.execute(
+        select(WfNode).where(WfNode.node_id == int(node_key))
+    ).scalars().one()
+    step_type = session.execute(
+        select(StepTypeRegistry).where(
+            StepTypeRegistry.step_type_key == wf_node.step_type_key
+        )
+    ).scalars().one_or_none()
+    return (step_type.config_schema or {}) if step_type else {}
 
 
 @ds.transaction(isolation_level="READ COMMITTED")

@@ -2,6 +2,9 @@ import type { ComponentType } from "react";
 import type { StepPanelProps } from "./types";
 import HeatmapPanel from "./heatmap";
 import ImagePlayground from "./imagePreprocessStudio";
+import SmartLabelerPanel from "./smartLabeler";
+import FewShotAnnotationPanel from "./fewShotAnnotation";
+import GeospatialMapPanel from "./geospatialMap";
 
 // Map of step_type_key -> custom settings page component.
 //
@@ -11,7 +14,10 @@ import ImagePlayground from "./imagePreprocessStudio";
 // Step types not listed here fall back to GenericConfigForm automatically.
 export const stepPanels: Record<string, ComponentType<StepPanelProps>> = {
   heatmap: HeatmapPanel,
-  "image-preprocess-studio": ImagePlayground
+  "image-preprocess-studio": ImagePlayground,
+  smart_labeler: SmartLabelerPanel,
+  few_shot_annotation: FewShotAnnotationPanel,
+  geospatial_map: GeospatialMapPanel,
 };
 
 // Resolve the registered panel for a step type, or undefined if none.

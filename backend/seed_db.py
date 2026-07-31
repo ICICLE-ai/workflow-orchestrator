@@ -20,6 +20,7 @@ def seed_database():
             {"type_key": "pytorch_model", "description": "PyTorch model weights (.pth)"},
             {"type_key": "csv_data", "description": "CSV dataset"},
             {"type_key": "shapefile", "description": "Geospatial shapefile"},
+            {"type_key": "geopackage", "description": "Geospatial GeoPackage (.gpkg) container"},
             {"type_key": "heatmap_image", "description": "Generated heatmap image"},
             {"type_key": "file_path", "description": "File path"},
         ]

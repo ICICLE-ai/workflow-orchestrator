@@ -8,7 +8,7 @@
       { "name": "source_dir", "type": "image_dir" },
       { "name": "output_path", "type": "image_dir" }
    ],
-   "outputs": [{ "name": "output directory", "type": "image_dir" }],
+   "outputs": [{ "name": "output_path", "type": "image_dir" }],
    "config_schema": {
       "source_dir": {
          "type": "image_dir",

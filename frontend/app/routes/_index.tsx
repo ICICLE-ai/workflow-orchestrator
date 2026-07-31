@@ -1,7 +1,8 @@
 import type { Route } from "./+types/_index";
 import { AppShell, Container, Title, Text, Button, Group, Card, SimpleGrid, ThemeIcon } from "@mantine/core";
-import { IconLayoutDashboard, IconActivity, IconFolder, IconSettings } from "@tabler/icons-react";
+import { IconLayoutDashboard, IconActivity, IconFolder } from "@tabler/icons-react";
 import { useNavigate } from "react-router";
+import SecretsMenu from "../components/SecretsMenu";
 
 export function meta({}: Route.MetaArgs) {
   return [
@@ -26,6 +27,7 @@ export default function Dashboard() {
             </ThemeIcon>
             <Text fw={700} size="lg">Harvest</Text>
           </Group>
+          <SecretsMenu />
         </Group>
       </AppShell.Header>
 

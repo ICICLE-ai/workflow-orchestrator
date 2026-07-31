@@ -1,14 +1,64 @@
 import React, { useState } from 'react';
 import { Handle, Position, useReactFlow } from '@xyflow/react';
 import { ActionIcon, Group, Text, Box, Badge } from '@mantine/core';
-import { IconSettings, IconPlayerPlay, IconTrash } from '@tabler/icons-react';
+import { IconSettings, IconPlayerPlay, IconTrash, IconCpu } from '@tabler/icons-react';
 import { apiFetch } from '../lib/api';
 import StepSettingsModal from './StepSettingsModal';
+import RunConfigModal from './RunConfigModal';
 import type { StepMeta, ConnectedInput } from '../pages/types';
+
+// Resolve the actual path value a node's OUTPUT port exposes, for the
+// settings panel's design-time preview (e.g. fewShotAnnotation's read-only
+// "Ground truth" field). Mirrors the backend's own pass-through heuristic
+// (engine/workflows.py's _source_node_outputs): a design-time step with
+// several outputs may just be forwarding one of its OWN inputs unchanged
+// (e.g. smart_labeler's 'images' output re-exposes its wired 'images'
+// input) rather than exposing its own config.path — smart_labeler's
+// config.path is its annotations.json destination, which has nothing to do
+// with that port. If the output port's name matches one of the node's own
+// input port names, trace back through that input's edge instead of
+// reading this node's config directly. Bounded by `depth` against a
+// pathological/cyclic graph.
+function resolveOutputPath(
+  nodeId: string,
+  outputPortName: string,
+  getNode: (id: string) => any,
+  getEdges: () => any[],
+  depth = 0
+): string {
+  if (depth > 10) return '';
+  const node = getNode(nodeId);
+  if (!node) return '';
+  const nodeFullConfig = (node.data as any)?.fullStepConfig || {};
+  const nodeConfigValues = (node.data as any)?.config_values || {};
+  const nodeInputs: any[] = nodeFullConfig.inputs || [];
+  const isPassthrough = nodeInputs.some((p: any) => (p.port_name || p.name) === outputPortName);
+
+  if (isPassthrough) {
+    const edge = getEdges().find((e) => e.target === nodeId && e.targetHandle === outputPortName);
+    if (!edge) return '';
+    return resolveOutputPath(edge.source, edge.sourceHandle ?? '', getNode, getEdges, depth + 1);
+  }
+
+  // A source step with a "system" field (source_geopackage, source_shapefile)
+  // lets the user enter a bare path and pick the Tapis system separately —
+  // mirrors engine/workflows.py's _source_node_outputs, which does the same
+  // tapis://system/path prefixing server-side for the resolved (post-run)
+  // value. Doing it here too means a design-time preview (e.g.
+  // geospatialMap.tsx's /api/geospatial-preview/... calls, made before any
+  // run exists) sees the same URI shape as the run-scoped resource does.
+  const path = String(nodeConfigValues.path ?? '');
+  const system = String(nodeConfigValues.system ?? '');
+  if (system && path && !path.includes('://')) {
+    return `tapis://${system}/${path.replace(/^\/+/, '')}`;
+  }
+  return path;
+}
 
 export default function CustomNode({ id, data }: any) {
   const { setNodes, setEdges, getEdges, getNode } = useReactFlow();
   const [opened, setOpened] = useState(false);
+  const [runConfigOpened, setRunConfigOpened] = useState(false);
   const [config, setConfig] = useState(data.config_values || {});
 
   // Fetch full step schema config from the registry (passed down in data)
@@ -39,6 +89,18 @@ export default function CustomNode({ id, data }: any) {
     setOpened(false);
   };
 
+  // Run-resource values (nodeCount, coresPerNode, memoryMB, maxMinutes, gpus)
+  // live in the same config_values dict as the step's business config, under
+  // reserved keys the orchestrator applies on top of the step's job template.
+  const handleSaveRunConfig = (values: Record<string, any>) => {
+    const nextConfig = { ...config, ...values };
+    setConfig(nextConfig);
+    setNodes((nds) =>
+      nds.map((n) => (n.id === id ? { ...n, data: { ...n.data, config_values: nextConfig } } : n))
+    );
+    setRunConfigOpened(false);
+  };
+
   // Step metadata handed to the settings page (registry-resolved or generic).
   const step: StepMeta = {
     step_type_key: data.nodeType,
@@ -60,11 +122,19 @@ export default function CustomNode({ id, data }: any) {
       if (!edge) continue;
       const src = getNode(edge.source);
       if (!src) continue;
+      const sourcePort = edge.sourceHandle ?? '';
+      // The upstream node's raw config_values, but with `path` corrected to
+      // whatever THIS specific output port actually exposes — plain for a
+      // simple single-output source, traced through further edges for a
+      // pass-through output (see resolveOutputPath).
       connectedInputs[port.port_name] = {
         sourceNodeId: edge.source,
         sourceType: (src.data as any)?.nodeType,
-        sourcePort: edge.sourceHandle ?? '',
-        config: (src.data as any)?.config_values ?? {},
+        sourcePort,
+        config: {
+          ...((src.data as any)?.config_values ?? {}),
+          path: resolveOutputPath(edge.source, sourcePort, getNode, getEdges),
+        },
       };
     }
   }
@@ -91,15 +161,22 @@ export default function CustomNode({ id, data }: any) {
   const portRowHeight = 28;
 
   const isSource = fullConfig.category === 'source';
+  // Design-time-only steps (submits_job: false in step.json — e.g. smart_labeler,
+  // geospatial_map) never submit a Tapis job, so there are no compute resources
+  // to configure.
+  const submitsJob = fullConfig.submits_job !== false;
 
   // Read-only run-status mode: when data.runStatus is present, the node is being
   // shown on the live run page. Tint its border/glow by status and hide the
   // interactive Run/Settings/Delete controls.
   const runStatus: string | undefined = data.runStatus;
+  const tapisStatus: string | undefined = data.tapisStatus;
+  const waitingOn: string | undefined = data.waitingOn;
   const STATUS_STYLE: Record<string, { color: string; label: string; glow: string }> = {
     completed: { color: '#10b981', label: 'Completed', glow: '0 0 0 3px rgba(16,185,129,0.25)' },
     running:   { color: '#3b82f6', label: 'Running',   glow: '0 0 0 3px rgba(59,130,246,0.35)' },
     failed:    { color: '#ef4444', label: 'Failed',    glow: '0 0 0 3px rgba(239,68,68,0.30)' },
+    blocked:   { color: '#eab308', label: 'Blocked',   glow: '0 0 0 3px rgba(234,179,8,0.30)' },
     cancelled: { color: '#f97316', label: 'Cancelled', glow: 'none' },
     pending:   { color: '#94a3b8', label: 'Pending',   glow: 'none' },
   };
@@ -119,7 +196,8 @@ export default function CustomNode({ id, data }: any) {
     <>
       <div style={{
         background: 'white', borderRadius: '10px', border: nodeBorder,
-        minWidth: '280px',
+        width: '350px',
+        boxSizing: 'border-box',
         boxShadow: statusStyle && statusStyle.glow !== 'none'
           ? `0 4px 12px rgba(0,0,0,0.08), ${statusStyle.glow}`
           : '0 4px 12px rgba(0,0,0,0.08)',
@@ -132,12 +210,26 @@ export default function CustomNode({ id, data }: any) {
           borderBottom: `1px solid ${headerBorder}`,
           borderRadius: '10px 10px 0 0',
         }}>
-          <Group justify="space-between" wrap="nowrap">
-            <Text fw={700} size="sm" c={textColor}>{fullConfig.display_name || data.nodeType}</Text>
+          <Group justify="space-between" wrap="nowrap" align="flex-start">
+            <Text
+              fw={700}
+              size="sm"
+              c={textColor}
+              style={{ minWidth: 0, flex: 1, overflowWrap: 'break-word', wordBreak: 'break-word' }}
+            >
+              {fullConfig.display_name || data.nodeType}
+            </Text>
             {statusStyle ? (
-              <Badge size="sm" variant="filled" style={{ backgroundColor: statusStyle.color }}>
-                {runStatus === 'running' ? '● ' : ''}{statusStyle.label}
-              </Badge>
+              <Group gap={4} wrap="nowrap">
+                {tapisStatus && (
+                  <Badge size="xs" variant="dot" color="gray" title="Tapis job status">
+                    {tapisStatus}
+                  </Badge>
+                )}
+                <Badge size="sm" variant="filled" style={{ backgroundColor: statusStyle.color }}>
+                  {runStatus === 'running' ? '● ' : ''}{statusStyle.label}
+                </Badge>
+              </Group>
             ) : (
               <Group gap={4} wrap="nowrap">
                 <ActionIcon variant="light" color="green" size="sm" onClick={handleRun} title="Run Step">
@@ -146,6 +238,11 @@ export default function CustomNode({ id, data }: any) {
                 <ActionIcon variant="light" color="blue" size="sm" onClick={() => setOpened(true)} title="Settings">
                   <IconSettings size={14} />
                 </ActionIcon>
+                {submitsJob && (
+                  <ActionIcon variant="light" color="grape" size="sm" onClick={() => setRunConfigOpened(true)} title="Run Configuration">
+                    <IconCpu size={14} />
+                  </ActionIcon>
+                )}
                 <ActionIcon variant="light" color="red" size="sm" onClick={handleDelete} title="Delete">
                   <IconTrash size={14} />
                 </ActionIcon>
@@ -153,6 +250,13 @@ export default function CustomNode({ id, data }: any) {
             )}
           </Group>
         </Box>
+
+        {/* Waiting-on hint: shown only for a pending node with an unfinished upstream dependency */}
+        {runStatus === 'pending' && waitingOn && (
+          <Box px="sm" pt={4}>
+            <Text size="xs" c="dimmed">Waiting on: {waitingOn}</Text>
+          </Box>
+        )}
 
         {/* Port Rows */}
         <Box py={6}>
@@ -203,7 +307,13 @@ export default function CustomNode({ id, data }: any) {
         {/* Description footer */}
         {fullConfig.description && (
           <Box px="sm" pb={8} pt={2} style={{ borderTop: '1px solid #f1f5f9' }}>
-            <Text size="xs" c="dimmed" lineClamp={2}>{fullConfig.description}</Text>
+            <Text
+              size="xs"
+              c="dimmed"
+              style={{ whiteSpace: 'normal', overflowWrap: 'break-word', wordBreak: 'break-word' }}
+            >
+              {fullConfig.description}
+            </Text>
           </Box>
         )}
 
@@ -262,6 +372,14 @@ export default function CustomNode({ id, data }: any) {
         connectedInputs={connectedInputs}
         onSave={handleSaveConfig}
       />
+      {submitsJob && (
+        <RunConfigModal
+          opened={runConfigOpened}
+          onClose={() => setRunConfigOpened(false)}
+          initialConfig={config}
+          onSave={handleSaveRunConfig}
+        />
+      )}
     </>
   );
 }

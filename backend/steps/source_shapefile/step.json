@@ -9,9 +9,14 @@
     { "name": "shapefile", "type": "shapefile" }
   ],
   "config_schema": {
+    "system": {
+      "type": "tapis_system",
+      "description": "Tapis storage system the path below lives on.",
+      "default": ""
+    },
     "path": {
       "type": "string",
-      "description": "Path or Tapis URI to the shapefile (e.g. tapis://storage-system/geo/boundaries.shp)",
+      "description": "Path to the shapefile on the system above (e.g. /geo/boundaries.shp), or a full tapis://system/path URI.",
       "default": ""
     }
   }
