@@ -1,9 +1,10 @@
 import type { ComponentType } from "react";
 import type { StepPanelProps } from "./types";
-import HeatmapPanel from "./heatmap";
-import ImagePlayground from "./imagePreprocessStudio";
+//import HeatmapPanel from "./heatmap";
+//import ImagePlayground from "./imagePreprocessStudio";
 import TrainingPanel from "./TrainingPanel";
 import VisualizationPanel from "./VisualizationPanel";
+import PatraPanel from "./PatraPanel";
 
 // Map of step_type_key -> custom settings page component.
 //
@@ -12,10 +13,11 @@ import VisualizationPanel from "./VisualizationPanel";
 // example), then add one line here mapping its step_type_key to the component.
 // Step types not listed here fall back to GenericConfigForm automatically.
 export const stepPanels: Record<string, ComponentType<StepPanelProps>> = {
-  heatmap: HeatmapPanel,
-  "image-preprocess-studio": ImagePlayground,
+  //heatmap: HeatmapPanel,
+  //"image-preprocess-studio": ImagePlayground,
   training: TrainingPanel,
   visualization: VisualizationPanel,
+  patra_upload: PatraPanel,
 };
 
 // Resolve the registered panel for a step type, or undefined if none.

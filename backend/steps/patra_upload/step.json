@@ -1,0 +1,86 @@
+{
+  "step_type_key": "patra_upload",
+  "display_name": "Publish to PATRA",
+  "description": "Publishes the trained model as a model card to the PATRA knowledge base.",
+  "category": "Training",
+  "inputs": [
+    { "name": "model", "type": "pytorch_model" },
+    { "name": "metrics", "type": "json_results" }
+  ],
+  "outputs": [
+    { "name": "patra_uuid", "type": "json_results", "output_path": "patra_result.json" }
+  ],
+  "config_schema": {
+    "name": {
+      "type": "str",
+      "description": "Human-readable name for the model",
+      "default": ""
+    },
+    "version": {
+      "type": "str",
+      "description": "Version tag e.g. 1.0",
+      "default": "1.0"
+    },
+    "short_description": {
+      "type": "str",
+      "description": "One or two sentence summary shown on cards and search results",
+      "default": ""
+    },
+    "full_description": {
+      "type": "str",
+      "description": "Full write-up shown on the model detail page",
+      "default": ""
+    },
+    "keywords": {
+      "type": "str",
+      "description": "Comma-separated terms e.g. classification, plant disease",
+      "default": ""
+    },
+    "category": {
+      "type": "str",
+      "description": "Task or domain e.g. classification, segmentation, detection",
+      "default": "classification"
+    },
+    "input_type": {
+      "type": "str",
+      "description": "Kind of data the model expects e.g. image, text",
+      "default": "image"
+    },
+    "framework": {
+      "type": "str",
+      "description": "ML framework e.g. PyTorch, HuggingFace Transformers",
+      "default": "PyTorch / HuggingFace Transformers"
+    },
+    "model_type": {
+      "type": "str",
+      "description": "Model architecture e.g. Vision Transformer (ViT)",
+      "default": ""
+    },
+    "model_location": {
+      "type": "str",
+      "description": "URL to download the trained model weights e.g. HuggingFace Hub URL",
+      "default": ""
+    },
+    "test_accuracy": {
+      "type": "float",
+      "description": "Test accuracy between 0 and 1",
+      "default": 0.0
+    },
+    "license": {
+      "type": "str",
+      "description": "Usage license e.g. Apache 2.0, MIT",
+      "default": "Apache 2.0"
+    },
+    "is_private": {
+      "type": "boolean",
+      "description": "Private records are restricted to your organization",
+      "default": false
+    },
+    "tapis_token": {
+      "type": "str",
+      "description": "Tapis JWT token for PATRA authentication",
+      "default": ""
+    }
+  },
+  "tapis_job": null
+}
