@@ -16,7 +16,7 @@ import {
   Button,
   Select,
 } from "@mantine/core";
-import { IconDatabase, IconKey, IconInfoCircle, IconCheck, IconX } from "@tabler/icons-react";
+import { IconDatabase, IconKey, IconInfoCircle, IconCheck, IconX, IconDownload } from "@tabler/icons-react";
 import type { StepPanelProps } from "./types";
 
 const PATRA_BACKEND = "https://patrabackend.pods.icicleai.tapis.io";
@@ -232,6 +232,35 @@ export default function PatraPanel({ config, onChange, step }: StepPanelProps) {
             value={String(val("model_location", ""))}
             onChange={(e) => set("model_location", e.currentTarget.value)}
           />
+
+          {/* Load from metrics button */}
+          {config.metrics && (
+            <Button
+              variant="light"
+              size="xs"
+              leftSection={<IconDownload size={14} />}
+              onClick={async () => {
+                try {
+                  const metricsPath = String(config.metrics);
+                  const res = await fetch(
+                    `http://localhost:8002/api/tapis-files/content?system=pitzer-tapis&path=${encodeURIComponent(metricsPath + "/metrics.json")}`,
+                    { credentials: "include" }
+                  );
+                  const data = await res.json();
+                  if (data.metrics?.eval_accuracy) {
+                    set("test_accuracy", data.metrics.eval_accuracy);
+                    set("short_description", 
+                      `${String(val("name", "Model"))} trained on ${data.metadata?.dataset?.split("/").pop() || "dataset"}. Achieves ${(data.metrics.eval_accuracy * 100).toFixed(1)}% accuracy.`
+                    );
+                  }
+                } catch (e) {
+                  console.error("Failed to load metrics:", e);
+                }
+              }}
+            >
+              Load from Training Results
+            </Button>
+          )}
 
           <Group grow>
             <NumberInput
