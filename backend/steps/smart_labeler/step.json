@@ -1,0 +1,35 @@
+{
+  "step_type_key": "smart_labeler",
+  "display_name": "🏷️ Smart Labeler",
+  "description": "Interactively browse a source image directory and hand-label bounding boxes or segmentation masks, producing an annotations.json file. Design-time only — submits no Tapis job.",
+  "category": "Data Creation",
+  "icon": "tag",
+  "inputs": [
+    { "name": "images", "type": "image_dir" },
+    { "name": "annotations", "type": "json_results", "required": false }
+  ],
+  "outputs": [
+    { "name": "annotations", "type": "json_results", "output_path": "annotations.json" },
+    { "name": "images", "type": "image_dir", "output_path": "images" }
+  ],
+  "config_schema": {
+    "system": {
+      "type": "string",
+      "description": "Tapis system the source images and annotations.json live on.",
+      "default": ""
+    },
+    "path": {
+      "type": "string",
+      "description": "Destination Tapis path for the saved annotations.json (e.g. /data/labels/annotations.json).",
+      "default": ""
+    },
+    "annotation_type": {
+      "type": "string",
+      "description": "\"detection\" (bounding boxes) or \"segmentation\" (polygon masks).",
+      "default": "detection"
+    }
+  },
+  "tapis_app_id": null,
+  "tapis_job": null,
+  "submits_job": false
+}

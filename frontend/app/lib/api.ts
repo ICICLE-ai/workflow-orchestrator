@@ -17,6 +17,12 @@ export const BACKEND_URL: string = (
   import.meta.env.VITE_BACKEND_URL ?? "http://localhost:8002"
 ).replace(/\/+$/, "");
 
+// SAM3-assisted annotation service base URL (Smart Labeler's magic-wand tool
+// POSTs to `${SAM3_ENDPOINT}/predict`) — a fixed deployment detail, not a
+// per-node setting. Set VITE_SAM3_ENDPOINT in frontend/.env; leave blank to
+// disable the tool.
+export const SAM3_ENDPOINT: string = (import.meta.env.VITE_SAM3_ENDPOINT ?? "").replace(/\/+$/, "");
+
 export function loginUrl() {
   return `${BACKEND_URL}/login`;
 }

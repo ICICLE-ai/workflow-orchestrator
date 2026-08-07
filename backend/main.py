@@ -5,26 +5,43 @@ from starlette.middleware.sessions import SessionMiddleware
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 import os
+import uuid
 import uvicorn
 
 from db import engine, SessionLocal, get_db, DATABASE_URL
-from models import Base, StepTypeRegistry, StepTypePort, WorkflowTemplate, PipelineRun, AppUser, WfNode, WfEdge, RunEdge, PortDataType
+from models import Base, StepTypeRegistry, StepTypePort, WorkflowTemplate, PipelineRun, RunStep, AppUser, WfNode, WfEdge, RunEdge, PortDataType, Secret
 import auth
+import geospatial
+import annotation_adapter
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import json
 import glob
+import re
 
-from dbos import DBOS, DBOSConfig
+from dbos import DBOS, DBOSConfig, SetWorkflowID
 from fastapi.responses import PlainTextResponse, Response
 import httpx
 
 app = FastAPI(title="Harvest Tapis Backend")
 
-# Enable CORS for the frontend
+# Enable CORS for the frontend. Always includes the plain-localhost dev
+# defaults, plus FRONTEND_URL (already used for the OAuth redirect — same
+# origin the browser actually calls from, just not previously in this list)
+# and any extra origins from CORS_ALLOWED_ORIGINS (comma-separated) — e.g. a
+# tunnel URL if the frontend itself is served remotely, not just the backend.
+# A mismatch here fails EVERY cross-origin call with a genuine browser CORS
+# error, not just the one you happened to test last.
+_cors_default_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
+_cors_frontend_url = os.getenv("FRONTEND_URL", "").rstrip("/")
+_cors_extra_origins = [o.strip().rstrip("/") for o in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",") if o.strip()]
+_cors_allowed_origins = list(dict.fromkeys(
+    _cors_default_origins + ([_cors_frontend_url] if _cors_frontend_url else []) + _cors_extra_origins
+))
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=_cors_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -200,6 +217,10 @@ def sync_step_registry(db: Session):
         # Optional: full Tapis job-spec template (with ${...} placeholders) used
         # to submit the real job. Mirrored from step.json each sync.
         registry_entry.tapis_job = data.get("tapis_job")
+        # Whether this step submits a Tapis job. step.json can set this explicitly
+        # (design-time-only steps like smart_labeler/geospatial_map do); otherwise
+        # it's inferred from whether a tapis_job template is present.
+        registry_entry.submits_job = data.get("submits_job", data.get("tapis_job") is not None)
         db.commit()
         print(f"  Synced registry: {step_key} (config_schema keys: {list(data.get('config_schema', {}).keys())})")
         
@@ -304,6 +325,14 @@ def on_startup():
                 "ADD COLUMN IF NOT EXISTS tapis_refresh_token VARCHAR, "
                 "ADD COLUMN IF NOT EXISTS tapis_token_expires_at TIMESTAMPTZ;"
             ))
+            conn.execute(text(
+                "ALTER TABLE workflow_template "
+                "ADD COLUMN IF NOT EXISTS allocation_account VARCHAR;"
+            ))
+            conn.execute(text(
+                "ALTER TABLE step_type_registry "
+                "ADD COLUMN IF NOT EXISTS submits_job BOOLEAN DEFAULT TRUE;"
+            ))
         print("Database schema created.")
         
         # Sync Dynamic Steps
@@ -315,8 +344,32 @@ def on_startup():
         print(f"Warning: Could not initialize database schema locally: {e}")
         print("This is expected if PostGIS is not installed natively. Please use Docker for DB.")
 
+    # Launch the DBOS durable-execution engine. The fastapi=app integration is
+    # meant to launch DBOS on the ASGI lifespan startup event, but that hook does
+    # not fire reliably alongside the deprecated @app.on_event("startup"); without
+    # launch, /execute fails with "System database accessed before DBOS was
+    # launched". DBOS.launch() is idempotent (guards on _launched), so if the
+    # library's own hook does fire it's a harmless no-op.
+    try:
+        DBOS.launch()
+        print("DBOS launched.")
+    except Exception as e:
+        print(f"Warning: DBOS.launch() failed: {e}")
+
 # Include the Authentication Router
 app.include_router(auth.router)
+
+# Include the Geospatial resource routers — run-scoped
+# (/api/pipeline-runs/{run_id}/geospatial/...: labels/config/geojson/
+# shapefile-download/gpkg-download for a run's GeoPackage output) and
+# design-time preview (/api/geospatial-preview/...: same conversions for a
+# static source_geopackage node's path, no run required). See geospatial.py.
+app.include_router(geospatial.router)
+app.include_router(geospatial.preview_router)
+
+# The annotation_format_adapter step's converter — inline data reshaping (no
+# Tapis job), see annotation_adapter.py's module docstring.
+app.include_router(annotation_adapter.router)
 
 @app.get("/")
 def read_root():
@@ -340,6 +393,7 @@ class WorkflowTemplateCreate(BaseModel):
     name: str
     description: Optional[str] = ""
     category: Optional[str] = "Custom"
+    allocation_account: Optional[str] = "uot260"
     nodes: List[NodeModel]
     edges: List[EdgeModel]
 
@@ -363,6 +417,7 @@ def get_step_types(db: Session = Depends(get_db), user: AppUser = Depends(get_cu
             "category": step.category,
             "icon": step.icon,
             "config_schema": step.config_schema,
+            "submits_job": step.submits_job,
             "inputs": inputs,
             "outputs": outputs
         })
@@ -455,6 +510,7 @@ def get_workflow_template(template_version_id: int, db: Session = Depends(get_db
         "name": template.name,
         "description": template.description,
         "category": template.category,
+        "allocation_account": template.allocation_account,
         "nodes": [{"id": str(n.node_id), "type": "customNode", "position": {"x": n.position_x, "y": n.position_y}, "data": {"nodeType": n.step_type_key, "config_values": n.default_config}} for n in nodes],
         "edges": edge_list
     }
@@ -519,6 +575,7 @@ def create_workflow_template(template: WorkflowTemplateCreate, db: Session = Dep
         name=template.name,
         description=template.description,
         category=template.category,
+        allocation_account=template.allocation_account,
         owner_id=owner_id
     )
     db.add(new_template)
@@ -583,6 +640,7 @@ def create_template_version(template_id: int, template: WorkflowTemplateCreate, 
         name=template.name,
         description=template.description,
         category=template.category,
+        allocation_account=template.allocation_account,
         owner_id=owner_id
     )
     db.add(new_template)
@@ -667,6 +725,10 @@ def get_pipeline_run_detail(run_id: int, db: Session = Depends(get_db), user: Ap
         "created_at": run.created_at,
         "template_version_id": run.template_version_id,
         "dbos_workflow_id": run.dbos_workflow_id,
+        # Run-level Tapis options this run was launched with (exec_system,
+        # work_dir, slurm_account, ...) — lets the UI show "what was this run
+        # configured with" and lets a re-run reuse the same options.
+        "frozen_config": run.frozen_config,
         "steps": [
             {
                 "node_id": s.node_id,
@@ -675,6 +737,7 @@ def get_pipeline_run_detail(run_id: int, db: Session = Depends(get_db), user: Ap
                 "tapis_job_uuid": s.tapis_job_uuid,
                 "tapis_job_status": s.tapis_job_status,
                 "error_message": s.error_message,
+                "config": s.config,
                 "outputs": s.outputs,
             } for s in steps
         ],
@@ -812,6 +875,10 @@ class RunOptions(BaseModel):
     exec_queue: Optional[str] = None
     work_dir: Optional[str] = None
     archive_system: Optional[str] = None
+    # Base directory step outputs archive under (run_id/node_id is still
+    # appended beneath it for isolation). Optional override — when omitted,
+    # the base is derived from work_dir instead (see get_run_archive_context).
+    archive_dir: Optional[str] = None
 
 
 @app.post("/api/pipeline-runs/{template_version_id}/execute")
@@ -819,9 +886,10 @@ def execute_workflow(template_version_id: int, options: Optional[RunOptions] = N
     """Kick off durable execution of a saved workflow template.
 
     Builds the DAG from the persisted template and starts the DBOS orchestrator
-    asynchronously. Returns the DBOS workflow id, which the frontend polls via
-    the status endpoint. The pipeline_run row (with dbos_workflow_id) is created
-    inside the orchestrator's first transaction.
+    asynchronously. The pipeline_run + run_step rows are created synchronously
+    here (not inside the orchestrator's first transaction) so this call can
+    return a real run_id immediately — the frontend navigates straight to
+    /runs/{run_id} instead of polling a bare workflow id for one to appear.
 
     Optional run-level Tapis values (slurm_account, archive_system, work_dir, …)
     are merged into the dag_config, which the orchestrator stores as frozen_config
@@ -833,14 +901,54 @@ def execute_workflow(template_version_id: int, options: Optional[RunOptions] = N
         for key, value in options.model_dump(exclude_none=True).items():
             dag_config[key] = value
 
+    # Default the charge account from the template's allocation_account when the
+    # run didn't specify one (RunOptions.slurm_account still overrides).
+    template = db.query(WorkflowTemplate).filter(
+        WorkflowTemplate.template_version_id == template_version_id
+    ).first()
+    dag_config.setdefault("slurm_account", (template and template.allocation_account) or "uot260")
+
     # Record the launching user so the run is owned by them and the engine can
     # resolve their Tapis token (get_token_for_run) when submitting jobs.
     dag_config["owner_id"] = user.user_id
 
-    handle = DBOS.start_workflow(dag_orchestrator_workflow, dag_config)
+    # Pick the DBOS workflow id ourselves (instead of letting DBOS generate one)
+    # so we can create the pipeline_run row referencing it before the workflow
+    # starts, and pass the resulting run_id back in this same response.
+    dbos_workflow_id = f"dag-{uuid.uuid4()}"
+
+    run = PipelineRun(
+        template_version_id=template_version_id,
+        user_id=user.user_id,
+        name=dag_config.get("name", "DAG Run"),
+        status="RUNNING",
+        dbos_workflow_id=dbos_workflow_id,
+        frozen_config=dag_config,
+    )
+    db.add(run)
+    db.flush()  # assign run.run_id
+    for node in dag_config.get("nodes", []):
+        db.add(RunStep(
+            run_id=run.run_id,
+            node_id=int(node["id"]),
+            step_label=node.get("label", str(node["id"])),
+            status="pending",
+            config=node.get("inputs", {}) or {},
+            outputs={},
+        ))
+    db.commit()
+
+    # Tell the orchestrator to reuse this run_id instead of creating its own
+    # (see create_run_for_template's run_id short-circuit).
+    dag_config["run_id"] = run.run_id
+
+    with SetWorkflowID(dbos_workflow_id):
+        DBOS.start_workflow(dag_orchestrator_workflow, dag_config)
+
     return {
         "message": "Workflow execution started",
-        "dbos_workflow_id": handle.get_workflow_id(),
+        "run_id": run.run_id,
+        "dbos_workflow_id": dbos_workflow_id,
         "template_version_id": template_version_id,
     }
 
@@ -1005,6 +1113,177 @@ def tapis_files_upload(body: TapisFileWrite, db: Session = Depends(get_db),
         code = 401 if resp.status_code == 401 else 502
         raise HTTPException(status_code=code, detail=f"Tapis upload failed (HTTP {resp.status_code}): {resp.text[:200]}")
     return {"ok": True, "path": body.path}
+
+
+@app.get("/api/tapis-systems/{system_id}/queues")
+def list_tapis_system_queues(system_id: str, db: Session = Depends(get_db),
+                             user: AppUser = Depends(get_current_user)):
+    """List a Tapis exec system's batch scheduler queues, so the Run Settings UI
+    can offer a real queue dropdown instead of free text. Tapis exec systems
+    (pitzer-tapis, expanse-tapis, ...) are shared/public system definitions —
+    any authenticated user's token can read them, no special ownership needed."""
+    from engine import tapis_auth
+    token = _user_tapis_token(user, db)
+    url = f"{tapis_auth.TAPIS_BASE_URL}/v3/systems/{system_id}"
+    try:
+        resp = httpx.get(url, headers={"X-Tapis-Token": token}, timeout=30)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not reach Tapis: {type(e).__name__}")
+    if resp.status_code == 401:
+        raise HTTPException(status_code=401, detail="Tapis rejected the token (expired or unauthorized).")
+    if resp.status_code == 404:
+        raise HTTPException(status_code=404, detail=f"System '{system_id}' not found on Tapis.")
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Tapis system lookup failed (HTTP {resp.status_code}).")
+    result = resp.json().get("result", {}) or {}
+    return {
+        "system_id": system_id,
+        "default_queue": result.get("batchDefaultLogicalQueueName"),
+        # Raw Tapis batchLogicalQueue objects (name, hpcQueueName, max/min node
+        # count, cores per node, memory, minutes, ...) — passed through as-is
+        # so the frontend can show whatever fields Tapis actually returns.
+        "queues": result.get("batchLogicalQueues", []) or [],
+    }
+
+
+### Secrets — team-scoped API tokens (Weights & Biases, Hugging Face, ...)
+# referenced by KEY from a step's config_schema ("type": "secret"). Managed from
+# the dashboard's settings dropdown; values are write-only through this API —
+# GET never returns them, and they're decrypted only by engine.secrets at
+# job-submission time (see workflows.py's _resolve_secrets).
+
+_SECRET_KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+
+
+def _validate_secret_key(key: str) -> str:
+    key = (key or "").strip()
+    if not key or not _SECRET_KEY_RE.match(key):
+        raise HTTPException(
+            status_code=422,
+            detail="Secret key must start with a letter and contain only letters, numbers, and underscores.",
+        )
+    return key
+
+
+class SecretCreate(BaseModel):
+    key: str
+    value: str
+    description: Optional[str] = ""
+
+
+class SecretUpdate(BaseModel):
+    value: Optional[str] = None
+    description: Optional[str] = None
+
+
+def _secret_out(row: Secret) -> dict:
+    return {
+        "key": row.key,
+        "description": row.description or "",
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+@app.get("/api/secrets")
+def list_secrets(db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)):
+    """List the current user's team's secrets — keys/descriptions only, never values."""
+    rows = db.query(Secret).filter(Secret.team_id == user.team_id).order_by(Secret.key).all()
+    return {"secrets": [_secret_out(r) for r in rows]}
+
+
+@app.post("/api/secrets")
+def create_secret(body: SecretCreate, db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)):
+    """Add a new secret for the current user's team."""
+    from engine import secrets as secrets_store
+
+    key = _validate_secret_key(body.key)
+    if not body.value:
+        raise HTTPException(status_code=422, detail="Secret value is required.")
+    existing = db.query(Secret).filter(Secret.team_id == user.team_id, Secret.key == key).first()
+    if existing:
+        raise HTTPException(status_code=409, detail=f"A secret named '{key}' already exists.")
+    row = Secret(
+        team_id=user.team_id,
+        key=key,
+        description=(body.description or "").strip(),
+        encrypted_value=secrets_store.encrypt_value(body.value),
+        created_by_id=user.user_id,
+    )
+    db.add(row)
+    db.commit()
+    return _secret_out(row)
+
+
+@app.put("/api/secrets/{key}")
+def update_secret(key: str, body: SecretUpdate, db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)):
+    """Update a secret's value and/or description. Omit value to change only the description."""
+    from engine import secrets as secrets_store
+
+    row = db.query(Secret).filter(Secret.team_id == user.team_id, Secret.key == key).first()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"No secret named '{key}'.")
+    if body.value:
+        row.encrypted_value = secrets_store.encrypt_value(body.value)
+    if body.description is not None:
+        row.description = body.description.strip()
+    db.commit()
+    return _secret_out(row)
+
+
+def _delete_secret(key: str, db: Session, user: AppUser) -> dict:
+    row = db.query(Secret).filter(Secret.team_id == user.team_id, Secret.key == key).first()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"No secret named '{key}'.")
+    db.delete(row)
+    db.commit()
+    return {"ok": True}
+
+
+@app.delete("/api/secrets/{key}")
+def delete_secret(key: str, db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)):
+    return _delete_secret(key, db, user)
+
+
+# POST alias for the same delete — DELETE always triggers a CORS preflight
+# (unlike GET/simple POST), and some tunnels/reverse proxies between the
+# frontend and this backend don't forward less-common HTTP methods (or their
+# preflight) correctly, surfacing as a browser-side "CORS error" even though
+# this endpoint itself is fine. The frontend uses this alias so delete rides
+# the same POST path already proven to work (e.g. "Add secret"); the DELETE
+# route above stays for any client that can use it directly.
+@app.post("/api/secrets/{key}/delete")
+def delete_secret_via_post(key: str, db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)):
+    return _delete_secret(key, db, user)
+
+
+@app.get("/api/tapis/token")
+def tapis_token(db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)):
+    """Hand the current user's raw Tapis access token to the browser, for step
+    panels (e.g. smart_labeler) that embed a third-party component making Tapis
+    calls directly from client JS instead of through our /api/tapis-files proxy.
+    Requires the Tapis tenant to allow CORS from this frontend's origin."""
+    return {"token": _user_tapis_token(user, db)}
+
+
+@app.get("/api/tapis/whoami")
+def tapis_whoami(db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)):
+    """Diagnostic: report how Tapis auth is configured (mode) and whether the
+    resolved token actually validates against Tapis. Reaching this endpoint at all
+    means the APP session is fine; a bad token here means the Tapis credential is
+    the problem, not the login."""
+    from engine import tapis_auth
+    info = tapis_auth.describe_credentials()
+    token = tapis_auth.get_token_for_user(user, db)
+    if not token:
+        info["token_present"] = False
+        return info
+    check = tapis_auth.validate_token(token)
+    info["token_present"] = True
+    info["token_valid"] = check["valid"]
+    info["tapis_username"] = check["username"]
+    info["token_detail"] = check["detail"]
+    return info
 
 
 if __name__ == "__main__":

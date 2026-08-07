@@ -1,0 +1,115 @@
+{
+  "step_type_key": "flight_plan",
+  "display_name": "🚁 Flight Plan Generator",
+  "description": "Generates an autonomous spray-drone flight plan (waypoints + timing) from a farm GeoPackage, accounting for nozzle swath, tank capacity, dispersion rate, and battery limits, via the generate-flight-plan Tapis app. Produces an updated GeoPackage (flight paths) and a flight_plan.json (waypoints/timing).",
+  "category": "Post-processing",
+  "icon": "route",
+  "tapis_app_id": "generate-flight-plan",
+  "inputs": [
+    { "name": "gpkg", "type": "geopackage" }
+  ],
+  "outputs": [
+    { "name": "flight_gpkg", "type": "geopackage", "output_path": "flight_plan.gpkg" },
+    { "name": "flight_plan_json", "type": "json_results", "output_path": "flight_plan.json" }
+  ],
+  "config_schema": {
+    "nozzle_swath_ft": {
+      "type": "float",
+      "description": "How wide a strip of ground each spray pass covers, in feet. A wider swath means fewer passes to cover the same field, but less precise application.",
+      "default": 10.0
+    },
+    "flight_height_ft": {
+      "type": "float",
+      "description": "Flight altitude above the crop canopy, in feet. Higher flights cover a wider effective swath but reduce spray precision and increase drift risk.",
+      "default": 10.0
+    },
+    "tank_capacity_gal": {
+      "type": "float",
+      "description": "Onboard spray tank capacity, in gallons. Determines how much area the drone can cover before it must return to refill.",
+      "default": 8.0
+    },
+    "nozzle_flow_rate_gpm": {
+      "type": "float",
+      "description": "Spray output rate per nozzle, in gallons per minute. Combined with dispersion rate, this sets how fast the drone can fly while still applying the target rate.",
+      "default": 0.038
+    },
+    "dispersion_rate_gpa": {
+      "type": "float",
+      "description": "Target application rate, in gallons of spray per acre. A higher rate means slower flight (or more tank refills) to deliver enough product per unit area.",
+      "default": 1.5
+    },
+    "battery_time_min": {
+      "type": "float",
+      "description": "Maximum flight time on a single battery charge, in minutes.",
+      "default": 18.0
+    },
+    "battery_reserve_pct": {
+      "type": "float",
+      "description": "Battery reserve held back for a safe return-to-home, as a percent of total flight time.",
+      "default": 20.0
+    },
+    "home_lat": {
+      "type": "float",
+      "description": "Latitude of the home/launch point the drone departs from and returns to.",
+      "default": 0.0
+    },
+    "home_lon": {
+      "type": "float",
+      "description": "Longitude of the home/launch point the drone departs from and returns to.",
+      "default": 0.0
+    }
+  },
+  "tapis_job": {
+    "name": "flight-plan",
+    "appId": "generate-flight-plan",
+    "appVersion": "1.0.0",
+    "description": "Generate autonomous spray-drone flight plan",
+    "execSystemId": "${exec_system}",
+    "execSystemLogicalQueue": "${exec_queue}",
+    "archiveSystemId": "${archive_system}",
+    "archiveSystemDir": "${archive_dir}",
+    "nodeCount": 1,
+    "coresPerNode": 4,
+    "memoryMB": 4096,
+    "maxMinutes": 60,
+    "fileInputs": [
+      { "name": "gpkg", "envKey": "gpkg", "autoMountLocal": true, "sourceUrl": "${gpkg}", "targetPath": "input/farm_output.gpkg" }
+    ],
+    "parameterSet": {
+      "appArgs": [
+        { "name": "gpkg", "arg": "--gpkg" },
+        { "name": "gpkg value", "arg": "/input/farm_output.gpkg" },
+        { "name": "outdir", "arg": "--outdir" },
+        { "name": "outdir value", "arg": "/output" },
+        { "name": "nozzle swath", "arg": "--nozzle-swath-ft" },
+        { "name": "nozzle swath value", "arg": "${nozzle_swath_ft}" },
+        { "name": "flight height", "arg": "--flight-height-ft" },
+        { "name": "flight height value", "arg": "${flight_height_ft}" },
+        { "name": "tank capacity", "arg": "--tank-capacity-gal" },
+        { "name": "tank capacity value", "arg": "${tank_capacity_gal}" },
+        { "name": "nozzle flow rate", "arg": "--nozzle-flow-rate-gpm" },
+        { "name": "nozzle flow rate value", "arg": "${nozzle_flow_rate_gpm}" },
+        { "name": "dispersion rate", "arg": "--dispersion-rate-gpa" },
+        { "name": "dispersion rate value", "arg": "${dispersion_rate_gpa}" },
+        { "name": "battery time", "arg": "--battery-time-min" },
+        { "name": "battery time value", "arg": "${battery_time_min}" },
+        { "name": "battery reserve", "arg": "--battery-reserve-pct" },
+        { "name": "battery reserve value", "arg": "${battery_reserve_pct}" },
+        { "name": "home lat", "arg": "--home-lat" },
+        { "name": "home lat value", "arg": "${home_lat}" },
+        { "name": "home lon", "arg": "--home-lon" },
+        { "name": "home lon value", "arg": "${home_lon}" }
+      ],
+      "schedulerOptions": [
+        { "name": "slurm account", "arg": "-A ${slurm_account}" },
+        { "name": "job name", "arg": "--job-name=flight-plan" },
+        { "name": "cpu cores", "arg": "--cpus-per-task=4" }
+      ],
+      "containerArgs": [
+        { "name": "binding", "arg": "--bind $PWD/input:/input,$PWD/output:/output" }
+      ],
+      "envVariables": [],
+      "archiveFilter": { "includeLaunchFiles": false }
+    }
+  }
+}

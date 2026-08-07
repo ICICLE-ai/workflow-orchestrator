@@ -1,0 +1,135 @@
+{
+  "step_type_key": "geospatial",
+  "display_name": "🌐 Geospatial (GeoPackage)",
+  "description": "Builds a GeoPackage (.gpkg) of weed/residue heatmap and farm-boundary layers from Harvest-style JSON results + image EXIF GPS, via the generate-geopackage Tapis app. Shapefile/GeoJSON/raw-GeoPackage exports are generated on demand via /api/pipeline-runs/{run_id}/geospatial/... (see backend/geospatial.py) — the GeoPackage itself is the only thing stored.",
+  "category": "Post-processing",
+  "icon": "map",
+  "tapis_app_id": "generate-geopackage",
+  "inputs": [
+    { "name": "results", "type": "json_results" },
+    { "name": "images", "type": "image_dir" }
+  ],
+  "outputs": [
+    { "name": "gpkg_output", "type": "geopackage", "output_path": "output.gpkg" }
+  ],
+  "config_schema": {
+    "spray_mode": {
+      "type": "string",
+      "description": "'binary' or 'custom' spray-decision banding.",
+      "default": "binary"
+    },
+    "spray_levels": {
+      "type": "string",
+      "description": "spray_mode=custom only: space-separated names for each spray band (e.g. 'low medium high').",
+      "default": ""
+    },
+    "spray_thresholds": {
+      "type": "string",
+      "description": "spray_mode=custom only: space-separated integer count thresholds, one per spray_levels entry.",
+      "default": ""
+    },
+    "grid_width": {
+      "type": "int",
+      "description": "Grid cell width in feet.",
+      "default": 30
+    },
+    "grid_height": {
+      "type": "int",
+      "description": "Grid cell height in feet.",
+      "default": 30
+    },
+    "fov_width_ft": {
+      "type": "float",
+      "description": "Camera ground footprint width at flight altitude, in feet.",
+      "default": 29.0
+    },
+    "fov_height_ft": {
+      "type": "float",
+      "description": "Camera ground footprint height at flight altitude, in feet.",
+      "default": 22.0
+    },
+    "gps_offset_x_ft": {
+      "type": "float",
+      "description": "East-west offset (feet) between an image's GPS tag and its optical center.",
+      "default": 0.0
+    },
+    "gps_offset_y_ft": {
+      "type": "float",
+      "description": "North-south offset (feet) between an image's GPS tag and its optical center.",
+      "default": 0.0
+    },
+    "score_threshold": {
+      "type": "float",
+      "description": "Minimum detection confidence score to include.",
+      "default": 0.5
+    },
+    "class_filter": {
+      "type": "string",
+      "description": "Only include detections of this class (leave blank for all classes).",
+      "default": ""
+    }
+  },
+  "tapis_job": {
+    "name": "geospatial-gpkg",
+    "appId": "generate-geopackage",
+    "appVersion": "1.0.0",
+    "description": "Generate weed/residue heatmap + farm-boundary GeoPackage",
+    "execSystemId": "${exec_system}",
+    "execSystemLogicalQueue": "${exec_queue}",
+    "archiveSystemId": "${archive_system}",
+    "archiveSystemDir": "${archive_dir}",
+    "nodeCount": 1,
+    "coresPerNode": 12,
+    "memoryMB": 8192,
+    "maxMinutes": 200,
+    "fileInputs": [
+      { "name": "results", "envKey": "results", "autoMountLocal": true, "sourceUrl": "${results}", "targetPath": "input/results.json" },
+      { "name": "images", "envKey": "images", "autoMountLocal": true, "sourceUrl": "${images}", "targetPath": "input/images" }
+    ],
+    "parameterSet": {
+      "appArgs": [
+        { "name": "json", "arg": "--json" },
+        { "name": "json value", "arg": "/input/results.json" },
+        { "name": "outdir", "arg": "--outdir" },
+        { "name": "outdir value", "arg": "/output" },
+        { "name": "imagedir", "arg": "--imagedir" },
+        { "name": "imagedir value", "arg": "/input/images" },
+        { "name": "grid width", "arg": "--grid-width" },
+        { "name": "grid width value", "arg": "${grid_width}" },
+        { "name": "grid height", "arg": "--grid-height" },
+        { "name": "grid height value", "arg": "${grid_height}" },
+        { "name": "fov width", "arg": "--fov-width-ft" },
+        { "name": "fov width value", "arg": "${fov_width_ft}" },
+        { "name": "fov height", "arg": "--fov-height-ft" },
+        { "name": "fov height value", "arg": "${fov_height_ft}" },
+        { "name": "gps offset x", "arg": "--gps-offset-x-ft" },
+        { "name": "gps offset x value", "arg": "${gps_offset_x_ft}" },
+        { "name": "gps offset y", "arg": "--gps-offset-y-ft" },
+        { "name": "gps offset y value", "arg": "${gps_offset_y_ft}" },
+        { "name": "spray mode", "arg": "--spray-mode" },
+        { "name": "spray mode value", "arg": "${spray_mode}" },
+        { "name": "spray levels", "arg": "--spray-levels", "if": "spray_levels" },
+        { "name": "spray levels value", "arg": "${spray_levels}", "if": "spray_levels" },
+        { "name": "spray thresholds", "arg": "--spray-thresholds", "if": "spray_thresholds" },
+        { "name": "spray thresholds value", "arg": "${spray_thresholds}", "if": "spray_thresholds" },
+        { "name": "score threshold", "arg": "--score-threshold" },
+        { "name": "score threshold value", "arg": "${score_threshold}" },
+        { "name": "class filter", "arg": "--class-filter", "if": "class_filter" },
+        { "name": "class filter value", "arg": "${class_filter}", "if": "class_filter" }
+      ],
+      "schedulerOptions": [
+        { "name": "slurm account", "arg": "-A ${slurm_account}" },
+        { "name": "job name", "arg": "--job-name=geospatial-gpkg" },
+        { "name": "cpu cores", "arg": "--cpus-per-task=10" }
+      ],
+      "containerArgs": [
+        { "name": "binding", "arg": "--bind $PWD/input:/input,$PWD/output:/output" }
+      ],
+      "envVariables": [
+        { "key": "OMP_NUM_THREADS", "value": "10" },
+        { "key": "MKL_NUM_THREADS", "value": "10" }
+      ],
+      "archiveFilter": { "includeLaunchFiles": false }
+    }
+  }
+}

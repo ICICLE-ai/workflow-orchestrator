@@ -59,7 +59,7 @@
     "maxMinutes": 200,
     "fileInputs": [
       { "name": "results", "envKey": "results", "autoMountLocal": true, "sourceUrl": "${results}", "targetPath": "input/results.json" },
-      { "name": "images", "envKey": "images", "autoMountLocal": true, "sourceUrl": "${images}", "targetPath": "input/images" }
+      { "name": "images", "envKey": "images", "autoMountLocal": true, "sourceUrl": "${images}", "targetPath": "input/images", "if": "images" }
     ],
     "parameterSet": {
       "appArgs": [

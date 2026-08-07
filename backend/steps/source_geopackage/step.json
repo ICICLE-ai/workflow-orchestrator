@@ -1,0 +1,18 @@
+{
+  "step_type_key": "source_geopackage",
+  "display_name": "🌐 GeoPackage",
+  "description": "Provides a path to a geospatial GeoPackage (.gpkg) file.",
+  "category": "source",
+  "icon": "map-pin",
+  "inputs": [],
+  "outputs": [
+    { "name": "geopackage", "type": "geopackage" }
+  ],
+  "config_schema": {
+    "path": {
+      "type": "tapis_path",
+      "description": "Tapis system + path to the GeoPackage (e.g. /geo/farm.gpkg).",
+      "default": ""
+    }
+  }
+}

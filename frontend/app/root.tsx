@@ -69,7 +69,7 @@ function AuthWidget() {
       p={6}
       radius="md"
       withBorder
-      style={{ position: "fixed", top: 10, right: 12, zIndex: 1000 }}
+      style={{ position: "fixed", bottom: 10, left: 12, zIndex: 1000 }}
     >
       {user ? (
         <Group gap="xs">

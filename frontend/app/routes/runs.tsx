@@ -23,14 +23,17 @@ const stepColor = (s: string) => {
   if (s === "completed") return "teal";
   if (s === "running") return "blue";
   if (s === "failed") return "red";
+  if (s === "blocked") return "yellow";
   if (s === "cancelled") return "orange";
   return "gray";
 };
 
 // Modal that fetches and shows a step's failure detail: our recorded error,
 // Tapis' outcome summary, and the container's stdout/stderr (tapisjob.out).
-export function StepLogsModal({ runId, nodeId, stepType, opened, onClose }:
-  { runId: number; nodeId: number | null; stepType?: string; opened: boolean; onClose: () => void }) {
+// `config` (the step's resolved inputs, passed down from the run detail
+// already in hand) renders immediately — it doesn't wait on the logs fetch.
+export function StepLogsModal({ runId, nodeId, stepType, config, opened, onClose }:
+  { runId: number; nodeId: number | null; stepType?: string; config?: any; opened: boolean; onClose: () => void }) {
   const [logs, setLogs] = useState<any>(null);
   const [loading, setLoading] = useState(false);
 
@@ -46,6 +49,12 @@ export function StepLogsModal({ runId, nodeId, stepType, opened, onClose }:
 
   return (
     <Modal opened={opened} onClose={onClose} size="xl" title={`Logs — ${stepType || 'step'} #${nodeId}`}>
+      {config && Object.keys(config).length > 0 && (
+        <div style={{ marginBottom: 16 }}>
+          <Text size="sm" fw={600} mb={4}>Resolved configuration</Text>
+          <Code block style={{ whiteSpace: 'pre-wrap', fontSize: 11 }}>{JSON.stringify(config, null, 2)}</Code>
+        </div>
+      )}
       {loading && <Loader />}
       {!loading && logs && (
         <Stack gap="sm">
@@ -91,7 +100,7 @@ export function StepLogsModal({ runId, nodeId, stepType, opened, onClose }:
 
 function RunDetail({ runId }: { runId: number }) {
   const [detail, setDetail] = useState<any>(null);
-  const [logStep, setLogStep] = useState<{ nodeId: number; stepType: string } | null>(null);
+  const [logStep, setLogStep] = useState<{ nodeId: number; stepType: string; config?: any } | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -122,7 +131,7 @@ function RunDetail({ runId }: { runId: number }) {
             {(s.status === 'failed' || s.tapis_job_uuid) && (
               <Button size="compact-xs" variant="subtle" color="gray"
                 leftSection={<IconFileText size={12} />}
-                onClick={() => setLogStep({ nodeId: s.node_id, stepType: s.step_type })}>
+                onClick={() => setLogStep({ nodeId: s.node_id, stepType: s.step_type, config: s.config })}>
                 Logs
               </Button>
             )}
@@ -136,6 +145,7 @@ function RunDetail({ runId }: { runId: number }) {
         runId={runId}
         nodeId={logStep?.nodeId ?? null}
         stepType={logStep?.stepType}
+        config={logStep?.config}
         opened={logStep != null}
         onClose={() => setLogStep(null)}
       />

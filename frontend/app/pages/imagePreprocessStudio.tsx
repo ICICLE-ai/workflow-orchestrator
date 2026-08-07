@@ -1,12 +1,11 @@
-import { useEffect, useMemo, useRef, useState, Suspense, lazy } from "react";
-import {
-  Stack, Group, TextInput, Button, Modal, Loader, Text, ScrollArea,
-  UnstyledButton, Alert, Popover,
-} from "@mantine/core";
-import { IconFolder, IconPhoto, IconArrowUp, IconDeviceFloppy, IconSettings } from "@tabler/icons-react";
+import { useCallback, useEffect, useMemo, useRef, useState, Suspense, lazy } from "react";
+import { Group, TextInput, Button, Loader, Stack, Popover, Select, Paper } from "@mantine/core";
+import { IconDeviceFloppy, IconSettings } from "@tabler/icons-react";
 import { notifications } from "@mantine/notifications";
 import type { StepPanelProps } from "./types";
 import { BACKEND_URL } from "../lib/api";
+import { TAPIS_SYSTEMS, DEFAULT_TAPIS_SYSTEM } from "../lib/tapis";
+import TapisDirectoryBrowser, { parentOf } from "../components/TapisDirectoryBrowser";
 // Type-only imports — erased at build, so the heavy opencv-js package is NOT
 // pulled into the SSR bundle. The runtime component is loaded lazily below.
 import type { FileSource, RemoteFile } from "@icicle-ai/opencv-image-playground";
@@ -19,127 +18,13 @@ const ImagePlayground = lazy(async () => {
   return { default: mod.ImagePlayground };
 });
 
-// fetch that sends the session cookie and targets the configured backend, but
-// WITHOUT apiFetch's global 401->login redirect: a 401/403 from the tapis-files
-// endpoints means "no Tapis token", which we surface inline rather than bouncing
-// the whole app to the login page.
 const studioFetch = (path: string, init?: RequestInit) =>
   fetch(`${BACKEND_URL}${path}`, { ...init, credentials: "include" });
 
-const IMAGE_EXT = /\.(jpe?g|png|bmp|tiff?|webp|gif)$/i;
 const qs = (system: string, path: string) =>
   `system=${encodeURIComponent(system)}&path=${encodeURIComponent(path)}`;
 
-// Modal that lists a Tapis directory, lets the user navigate folders and pick an
-// image. Resolves the selection back to the caller (the FileSource.pickFile).
-function DirectoryBrowser({ opened, system, rootPath, onPick, onCancel }: {
-  opened: boolean;
-  system: string;
-  rootPath: string;
-  onPick: (f: RemoteFile) => void;
-  onCancel: () => void;
-}) {
-  const [path, setPath] = useState(rootPath || "/");
-  const [entries, setEntries] = useState<RemoteFile[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (opened) setPath(rootPath || "/");
-  }, [opened, rootPath]);
-
-  useEffect(() => {
-    if (!opened) return;
-    let cancelled = false;
-    (async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const res = await studioFetch(`/api/tapis-files/list?${qs(system, path)}`);
-        if (!res.ok) {
-          const e = await res.json().catch(() => ({}));
-          if (!cancelled) {
-            setEntries([]);
-            setError(
-              res.status === 401 || res.status === 403
-                ? "Log in with a real Tapis account to browse files."
-                : e.detail || `Could not list directory (HTTP ${res.status}).`
-            );
-          }
-        } else {
-          const data = await res.json();
-          if (!cancelled) setEntries(data.result || []);
-        }
-      } catch {
-        if (!cancelled) setError("Could not reach the backend.");
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [opened, system, path]);
-
-  const parent = path.replace(/\/+$/, "").split("/").slice(0, -1).join("/") || "/";
-  const dirs = entries.filter((e) => e.type === "dir");
-  const images = entries.filter(
-    (e) => e.type === "file" && (IMAGE_EXT.test(e.name) || (e.mimeType || "").startsWith("image/"))
-  );
-
-  return (
-    <Modal opened={opened} onClose={onCancel} title="Browse input directory" size="lg" zIndex={2000}>
-      <Stack gap="xs">
-        <Group gap="xs" wrap="nowrap">
-          <Button
-            size="xs"
-            variant="light"
-            leftSection={<IconArrowUp size={14} />}
-            disabled={!path || path === "/"}
-            onClick={() => setPath(parent)}
-          >
-            Up
-          </Button>
-          <Text size="sm" c="dimmed" style={{ wordBreak: "break-all" }}>
-            {system || "(no system)"}:{path}
-          </Text>
-        </Group>
-
-        {error && <Alert color="red" variant="light">{error}</Alert>}
-
-        {loading ? (
-          <Group justify="center" p="md"><Loader size="sm" /></Group>
-        ) : (
-          <ScrollArea.Autosize mah={360}>
-            <Stack gap={2}>
-              {dirs.map((d) => (
-                <UnstyledButton
-                  key={d.path}
-                  onClick={() => setPath(d.path)}
-                  style={{ padding: 6, borderRadius: 6 }}
-                >
-                  <Group gap={8}><IconFolder size={16} /><Text size="sm">{d.name}</Text></Group>
-                </UnstyledButton>
-              ))}
-              {images.map((f) => (
-                <UnstyledButton
-                  key={f.path}
-                  onClick={() => onPick(f)}
-                  style={{ padding: 6, borderRadius: 6 }}
-                >
-                  <Group gap={8}><IconPhoto size={16} color="#7c3aed" /><Text size="sm">{f.name}</Text></Group>
-                </UnstyledButton>
-              ))}
-              {!error && dirs.length === 0 && images.length === 0 && (
-                <Text size="sm" c="dimmed">No folders or images here.</Text>
-              )}
-            </Stack>
-          </ScrollArea.Autosize>
-        )}
-      </Stack>
-    </Modal>
-  );
-}
-
-export default function ImagePreprocessStudioPanel({ config, onChange, step }: StepPanelProps) {
+export default function ImagePreprocessStudioPanel({ config, onChange, step, connectedInputs }: StepPanelProps) {
   // Render the playground only after mount so its opencv-js WASM never runs on
   // the server.
   const [mounted, setMounted] = useState(false);
@@ -148,13 +33,23 @@ export default function ImagePreprocessStudioPanel({ config, onChange, step }: S
   const field = (key: string) => String(config[key] ?? step.config_schema[key]?.default ?? "");
   const setField = (key: string, value: string) => onChange({ ...config, [key]: value });
 
-  const system = String(config.source_system ?? "");
-  const sourceDir = field("source_dir");
+  // System defaults to the shared default (expanse-tapis-static / env) until set.
+  const system = String(config.source_system ?? "") || DEFAULT_TAPIS_SYSTEM;
+
+  // Directory wired into the step's image_dir input (from an upstream source
+  // node's `path`), used as the browse root when the user hasn't picked one.
+  const imageInputPort = step.inputs.find((p) => p.data_type === "image_dir")?.port_name;
+  const wiredDir = imageInputPort ? connectedInputs[imageInputPort]?.config?.path : undefined;
+
+  // Source dir precedence: explicitly browsed value > wired input > schema default.
+  const sourceDir =
+    String(config.source_dir ?? "") ||
+    String(wiredDir ?? "") ||
+    String(step.config_schema.source_dir?.default ?? "");
   const pipelinePath = field("pipeline_path");
 
   // Custom FileSource: pickFile() opens the directory browser and resolves the
-  // chosen image as a File (fetched from Tapis via the backend proxy). The source
-  // object is stable; the browser modal reads the current system/path at open.
+  // chosen image as a File (fetched from Tapis via the backend proxy).
   const [browserOpen, setBrowserOpen] = useState(false);
   const resolverRef = useRef<((f: File | null) => void) | null>(null);
 
@@ -173,6 +68,8 @@ export default function ImagePreprocessStudioPanel({ config, onChange, step }: S
 
   const finishPick = async (remote: RemoteFile) => {
     setBrowserOpen(false);
+    // The folder we browsed becomes the (read-only) source directory.
+    setField("source_dir", parentOf(remote.path));
     try {
       const res = await studioFetch(`/api/tapis-files/content?${qs(system, remote.path)}`);
       if (!res.ok) throw new Error(String(res.status));
@@ -194,10 +91,36 @@ export default function ImagePreprocessStudioPanel({ config, onChange, step }: S
     resolverRef.current = null;
   };
 
+  // Keep the latest config reachable WITHOUT re-rendering the (expensive)
+  // playground on every keystroke. Typing in the path/system fields updates
+  // `config`, but the memoized <ImagePlayground> below stays stable.
+  const configRef = useRef(config);
+  configRef.current = config;
+
+  const handlePipelineChange = useCallback(
+    (p: Pipeline) => onChange({ ...configRef.current, operations: p }),
+    [onChange]
+  );
+
+  // The playground is uncontrolled after mount, so capture its initial pipeline
+  // once; then memoize the element so unrelated field edits don't re-render it.
+  const initialPipelineRef = useRef(config.operations as Pipeline | undefined);
+  const playground = useMemo(
+    () => (
+      <ImagePlayground
+        title="Image Preprocessing Studio"
+        fileSources={[dirSource]}
+        initialPipeline={initialPipelineRef.current}
+        onPipelineChange={handlePipelineChange}
+      />
+    ),
+    [dirSource, handlePipelineChange]
+  );
+
   const [saving, setSaving] = useState(false);
   const savePipeline = async () => {
     if (!system || !pipelinePath) {
-      notifications.show({ color: "yellow", message: "Set the Tapis system and pipeline path first." });
+      notifications.show({ color: "yellow", message: "Select a Tapis system and set a pipeline path first." });
       return;
     }
     setSaving(true);
@@ -223,68 +146,73 @@ export default function ImagePreprocessStudioPanel({ config, onChange, step }: S
     }
   };
 
-  // The Tapis path config lives in a popover in the playground's header, so the
-  // playground (a full-height Mantine AppShell) can own the whole surface.
-  const pathControls = (
-    <Popover width={340} position="bottom-end" withinPortal zIndex={10002} shadow="md">
-      <Popover.Target>
-        <Button size="xs" variant="light" leftSection={<IconSettings size={14} />}>
-          Paths
-        </Button>
-      </Popover.Target>
-      <Popover.Dropdown>
-        <Stack gap="xs">
-          <TextInput
-            label="Tapis system"
-            placeholder="storage system id"
-            value={system}
-            onChange={(e) => setField("source_system", e.currentTarget.value)}
-          />
-          <TextInput
-            label="Source directory"
-            value={sourceDir}
-            onChange={(e) => setField("source_dir", e.currentTarget.value)}
-          />
-          <TextInput
-            label="Pipeline path (operations.json target)"
-            placeholder="/path/on/tapis/operations.json"
-            value={pipelinePath}
-            onChange={(e) => setField("pipeline_path", e.currentTarget.value)}
-          />
-        </Stack>
-      </Popover.Dropdown>
-    </Popover>
-  );
-
   return (
     <div style={{ height: "100%" }}>
       {mounted ? (
         <Suspense fallback={<Group justify="center" p="xl"><Loader /></Group>}>
-          <ImagePlayground
-            title="Image Preprocessing Studio"
-            fileSources={[dirSource]}
-            initialPipeline={config.operations as Pipeline | undefined}
-            onPipelineChange={(p: Pipeline) => onChange({ ...config, operations: p })}
-            headerActions={
-              <Group gap="xs" wrap="nowrap">
-                {pathControls}
-                <Button
-                  size="xs"
-                  leftSection={<IconDeviceFloppy size={14} />}
-                  loading={saving}
-                  onClick={savePipeline}
-                >
-                  Save operations.json
-                </Button>
-              </Group>
-            }
-          />
+          {playground}
         </Suspense>
       ) : (
         <Group justify="center" p="xl"><Loader /></Group>
       )}
 
-      <DirectoryBrowser
+      {/* Our own floating toolbar. Rendered by us on every state change, so the
+          system Select stays interactive — the library's headerActions did not
+          re-render reactively, which made the dropdown go stale after one pick. */}
+      <Paper
+        shadow="sm"
+        p={6}
+        radius="md"
+        withBorder
+        style={{ position: "fixed", top: 12, right: 16, zIndex: 10001 }}
+      >
+        <Group gap="xs" wrap="nowrap">
+          <Select
+            size="xs"
+            placeholder="Tapis system"
+            data={TAPIS_SYSTEMS}
+            value={system}
+            onChange={(v) => setField("source_system", v ?? "")}
+            allowDeselect={false}
+            w={180}
+            comboboxProps={{ withinPortal: true, zIndex: 10002 }}
+          />
+          <Popover width={360} position="bottom-end" withinPortal zIndex={10002} shadow="md">
+            <Popover.Target>
+              <Button size="xs" variant="light" leftSection={<IconSettings size={14} />}>
+                Paths
+              </Button>
+            </Popover.Target>
+            <Popover.Dropdown>
+              <Stack gap="xs">
+                <TextInput
+                  label="Source directory"
+                  description="Set by browsing images — not edited directly."
+                  value={sourceDir}
+                  readOnly
+                  variant="filled"
+                />
+                <TextInput
+                  label="Pipeline path (operations.json target)"
+                  placeholder="/path/on/tapis/operations.json"
+                  value={pipelinePath}
+                  onChange={(e) => setField("pipeline_path", e.currentTarget.value)}
+                />
+              </Stack>
+            </Popover.Dropdown>
+          </Popover>
+          <Button
+            size="xs"
+            leftSection={<IconDeviceFloppy size={14} />}
+            loading={saving}
+            onClick={savePipeline}
+          >
+            Save operations.json
+          </Button>
+        </Group>
+      </Paper>
+
+      <TapisDirectoryBrowser
         opened={browserOpen}
         system={system}
         rootPath={sourceDir}

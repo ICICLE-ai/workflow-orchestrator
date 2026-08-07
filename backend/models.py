@@ -40,6 +40,28 @@ class AppUser(Base):
     pipeline_runs = relationship("PipelineRun", back_populates="user")
 
 
+class Secret(Base):
+    __tablename__ = 'secret'
+
+    secret_id = Column(Integer, primary_key=True, index=True)
+    team_id = Column(Integer, ForeignKey('team.team_id'), nullable=False)
+    # Reference name a step's config_schema (type: "secret") stores and looks
+    # this row up by — e.g. "WANDB_API_KEY". Never the value itself.
+    key = Column(String, nullable=False)
+    description = Column(String, default='')
+    # Fernet-encrypted at rest (see engine/secrets.py). Decrypted only inside
+    # that module, at job-submission time — never returned by the API or
+    # persisted anywhere else (run_step/pipeline_run store only the key).
+    encrypted_value = Column(String, nullable=False)
+    created_by_id = Column(Integer, ForeignKey('app_user.user_id'))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint('team_id', 'key', name='uix_team_secret_key'),
+    )
+
+
 class StepTypeRegistry(Base):
     __tablename__ = 'step_type_registry'
     
@@ -53,6 +75,12 @@ class StepTypeRegistry(Base):
     # Full Tapis job-spec template (from step.json), with ${...} placeholders the
     # engine substitutes at run time. Null for steps that aren't executable.
     tapis_job = Column(JSON, default=None)
+    # Whether this step type submits a Tapis job at all. False for design-time-only
+    # steps (e.g. smart_labeler, geospatial_map) that just produce/view artifacts
+    # in the UI — no compute resources to configure, so the canvas hides the Run
+    # Configuration control for them. Defaults from step.json's `tapis_job` when
+    # the step.json doesn't set it explicitly (see main.sync_step_registry).
+    submits_job = Column(Boolean, default=True)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -99,6 +127,9 @@ class WorkflowTemplate(Base):
     team_id = Column(Integer, ForeignKey('team.team_id'))
     is_shared = Column(Boolean, default=False)
     tapis_pipeline_id = Column(String)
+    # Allocation/charge account (e.g. 'uot260') set at template creation; used as
+    # the default slurm_account when running this template.
+    allocation_account = Column(String)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

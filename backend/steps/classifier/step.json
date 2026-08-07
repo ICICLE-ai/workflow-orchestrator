@@ -39,7 +39,7 @@
     "maxMinutes": 180,
     "fileInputs": [
       { "name": "images", "envKey": "images", "autoMountLocal": true, "sourceUrl": "${images}", "targetPath": "input/images" },
-      { "name": "regions", "envKey": "regions", "autoMountLocal": true, "sourceUrl": "${regions}", "targetPath": "input/regions.json" }
+      { "name": "regions", "envKey": "regions", "autoMountLocal": true, "sourceUrl": "${regions}", "targetPath": "input/regions.json", "if": "regions" }
     ],
     "parameterSet": {
       "schedulerOptions": [

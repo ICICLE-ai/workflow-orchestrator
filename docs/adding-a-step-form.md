@@ -51,7 +51,44 @@ renders one control per key, driven by `type`:
 | --------------------- | --------------------- | ------------------- |
 | `int` / `float`       | number input          | number              |
 | `boolean`             | switch (toggle)       | true/false          |
+| `secret`              | dropdown of team secrets | secret's **key** (e.g. `"WANDB_API_KEY"`), never the value |
 | `string` (or other)   | text input            | string              |
+
+A `secret` field lets a step reference an API token (Weights & Biases,
+Hugging Face, ...) added via the dashboard's settings icon (`/api/secrets`),
+without ever putting the real value in the node's config, the saved template,
+or a run's frozen config — only the key name is stored there. The engine
+resolves the key to its decrypted value (scoped to the run owner's team) right
+before rendering the Tapis job template, so `${your_field_name}` in the
+step's `tapis_job` (an env var, a CLI arg, ...) receives the real value at
+submission time only. See `backend/engine/secrets.py` and
+`workflows.py`'s `_resolve_secrets`.
+
+### Hardcoding a specific secret: `${secrets.KEY}`
+
+A `secret` config field is for when the *user* should pick which secret a
+node uses. If a step always needs one specific, known secret — e.g. every run
+of a particular model needs the same Hugging Face token — reference it
+directly in the `tapis_job` template instead, with no config_schema field and
+no per-node UI at all:
+
+```jsonc
+"envVariables": [
+  { "key": "HF_TOKEN", "value": "${secrets.HF_TOKEN}" }
+]
+```
+
+`${secrets.HF_TOKEN}` is resolved against the run owner's team vault (the
+same one `/api/secrets` manages) after the normal `${...}` substitution runs,
+by `job_spec.resolve_secret_refs` — so it works anywhere a string can appear
+in the template (env vars, `appArgs`, scheduler options, ...). A secret that
+doesn't exist for that team is left as the literal `${secrets.KEY}` text
+rather than failing the substitution outright; the job will typically fail
+downstream in a way that makes the missing secret obvious. Like the `secret`
+field type, the resolved value is only ever substituted into the rendered
+job spec sent to Tapis — never persisted to `run_step`/`frozen_config`, and
+redacted from the debug logging in `engine.tapis.submit_job` if the job is
+rejected.
 
 Each field supports:
 - `description` — helper text under the label.
@@ -84,13 +121,30 @@ declared coercion).
 ## 4. Execution: `tapis_job` (optional)
 
 - **Design-time only** (no run): set `"tapis_job": null`. The step appears and can
-  be configured/wired, but submits nothing. Good for sources/sinks or a first pass.
+  be configured/wired, but submits nothing. Good for sources/sinks, a visualization
+  step (a map viewer, a labeling tool), or a first pass.
 - **Executable**: provide `tapis_app_id` and a `tapis_job` template. The template
   is a full Tapis job spec with `${...}` placeholders that the engine substitutes
   at run time from the step's `config_values` and run-level options
   (`${slurm_account}`, `${exec_system}`, `${work_dir}`, …). See
   [`backend/steps/preprocessing/step.json`](../backend/steps/preprocessing/step.json)
   for a complete, working example.
+
+A step with `"tapis_job": null` automatically has no compute resources to
+configure, so the canvas hides the node's Run Configuration (CPU icon) control
+for it. This is inferred from `tapis_job` and normally doesn't need to be set
+explicitly — but you can set `"submits_job": false` in step.json yourself to be
+explicit about it (e.g. `smart_labeler`, `geospatial_map`), or `true` to force the
+control back on for a design-time step that still wants configurable resources
+for some other reason. It's exposed to the frontend as `submits_job` on the step
+type (`/api/step-types`) and on `StepMeta`.
+
+If the step also has a custom UI panel registered in
+[`frontend/app/pages/registry.ts`](../frontend/app/pages/registry.ts) (see
+[adding-a-step-custom-ui.md](./adding-a-step-custom-ui.md)), that panel is also
+shown when the node is clicked on a run's detail page (`/runs/:runId`), against
+the run's resolved config — not just at design time. Steps that DO submit a job
+keep the run page's usual logs view instead.
 
 ## 5. Load it
 

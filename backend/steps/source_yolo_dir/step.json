@@ -1,0 +1,19 @@
+{
+  "step_type_key": "source_yolo_dir",
+  "display_name": "🏷️ YOLO Labels Directory",
+  "description": "Provides a path to a flat directory of YOLO-format label .txt files (one per image) plus classes.txt — e.g. for the annotation_format_adapter step's from_format='yolo'.",
+  "category": "source",
+  "icon": "file-text",
+  "inputs": [],
+  "outputs": [
+    { "name": "annotations_dir", "type": "yolo_annotations_dir" }
+  ],
+  "config_schema": {
+    "path": {
+      "type": "tapis_path",
+      "selectType": "dir",
+      "description": "Tapis system + path to the YOLO labels directory.",
+      "default": ""
+    }
+  }
+}

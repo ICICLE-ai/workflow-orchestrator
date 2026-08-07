@@ -10,8 +10,8 @@
   ],
   "config_schema": {
     "path": {
-      "type": "string",
-      "description": "Path or Tapis URI to the shapefile (e.g. tapis://storage-system/geo/boundaries.shp)",
+      "type": "tapis_path",
+      "description": "Tapis system + path to the shapefile (e.g. /geo/boundaries.shp).",
       "default": ""
     }
   }
