@@ -212,21 +212,21 @@
             "name": "gt_annotations",
             "description": "Optional: stage the GT annotation JSON in instead of reading it in place. If used, point --ann_path at ${JobWorkingDir}/input/annotations.json.",
             "autoMountLocal": true,
-            "sourceUrl": "tapis://${exec_system}${annotation_file}",
+            "sourceUrl": "${annotation_file}",
             "targetPath": "annotations.json"
          },
          {
             "name": "gt_images",
             "description": "Optional: stage the GT image directory in. If used, point --gt_image_dir at ${JobWorkingDir}/input/gt_images.",
             "autoMountLocal": true,
-            "sourceUrl": "tapis://${exec_system}${ground_truth}",
+            "sourceUrl": "${ground_truth}",
             "targetPath": "gt_images"
          },
          {
             "name": "dataset_images",
             "description": "Optional: stage the query image directory in. If used, point --dataset_dir at ${JobWorkingDir}/input/dataset.",
             "autoMountLocal": true,
-            "sourceUrl": "tapis://${exec_system}${dataset}",
+            "sourceUrl": "${dataset}",
             "targetPath": "dataset"
          }
       ]

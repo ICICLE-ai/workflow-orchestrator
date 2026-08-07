@@ -58,24 +58,37 @@ def _render_value(template, context: dict):
     return template
 
 
-# Fields that only apply to OSC-style exec systems. When work_dir is not provided
-# (e.g. an Expanse run), we drop them so they don't render as broken paths.
-_OSC_DIR_FIELDS = ("execSystemExecDir", "execSystemInputDir", "execSystemOutputDir")
+# execSystem{Exec,Input,Output}Dir are set centrally from context here (from
+# engine.transactions.get_run_archive_context's exec_system_*_dir values,
+# computed per exec_system — see _exec_system_dirs there) rather than left to
+# each step.json to declare — every Tapis-job-submitting step gets the same
+# exec-system-appropriate paths without repeating them.
+_EXEC_DIR_FIELDS = {
+    "execSystemExecDir": "exec_system_exec_dir",
+    "execSystemInputDir": "exec_system_input_dir",
+    "execSystemOutputDir": "exec_system_output_dir",
+}
 
 
 def render(template, context: dict):
-    """Render a Tapis job template: substitute placeholders, then drop fields that
-    don't apply to the chosen exec system.
+    """Render a Tapis job template: substitute placeholders, then set/drop fields
+    that depend on the chosen exec system rather than the step's own template.
 
-    - If work_dir is empty/missing, remove the execSystem*Dir fields (OSC-only).
+    - execSystem{Exec,Input,Output}Dir are overwritten from context's
+      exec_system_*_dir values (present only for exec systems that need them;
+      see _exec_system_dirs) — dropped entirely when absent, so Tapis applies
+      the app's own default layout instead of a broken/empty path.
     - If execSystemLogicalQueue rendered empty, drop it (let the app default apply).
     """
     rendered = _render_value(template, context)
 
     if isinstance(rendered, dict):
-        if not context.get("work_dir"):
-            for f in _OSC_DIR_FIELDS:
-                rendered.pop(f, None)
+        for field, ctx_key in _EXEC_DIR_FIELDS.items():
+            value = context.get(ctx_key)
+            if value:
+                rendered[field] = value
+            else:
+                rendered.pop(field, None)
         if rendered.get("execSystemLogicalQueue", None) in ("", None):
             rendered.pop("execSystemLogicalQueue", None)
 

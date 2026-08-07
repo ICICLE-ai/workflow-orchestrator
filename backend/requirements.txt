@@ -8,3 +8,6 @@ itsdangerous
 httpx
 pydantic
 pydantic-settings
+geopandas
+shapely
+Pillow

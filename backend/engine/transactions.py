@@ -330,6 +330,35 @@ def get_downstream_sink_path(run_id: int, node_key: str) -> str:
     return ""
 
 
+# OSC systems share one scratch layout, keyed by the run's Slurm allocation —
+# mirrors frontend/app/lib/tapis.ts's OSC_SCRATCH_SYSTEMS grouping.
+_OSC_EXEC_SYSTEMS = {"pitzer-tapis", "cardinal-tapis", "ascend-tapis"}
+
+
+def _exec_system_dirs(exec_system: str, slurm_account: str) -> tuple:
+    """Return (execSystemExecDir, execSystemInputDir, execSystemOutputDir) for a
+    Tapis job targeting `exec_system`, or (None, None, None) when that system
+    doesn't use these fields (Tapis applies the app's own default layout
+    instead) — job_spec.render() drops a field entirely when its context value
+    is falsy, rather than rendering a broken/empty path.
+
+    ${JobUUID} is a Tapis-side macro (filled in by Tapis at submission, not by
+    us) — left as literal text here since our own ${...} substitution only
+    replaces keys actually present in the context dict, and "JobUUID" never is.
+    """
+    if exec_system in _OSC_EXEC_SYSTEMS:
+        return (
+            f"/fs/scratch/{slurm_account}/harvest_jobs/${{JobUUID}}",
+            f"/fs/scratch/{slurm_account}/harvest_jobs/${{JobUUID}}",
+            f"/fs/scratch/{slurm_account}/harvest_jobs/${{JobUUID}}/output",
+        )
+    if exec_system == "expanse-tapis-static":
+        return ("/jobs/${JobUUID}", "/jobs/${JobUUID}", "/jobs/${JobUUID}")
+    # expanse-tapis (and anything unrecognized) — omit, let the Tapis app's own
+    # default exec/input/output dirs apply.
+    return (None, None, None)
+
+
 @ds.transaction(isolation_level="READ COMMITTED")
 def get_run_archive_context(run_id: int, node_key: str = None) -> dict:
     """Return substitution values for a step's Tapis job spec.
@@ -338,12 +367,24 @@ def get_run_archive_context(run_id: int, node_key: str = None) -> dict:
     we use a per-run workspace so every step's artifacts are isolated and
     downstream steps can find them deterministically:
 
-        workspace = <work_dir>/wf_runs/<run_id>            (on the exec/archive system)
-        this step archives to  <workspace>/<node_id>
+        workspace = <work_dir>/wf_runs/<run_id>                  (on the exec/archive system)
+        this step archives to  <workspace>/<step_type_key>/<node_id>
 
-    The archive dir is derived per-node — never supplied via run options. A run
-    can move the workspace base by setting frozen_config['work_dir']. ${JobUUID}
-    in exec-dir paths is left for Tapis to fill.
+    step_type_key groups a run's steps by which step they are (e.g.
+    'geospatial', 'yolo_inference') before the node id, purely for a more
+    readable archive tree — node_id alone already uniquely identifies the step
+    within the run; run_id is still what keeps two runs from colliding.
+
+    The archive dir is always derived per-node (run_id/node_id is appended
+    beneath whatever base is chosen — never taken from run options directly).
+    That base defaults to work_dir + '/wf_runs', but frozen_config['archive_dir']
+    (RunOptions.archive_dir) overrides it outright when set, letting a run
+    archive somewhere other than under its exec system's own work_dir.
+
+    exec_system_exec_dir / exec_system_input_dir / exec_system_output_dir feed
+    the Tapis job's execSystemExecDir/execSystemInputDir/execSystemOutputDir
+    fields (see _exec_system_dirs) — computed from exec_system alone, the same
+    for every step, so no step.json needs to declare them itself.
     """
     session = ds.sql_session()
     run = session.execute(
@@ -355,18 +396,36 @@ def get_run_archive_context(run_id: int, node_key: str = None) -> dict:
     exec_queue = cfg.get("exec_queue", "")
     archive_system = cfg.get("archive_system", exec_system)
     work_dir = cfg.get("work_dir", "")
+    slurm_account = cfg.get("slurm_account", "")
+    archive_dir_override = cfg.get("archive_dir", "")
 
-    # Per-run workspace, then per-node archive dir within it. The archive
-    # location is always derived here (never taken from run options) so every
-    # step's output is isolated and downstream steps can find it deterministically.
-    ws_base = (work_dir.rstrip("/") + "/wf_runs") if work_dir else "wf_runs"
+    # Per-run workspace, then per-node archive dir within it — /run_id/node_id
+    # is always appended (never taken from run options) so every step's output
+    # stays isolated and downstream steps can find it deterministically. The
+    # base it's appended to is archive_dir when the run set one, else derived
+    # from work_dir as before.
+    if archive_dir_override:
+        ws_base = archive_dir_override.rstrip("/")
+    elif work_dir:
+        ws_base = work_dir.rstrip("/") + "/wf_runs"
+    else:
+        ws_base = "wf_runs"
     workspace = f"{ws_base}/{run_id}"
-    # Per-node dir for a specific step; the workspace root when no node is given.
-    archive_dir = f"{workspace}/{node_key}" if node_key is not None else workspace
+    # Per-node dir for a specific step, grouped by step type; the workspace
+    # root when no node is given (e.g. the run-level archive base).
+    if node_key is not None:
+        node = session.execute(
+            select(WfNode).where(WfNode.node_id == int(node_key))
+        ).scalars().one()
+        archive_dir = f"{workspace}/{node.step_type_key}/{node_key}"
+    else:
+        archive_dir = workspace
+
+    exec_dir, input_dir, output_dir = _exec_system_dirs(exec_system, slurm_account)
 
     return {
         "run_id": run_id,
-        "slurm_account": cfg.get("slurm_account", ""),
+        "slurm_account": slurm_account,
         "exec_system": exec_system,
         "exec_queue": exec_queue,
         "work_dir": work_dir,
@@ -375,6 +434,9 @@ def get_run_archive_context(run_id: int, node_key: str = None) -> dict:
         "archive_dir": archive_dir,
         # Avoid a double slash when archive_dir is absolute (starts with '/').
         "archive_uri": f"tapis://{archive_system}/{archive_dir.lstrip('/')}",
+        "exec_system_exec_dir": exec_dir,
+        "exec_system_input_dir": input_dir,
+        "exec_system_output_dir": output_dir,
     }
 
 

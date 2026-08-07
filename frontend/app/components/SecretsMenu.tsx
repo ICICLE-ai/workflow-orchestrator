@@ -78,7 +78,12 @@ export default function SecretsMenu() {
     if (deletingKeys.has(key)) return; // already deleting this one
     setDeletingKeys((prev) => new Set(prev).add(key));
     try {
-      const res = await apiFetch(`/api/secrets/${encodeURIComponent(key)}`, { method: "DELETE" });
+      // POST, not DELETE — see backend/main.py's delete_secret_via_post: DELETE
+      // always triggers a CORS preflight, which some tunnels/proxies between
+      // frontend and backend mangle, surfacing as a browser CORS error even
+      // though the endpoint itself is fine. POST already works (Add secret
+      // uses it), so delete rides that same proven path.
+      const res = await apiFetch(`/api/secrets/${encodeURIComponent(key)}/delete`, { method: "POST" });
       // A 404 here means it's already gone (e.g. a second, redundant request) —
       // treat that as success too rather than surfacing a misleading error.
       if (!res.ok && res.status !== 404) {

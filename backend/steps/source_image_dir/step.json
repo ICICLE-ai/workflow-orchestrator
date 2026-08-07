@@ -10,9 +10,10 @@
   ],
   "config_schema": {
     "path": {
-      "type": "string",
-      "description": "Path or Tapis URI to the image directory (e.g. tapis://storage-system/data/images/)",
-      "default": ""
+      "type": "tapis_path",
+      "description": "Tapis system + path to the image directory.",
+      "default": "",
+      "selectType": "dir"
     }
   }
 }

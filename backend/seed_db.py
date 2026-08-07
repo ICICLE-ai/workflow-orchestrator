@@ -21,6 +21,8 @@ def seed_database():
             {"type_key": "csv_data", "description": "CSV dataset"},
             {"type_key": "shapefile", "description": "Geospatial shapefile"},
             {"type_key": "geopackage", "description": "Geospatial GeoPackage (.gpkg) container"},
+            {"type_key": "mission_files_dir", "description": "Directory of exported drone/GCS mission files, one subfolder per format"},
+            {"type_key": "yolo_annotations_dir", "description": "Flat directory of YOLO-format label .txt files (one per image) plus classes.txt"},
             {"type_key": "heatmap_image", "description": "Generated heatmap image"},
             {"type_key": "file_path", "description": "File path"},
         ]

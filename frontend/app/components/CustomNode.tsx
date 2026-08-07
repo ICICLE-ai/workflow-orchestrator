@@ -81,10 +81,18 @@ export default function CustomNode({ id, data }: any) {
   };
 
   // Persist a saved config back onto this node, then close the settings modal.
+  // Merged onto the CURRENT config rather than replacing it outright: the
+  // settings panel's own working state is seeded from a snapshot taken when
+  // its modal opened, so if Run Configuration (nodeCount/coresPerNode/
+  // memoryMB/maxMinutes/gpus — see handleSaveRunConfig) was saved after that
+  // snapshot but before this Save, a plain replace would silently drop those
+  // resource keys since the panel's snapshot never had them. Merging keeps
+  // both saves commutative regardless of which modal was opened/saved first.
   const handleSaveConfig = (nextConfig: Record<string, any>) => {
-    setConfig(nextConfig);
+    const merged = { ...config, ...nextConfig };
+    setConfig(merged);
     setNodes((nds) =>
-      nds.map((n) => (n.id === id ? { ...n, data: { ...n.data, config_values: nextConfig } } : n))
+      nds.map((n) => (n.id === id ? { ...n, data: { ...n.data, config_values: merged } } : n))
     );
     setOpened(false);
   };

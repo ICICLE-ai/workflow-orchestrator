@@ -1,23 +1,18 @@
 {
   "step_type_key": "geospatial",
   "display_name": "🌐 Geospatial (GeoPackage)",
-  "description": "Builds a GeoPackage (.gpkg) of weed/residue heatmap and farm-boundary layers from Harvest-style JSON results + image EXIF GPS. Shapefile/GeoJSON/raw-GeoPackage exports are generated on demand via /api/pipeline-runs/{run_id}/geospatial/... (see backend/geospatial.py) — the GeoPackage itself is the only thing stored.",
+  "description": "Builds a GeoPackage (.gpkg) of weed/residue heatmap and farm-boundary layers from Harvest-style JSON results + image EXIF GPS, via the generate-geopackage Tapis app. Shapefile/GeoJSON/raw-GeoPackage exports are generated on demand via /api/pipeline-runs/{run_id}/geospatial/... (see backend/geospatial.py) — the GeoPackage itself is the only thing stored.",
   "category": "Post-processing",
   "icon": "map",
-  "tapis_app_id": "PLACEHOLDER-harvest-Geospatial-app",
+  "tapis_app_id": "generate-geopackage",
   "inputs": [
     { "name": "results", "type": "json_results" },
-    { "name": "images", "type": "image_dir", "required": false }
+    { "name": "images", "type": "image_dir" }
   ],
   "outputs": [
     { "name": "gpkg_output", "type": "geopackage", "output_path": "output.gpkg" }
   ],
   "config_schema": {
-    "generator_mode": {
-      "type": "string",
-      "description": "Heatmap source mode: 'detection' (use images) or 'results'.",
-      "default": "detection"
-    },
     "spray_mode": {
       "type": "string",
       "description": "'binary' or 'custom' spray-decision banding.",
@@ -63,24 +58,24 @@
       "description": "North-south offset (feet) between an image's GPS tag and its optical center.",
       "default": 0.0
     },
-    "image_width_px": {
-      "type": "int",
-      "description": "Source image width in pixels, used for bounding-box-to-ground projection.",
-      "default": 4000
+    "score_threshold": {
+      "type": "float",
+      "description": "Minimum detection confidence score to include.",
+      "default": 0.5
     },
-    "image_height_px": {
-      "type": "int",
-      "description": "Source image height in pixels, used for bounding-box-to-ground projection.",
-      "default": 3000
+    "class_filter": {
+      "type": "string",
+      "description": "Only include detections of this class (leave blank for all classes).",
+      "default": ""
     }
   },
   "tapis_job": {
     "name": "geospatial-gpkg",
-    "appId": "PLACEHOLDER-harvest-Geospatial-app",
+    "appId": "generate-geopackage",
     "appVersion": "1.0.0",
-    "description": "PLACEHOLDER job template — swap appId/appVersion once a real GeoPackage-emitting Tapis app exists (that app is outside this repo and was not verified during this change).",
-    "execSystemId": "expanse-tapis",
-    "execSystemLogicalQueue": "tapisShared",
+    "description": "Generate weed/residue heatmap + farm-boundary GeoPackage",
+    "execSystemId": "${exec_system}",
+    "execSystemLogicalQueue": "${exec_queue}",
     "archiveSystemId": "${archive_system}",
     "archiveSystemDir": "${archive_dir}",
     "nodeCount": 1,
@@ -93,14 +88,34 @@
     ],
     "parameterSet": {
       "appArgs": [
-        { "name": "generator mode", "arg": "--generator-mode" },
-        { "name": "generator mode value", "arg": "${generator_mode}" },
+        { "name": "json", "arg": "--json" },
+        { "name": "json value", "arg": "/input/results.json" },
+        { "name": "outdir", "arg": "--outdir" },
+        { "name": "outdir value", "arg": "/output" },
+        { "name": "imagedir", "arg": "--imagedir" },
+        { "name": "imagedir value", "arg": "/input/images" },
         { "name": "grid width", "arg": "--grid-width" },
         { "name": "grid width value", "arg": "${grid_width}" },
         { "name": "grid height", "arg": "--grid-height" },
         { "name": "grid height value", "arg": "${grid_height}" },
+        { "name": "fov width", "arg": "--fov-width-ft" },
+        { "name": "fov width value", "arg": "${fov_width_ft}" },
+        { "name": "fov height", "arg": "--fov-height-ft" },
+        { "name": "fov height value", "arg": "${fov_height_ft}" },
+        { "name": "gps offset x", "arg": "--gps-offset-x-ft" },
+        { "name": "gps offset x value", "arg": "${gps_offset_x_ft}" },
+        { "name": "gps offset y", "arg": "--gps-offset-y-ft" },
+        { "name": "gps offset y value", "arg": "${gps_offset_y_ft}" },
         { "name": "spray mode", "arg": "--spray-mode" },
-        { "name": "spray mode value", "arg": "${spray_mode}" }
+        { "name": "spray mode value", "arg": "${spray_mode}" },
+        { "name": "spray levels", "arg": "--spray-levels", "if": "spray_levels" },
+        { "name": "spray levels value", "arg": "${spray_levels}", "if": "spray_levels" },
+        { "name": "spray thresholds", "arg": "--spray-thresholds", "if": "spray_thresholds" },
+        { "name": "spray thresholds value", "arg": "${spray_thresholds}", "if": "spray_thresholds" },
+        { "name": "score threshold", "arg": "--score-threshold" },
+        { "name": "score threshold value", "arg": "${score_threshold}" },
+        { "name": "class filter", "arg": "--class-filter", "if": "class_filter" },
+        { "name": "class filter value", "arg": "${class_filter}", "if": "class_filter" }
       ],
       "schedulerOptions": [
         { "name": "slurm account", "arg": "-A ${slurm_account}" },
@@ -108,19 +123,11 @@
         { "name": "cpu cores", "arg": "--cpus-per-task=10" }
       ],
       "containerArgs": [
-        { "name": "binding", "arg": "--bind $PWD/output:/output" }
+        { "name": "binding", "arg": "--bind $PWD/input:/input,$PWD/output:/output" }
       ],
       "envVariables": [
         { "key": "OMP_NUM_THREADS", "value": "10" },
-        { "key": "MKL_NUM_THREADS", "value": "10" },
-        { "key": "FOV_WIDTH_FT", "value": "${fov_width_ft}" },
-        { "key": "FOV_HEIGHT_FT", "value": "${fov_height_ft}" },
-        { "key": "GPS_OFFSET_X_FT", "value": "${gps_offset_x_ft}" },
-        { "key": "GPS_OFFSET_Y_FT", "value": "${gps_offset_y_ft}" },
-        { "key": "IMAGE_WIDTH_PX", "value": "${image_width_px}" },
-        { "key": "IMAGE_HEIGHT_PX", "value": "${image_height_px}" },
-        { "key": "SPRAY_LEVELS", "value": "${spray_levels}" },
-        { "key": "SPRAY_THRESHOLDS", "value": "${spray_thresholds}" }
+        { "key": "MKL_NUM_THREADS", "value": "10" }
       ],
       "archiveFilter": { "includeLaunchFiles": false }
     }

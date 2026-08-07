@@ -23,27 +23,37 @@ import markerIcon from "leaflet/dist/images/marker-icon.png?url";
 import markerShadow from "leaflet/dist/images/marker-shadow.png?url";
 import "leaflet/dist/leaflet.css";
 
-// This panel renders a completed 'geospatial' step's GeoPackage — built
-// server-side (backend/geospatial.py) from drone detection results (JSON) +
-// source imagery (EXIF GPS) into three fixed layers:
+// This panel renders every layer in a GeoPackage — server-side conversion via
+// backend/geospatial.py (GeoPackage -> GeoJSON, GDAL/OGR). It applies special
+// styling/legend treatment to three layer names the 'geospatial' step's
+// GeoPackage is documented to produce (from drone detection results + source
+// imagery EXIF GPS):
 //   - detections    : point layer, one point per detected object
 //   - spray_zones   : polygon grid layer, one cell per grid square, with a
 //                     spray decision (binary or custom banded) based on
 //                     detection counts
 //   - farm_boundary : polygon layer, convex hull of all image locations
+// Any OTHER layer present (e.g. a hand-supplied source_geopackage file, or a
+// generic GeoPackage used for testing — the panel doesn't assume the file it's
+// pointed at came from the 'geospatial' step) still renders, with a generic
+// per-layer color instead of the special styling above.
 //
-// Unlike the shapefile-viewer this replaces, this panel never touches raw
-// geodata bytes: it calls a backend resource (backend/geospatial.py) that
-// converts GeoPackage -> GeoJSON server-side via GDAL/OGR. That resource comes
-// in two forms, and this panel picks whichever applies:
-//   - run-scoped (/api/pipeline-runs/{run_id}/geospatial/...): opened from the
-//     run page (runs.$runId.tsx passes `runId` down) — reads the actual
-//     GeoPackage a completed run produced.
-//   - design-time preview (/api/geospatial-preview/...): opened from the
-//     canvas before any run exists. Only works wired to a static
-//     source_geopackage node, whose path is already known without running
-//     anything — a 'geospatial' job step has nothing to preview until it
-//     actually runs, so this shows a placeholder in that case instead.
+// Data always comes from /api/geospatial-preview/... (a `uri` query param —
+// see backend/geospatial.py's preview_router), never from the run-scoped
+// /api/pipeline-runs/{run_id}/geospatial/... resource. That resource finds
+// "any node in this run producing a geopackage", which breaks the moment a
+// run has more than one (e.g. geospatial -> flight_plan, both producing a
+// .gpkg) — it has no way to know which one THIS panel is wired to. Using the
+// wired edge's own resolved URI instead (from CustomNode's resolveOutputPath
+// at design time, or this run's resolved RunStep.config at run time — see
+// runs.$runId.tsx's panelConnectedInputs) is unambiguous in both cases, so
+// the run-scoped resource is only still used for the optional /config call
+// (the spray-legend's colors/labels — cosmetic, never which data renders).
+//
+// Opened from the canvas before any run exists, this only has something to
+// show when wired to a static source_geopackage node (whose path is already
+// known); a 'geospatial' or 'flight_plan' job step has nothing to preview
+// until it actually runs, so a placeholder shows in that case instead.
 //
 // Registered in registry.ts under the key "geospatial_map".
 export default function GeospatialMapPanel({ step, connectedInputs, runId }: StepPanelProps) {
@@ -51,14 +61,23 @@ export default function GeospatialMapPanel({ step, connectedInputs, runId }: Ste
   const wiredInput = gpkgInputPort ? connectedInputs[gpkgInputPort] : undefined;
   const isWired = !!wiredInput;
 
-  // Design-time-resolved location (a tapis://system/path URI — see
-  // CustomNode's resolveOutputPath, which builds this the same way the
-  // backend does for a completed run's output). Only meaningful without a
-  // run; a job step's connectedInputs value is empty until it actually runs.
-  const previewUri = !runId ? String(wiredInput?.config?.path || "") : "";
-  const mode: "run" | "preview" | null = runId ? "run" : (previewUri ? "preview" : null);
-  const apiBase = mode === "run" ? `/api/pipeline-runs/${runId}/geospatial` : "/api/geospatial-preview";
-  const previewQs = mode === "preview" ? `?uri=${encodeURIComponent(previewUri)}` : "";
+  // The wired GeoPackage's own resolved location (a tapis://system/path URI)
+  // — at design time via CustomNode's resolveOutputPath, or at run time via
+  // this run's resolved RunStep.config (see runs.$runId.tsx's
+  // panelConnectedInputs, built from _resolve_inputs's per-edge resolution).
+  // Either way this is the ACTUAL wired edge's value, not a guess.
+  //
+  // Deliberately NOT using the run-scoped /api/pipeline-runs/{run_id}/geospatial/...
+  // resource's own lookup here: that endpoint finds "any node in this run
+  // that produces a geopackage", which breaks the moment a run has more than
+  // one such node (e.g. geospatial -> flight_plan, both producing a .gpkg) —
+  // it can't know which one THIS viewer is actually wired to. Going through
+  // the wired URI directly (via /api/geospatial-preview/..., which just takes
+  // a uri param) sidesteps that ambiguity entirely, in both modes.
+  const previewUri = String(wiredInput?.config?.path || "");
+  const hasData = !!previewUri;
+  const apiBase = "/api/geospatial-preview";
+  const previewQs = hasData ? `?uri=${encodeURIComponent(previewUri)}` : "";
 
   // Client-only load of Leaflet + react-leaflet (see the type-only imports above).
   const [libs, setLibs] = useState<Libs | null>(null);
@@ -79,15 +98,14 @@ export default function GeospatialMapPanel({ step, connectedInputs, runId }: Ste
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [layerData, setLayerData] = useState<Record<string, any>>({});
+  const [skippedLayers, setSkippedLayers] = useState<string[]>([]);
   const [runConfig, setRunConfig] = useState<RunGeoConfig | null>(null);
   const [missingCount, setMissingCount] = useState(0);
-  const [visible, setVisible] = useState<Record<string, boolean>>({
-    farm_boundary: true, spray_zones: true, detections: true,
-  });
-  const [sidebarLayer, setSidebarLayer] = useState<string>("detections");
+  const [visible, setVisible] = useState<Record<string, boolean>>({});
+  const [sidebarLayer, setSidebarLayer] = useState<string>("");
 
   useEffect(() => {
-    if (!isWired || !mode) return;
+    if (!isWired || !hasData) return;
     let cancelled = false;
     setLoading(true);
     setLoadError(null);
@@ -100,12 +118,22 @@ export default function GeospatialMapPanel({ step, connectedInputs, runId }: Ste
           throw new Error(e.detail || `HTTP ${labelsRes.status}`);
         }
         const { labels } = await labelsRes.json();
-        const present: string[] = KNOWN_LAYERS.filter((l) => (labels || []).includes(l));
+        // Render every layer the GeoPackage actually has — not just the three
+        // the 'geospatial' step is documented to produce. A hand-supplied
+        // source_geopackage file (or any GeoPackage used to test this panel)
+        // can have any layer names at all; those still render, just without
+        // the special styling farm_boundary/spray_zones/detections get below.
+        const allLabels: string[] = labels || [];
+        const present = [...allLabels].sort(layerDrawOrder);
 
-        // /config only exists on the run-scoped resource — a design-time
-        // preview has no run-level step config to read spray mode from.
+        // Spray-mode config for the legend is a best-effort nicety only,
+        // fetched from the run-scoped resource (which has no way to target
+        // this specific wired node — see the comment above previewUri). In a
+        // run with more than one geopackage-producing step this may reflect
+        // the wrong one's config; that only affects the legend's colors/labels,
+        // never which data actually renders, so it's left as a soft best-effort.
         const [cfgRes, missingRes, ...geojsonResults] = await Promise.all([
-          mode === "run" ? apiFetch(`${apiBase}/config`) : Promise.resolve(null),
+          runId ? apiFetch(`/api/pipeline-runs/${runId}/geospatial/config`) : Promise.resolve(null),
           apiFetch(`${apiBase}/missing${previewQs}`),
           ...present.map((label) => apiFetch(`${apiBase}/geojson/${encodeURIComponent(label)}${previewQs}`)),
         ]);
@@ -119,12 +147,17 @@ export default function GeospatialMapPanel({ step, connectedInputs, runId }: Ste
         }
 
         const data: Record<string, any> = {};
+        const skipped: string[] = [];
         for (let i = 0; i < present.length; i++) {
           if (geojsonResults[i].ok) data[present[i]] = await geojsonResults[i].json();
+          else skipped.push(present[i]);
         }
         if (!cancelled) {
+          const loaded = Object.keys(data);
           setLayerData(data);
-          setSidebarLayer(present.find((l) => l === "detections") || present[0] || "detections");
+          setSkippedLayers(skipped);
+          setVisible(Object.fromEntries(loaded.map((l) => [l, true])));
+          setSidebarLayer(loaded.find((l) => l === "detections") || loaded[0] || "");
         }
       } catch (err: any) {
         if (!cancelled) setLoadError(err?.message || "Could not load the geospatial layers");
@@ -133,7 +166,7 @@ export default function GeospatialMapPanel({ step, connectedInputs, runId }: Ste
       }
     })();
     return () => { cancelled = true; };
-  }, [isWired, mode, apiBase, previewQs]);
+  }, [isWired, hasData, runId, apiBase, previewQs]);
 
   const levels = useMemo(
     () => (runConfig?.levels || "").split(/\s+/).filter(Boolean),
@@ -148,14 +181,14 @@ export default function GeospatialMapPanel({ step, connectedInputs, runId }: Ste
   const mapRef = useRef<any>(null);
   const layerRefs = useRef<Record<string, any>>({});
 
-  // Fit the map to the union of every loaded (visible-by-default) layer once loaded.
+  // Fit the map to the union of every loaded layer once loaded.
   useEffect(() => {
     if (!libs || !mapRef.current) return;
-    const collections = KNOWN_LAYERS.map((l) => layerData[l]).filter(Boolean);
+    const collections = Object.values(layerData).filter(Boolean);
     if (collections.length === 0) return;
     const merged = { type: "FeatureCollection" as const, features: collections.flatMap((fc) => fc.features || []) };
     const bounds = libs.L.geoJSON(merged as any).getBounds();
-    if (bounds.isValid()) mapRef.current.fitBounds(bounds, { padding: [24, 24] });
+    if (bounds.isValid()) mapRef.current.fitBounds(bounds, { padding: [20, 20], maxZoom: 19 });
   }, [libs, layerData]);
 
   const onEachFeature = useCallback((feature: any, layer: any, layerKey: string, idx: number) => {
@@ -172,9 +205,9 @@ export default function GeospatialMapPanel({ step, connectedInputs, runId }: Ste
     layer.openPopup?.();
     if (typeof layer.getBounds === "function") {
       const bounds = layer.getBounds();
-      if (bounds.isValid()) map.fitBounds(bounds, { padding: [40, 40], maxZoom: 17 });
+      if (bounds.isValid()) map.fitBounds(bounds, { padding: [40, 40], maxZoom: 19 });
     } else if (typeof layer.getLatLng === "function") {
-      map.setView(layer.getLatLng(), 17);
+      map.setView(layer.getLatLng(), 19);
     }
   };
 
@@ -194,7 +227,7 @@ export default function GeospatialMapPanel({ step, connectedInputs, runId }: Ste
     );
   }
 
-  if (!mode) {
+  if (!hasData) {
     return (
       <Stack align="center" justify="center" style={{ height: "100%" }} p="xl">
         <Text c="dimmed">
@@ -214,7 +247,7 @@ export default function GeospatialMapPanel({ step, connectedInputs, runId }: Ste
   }
 
   const { MapContainer, TileLayer, GeoJSON } = libs;
-  const presentLayers = KNOWN_LAYERS.filter((l) => layerData[l]);
+  const presentLayers = Object.keys(layerData).sort(layerDrawOrder);
   const sidebarFeatures = (layerData[sidebarLayer]?.features || []).map((f: any, i: number) => ({
     idx: i,
     geomType: f.geometry?.type || "Unknown",
@@ -229,21 +262,34 @@ export default function GeospatialMapPanel({ step, connectedInputs, runId }: Ste
           <Group gap="md" wrap="nowrap">
             {loading && <Loader size="xs" />}
             {loadError && <Text size="xs" c="red">{loadError}</Text>}
-            {!loading && !loadError && KNOWN_LAYERS.map((l) => (
-              layerData[l] && (
-                <Checkbox
-                  key={l}
-                  size="xs"
-                  label={LAYER_LABELS[l]}
-                  checked={visible[l]}
-                  onChange={(e) => setVisible((v) => ({ ...v, [l]: e.currentTarget.checked }))}
-                />
-              )
+            {!loading && !loadError && presentLayers.length === 0 && (
+              <Text size="xs" c="dimmed">No layers in this GeoPackage.</Text>
+            )}
+            {!loading && !loadError && presentLayers.map((l) => (
+              <Checkbox
+                key={l}
+                size="xs"
+                label={layerLabel(l)}
+                checked={!!visible[l]}
+                onChange={(e) => {
+                  // Read .checked synchronously — the native ChangeEvent's
+                  // currentTarget is reset to null once dispatch finishes, and
+                  // the functional setState updater below can run after that
+                  // point, not during the event itself.
+                  const checked = e.currentTarget.checked;
+                  setVisible((v) => ({ ...v, [l]: checked }));
+                }}
+              />
             ))}
           </Group>
           <Group gap="sm" wrap="nowrap">
             {missingCount > 0 && (
               <Badge size="xs" color="orange" variant="light">{missingCount} missing source image(s)</Badge>
+            )}
+            {skippedLayers.length > 0 && (
+              <Badge size="xs" color="gray" variant="light" title={skippedLayers.join(", ")}>
+                {skippedLayers.length} layer(s) couldn't be converted
+              </Badge>
             )}
             {presentLayers.map((l) => (
               <Anchor
@@ -253,12 +299,12 @@ export default function GeospatialMapPanel({ step, connectedInputs, runId }: Ste
                 rel="noreferrer"
                 size="xs"
               >
-                <Group gap={4} wrap="nowrap"><IconDownload size={12} />{LAYER_LABELS[l]} (.zip)</Group>
+                <Group gap={4} wrap="nowrap"><IconDownload size={12} />{layerLabel(l)} (.zip)</Group>
               </Anchor>
             ))}
             {presentLayers.length > 0 && (
               <Anchor
-                href={downloadUrl(apiBase, previewQs, "download-gpkg", mode === "run" ? `run_${runId}` : "geospatial")}
+                href={downloadUrl(apiBase, previewQs, "download-gpkg", runId ? `run_${runId}` : "geospatial")}
                 target="_blank"
                 rel="noreferrer"
                 size="xs"
@@ -277,31 +323,49 @@ export default function GeospatialMapPanel({ step, connectedInputs, runId }: Ste
       <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
         <div style={{ flex: 1, minWidth: 0 }}>
           <MapContainer ref={mapRef} center={[0, 0]} zoom={2} style={{ height: "100%", width: "100%" }}>
-            <TileLayer url={OSM_TILE_URL} attribution={OSM_ATTRIBUTION} />
-            {visible.farm_boundary && layerData.farm_boundary && (
-              <GeoJSON
-                key="farm_boundary"
-                data={layerData.farm_boundary}
-                style={() => FARM_BOUNDARY_STYLE}
-                onEachFeature={(f, l) => onEachFeature(f, l, "farm_boundary", layerData.farm_boundary.features.indexOf(f))}
-              />
-            )}
-            {visible.spray_zones && layerData.spray_zones && (
-              <GeoJSON
-                key="spray_zones"
-                data={layerData.spray_zones}
-                style={(f: any) => ({ color: "#475569", weight: 1, fillOpacity: 0.55, fillColor: sprayZoneColor(f?.properties || {}, levels, sprayMode) })}
-                onEachFeature={(f, l) => onEachFeature(f, l, "spray_zones", layerData.spray_zones.features.indexOf(f))}
-              />
-            )}
-            {visible.detections && layerData.detections && (
-              <GeoJSON
-                key="detections"
-                data={layerData.detections}
-                pointToLayer={(_f, latlng) => libs.L.circleMarker(latlng, DETECTION_MARKER_STYLE)}
-                onEachFeature={(f, l) => onEachFeature(f, l, "detections", layerData.detections.features.indexOf(f))}
-              />
-            )}
+            <TileLayer url={OSM_TILE_URL} attribution={OSM_ATTRIBUTION} maxZoom={19} />
+            {presentLayers.map((l) => {
+              if (!visible[l]) return null;
+              const fc = layerData[l];
+              const onEach = (f: any, ly: any) => onEachFeature(f, ly, l, fc.features.indexOf(f));
+
+              if (l === "farm_boundary") {
+                return <GeoJSON key={l} data={fc} style={() => FARM_BOUNDARY_STYLE} onEachFeature={onEach} />;
+              }
+              if (l === "spray_zones") {
+                return (
+                  <GeoJSON
+                    key={l}
+                    data={fc}
+                    style={(f: any) => ({ color: "#475569", weight: 1, fillOpacity: 0.55, fillColor: sprayZoneColor(f?.properties || {}, levels, sprayMode) })}
+                    onEachFeature={onEach}
+                  />
+                );
+              }
+              if (l === "detections") {
+                return (
+                  <GeoJSON
+                    key={l}
+                    data={fc}
+                    pointToLayer={(_f, latlng) => libs.L.circleMarker(latlng, DETECTION_MARKER_STYLE)}
+                    onEachFeature={onEach}
+                  />
+                );
+              }
+              // Any other layer (a hand-supplied source_geopackage file, or a
+              // generic GeoPackage used to test this panel) — a stable color
+              // per layer name, generic enough for any geometry type.
+              const color = genericLayerColor(l);
+              return (
+                <GeoJSON
+                  key={l}
+                  data={fc}
+                  style={() => ({ color, weight: 2, fillColor: color, fillOpacity: 0.3 })}
+                  pointToLayer={(_f, latlng) => libs.L.circleMarker(latlng, { radius: 5, color, fillColor: color, fillOpacity: 0.85, weight: 1 })}
+                  onEachFeature={onEach}
+                />
+              );
+            })}
           </MapContainer>
         </div>
 
@@ -311,7 +375,7 @@ export default function GeospatialMapPanel({ step, connectedInputs, runId }: Ste
             <Select
               size="xs"
               w={150}
-              data={presentLayers.map((l) => ({ value: l, label: LAYER_LABELS[l] }))}
+              data={presentLayers.map((l) => ({ value: l, label: layerLabel(l) }))}
               value={sidebarLayer}
               onChange={(v) => v && setSidebarLayer(v)}
               allowDeselect={false}
@@ -373,15 +437,42 @@ interface RunGeoConfig {
 const OSM_TILE_URL = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
 const OSM_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
 
-// Fixed layer names the geospatial step's GeoPackage is documented to contain
-// (backend/geospatial.py / backend/steps/geospatial/step.json). Draw order:
-// boundary first (bottom), zones over it, detections on top.
-const KNOWN_LAYERS = ["farm_boundary", "spray_zones", "detections"];
-const LAYER_LABELS: Record<string, string> = {
+// The three layer names the 'geospatial' step's GeoPackage is documented to
+// contain (backend/geospatial.py / backend/steps/geospatial/step.json) — get
+// special styling below. Any OTHER layer in the GeoPackage still renders (see
+// the panel's generic-layer branch), just without this treatment: this panel
+// doesn't assume every GeoPackage it's pointed at came from that step.
+const KNOWN_LAYER_LABELS: Record<string, string> = {
   farm_boundary: "Farm boundary",
   spray_zones: "Spray zones",
   detections: "Detections",
 };
+// Draw order: any layer outside the known three first (bottom, alphabetical
+// for determinism), then boundary, zones, detections on top — so detections
+// (points) stay the most visible/clickable layer regardless of what else the
+// GeoPackage contains.
+const KNOWN_LAYER_ORDER = ["farm_boundary", "spray_zones", "detections"];
+function layerDrawOrder(a: string, b: string): number {
+  const ai = KNOWN_LAYER_ORDER.indexOf(a);
+  const bi = KNOWN_LAYER_ORDER.indexOf(b);
+  if (ai === -1 && bi === -1) return a.localeCompare(b);
+  if (ai === -1) return -1;
+  if (bi === -1) return 1;
+  return ai - bi;
+}
+function layerLabel(l: string): string {
+  return KNOWN_LAYER_LABELS[l] ?? l.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// Stable per-label color for a layer with no special styling — hashed rather
+// than index-based, so a layer keeps its color across toggles/reloads
+// regardless of what else happens to be present in the same GeoPackage.
+const GENERIC_LAYER_PALETTE = ["#0891b2", "#7c3aed", "#059669", "#ca8a04", "#db2777", "#4f46e5", "#0d9488", "#b45309"];
+function genericLayerColor(label: string): string {
+  let hash = 0;
+  for (let i = 0; i < label.length; i++) hash = (hash * 31 + label.charCodeAt(i)) >>> 0;
+  return GENERIC_LAYER_PALETTE[hash % GENERIC_LAYER_PALETTE.length];
+}
 
 const FARM_BOUNDARY_STYLE = { color: "#334155", weight: 2, fill: false, dashArray: "6 4" };
 const DETECTION_MARKER_STYLE = { radius: 5, color: "#dc2626", fillColor: "#f87171", fillOpacity: 0.85, weight: 1 };

@@ -273,6 +273,7 @@ def execute_node_workflow(node_key: str, run_id: int, orchestrator_workflow_id: 
 
         # 4. Record each output port's path (Tapis URI) for downstream steps.
         outputs = _derive_outputs(run_id, node_key, ctx, job_uuid)
+        print(f"[workflows] node {node_key} (run {run_id}) derived outputs: {outputs}")
         complete_run_step(run_id, node_key, outputs)
 
         DBOS.send(destination_id=orchestrator_workflow_id, message=node_key, topic="step_complete")

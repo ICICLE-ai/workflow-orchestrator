@@ -12,6 +12,7 @@ from db import engine, SessionLocal, get_db, DATABASE_URL
 from models import Base, StepTypeRegistry, StepTypePort, WorkflowTemplate, PipelineRun, RunStep, AppUser, WfNode, WfEdge, RunEdge, PortDataType, Secret
 import auth
 import geospatial
+import annotation_adapter
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import json
@@ -365,6 +366,10 @@ app.include_router(auth.router)
 # static source_geopackage node's path, no run required). See geospatial.py.
 app.include_router(geospatial.router)
 app.include_router(geospatial.preview_router)
+
+# The annotation_format_adapter step's converter — inline data reshaping (no
+# Tapis job), see annotation_adapter.py's module docstring.
+app.include_router(annotation_adapter.router)
 
 @app.get("/")
 def read_root():
@@ -870,6 +875,10 @@ class RunOptions(BaseModel):
     exec_queue: Optional[str] = None
     work_dir: Optional[str] = None
     archive_system: Optional[str] = None
+    # Base directory step outputs archive under (run_id/node_id is still
+    # appended beneath it for isolation). Optional override — when omitted,
+    # the base is derived from work_dir instead (see get_run_archive_context).
+    archive_dir: Optional[str] = None
 
 
 @app.post("/api/pipeline-runs/{template_version_id}/execute")
@@ -1222,14 +1231,30 @@ def update_secret(key: str, body: SecretUpdate, db: Session = Depends(get_db), u
     return _secret_out(row)
 
 
-@app.delete("/api/secrets/{key}")
-def delete_secret(key: str, db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)):
+def _delete_secret(key: str, db: Session, user: AppUser) -> dict:
     row = db.query(Secret).filter(Secret.team_id == user.team_id, Secret.key == key).first()
     if not row:
         raise HTTPException(status_code=404, detail=f"No secret named '{key}'.")
     db.delete(row)
     db.commit()
     return {"ok": True}
+
+
+@app.delete("/api/secrets/{key}")
+def delete_secret(key: str, db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)):
+    return _delete_secret(key, db, user)
+
+
+# POST alias for the same delete — DELETE always triggers a CORS preflight
+# (unlike GET/simple POST), and some tunnels/reverse proxies between the
+# frontend and this backend don't forward less-common HTTP methods (or their
+# preflight) correctly, surfacing as a browser-side "CORS error" even though
+# this endpoint itself is fine. The frontend uses this alias so delete rides
+# the same POST path already proven to work (e.g. "Add secret"); the DELETE
+# route above stays for any client that can use it directly.
+@app.post("/api/secrets/{key}/delete")
+def delete_secret_via_post(key: str, db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)):
+    return _delete_secret(key, db, user)
 
 
 @app.get("/api/tapis/token")

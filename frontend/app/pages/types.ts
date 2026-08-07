@@ -15,6 +15,13 @@ export interface StepConfigField {
   type: "int" | "float" | "boolean" | "string" | string;
   description?: string;
   default?: unknown;
+  // "tapis_path" fields only: whether the Tapis file browser (see
+  // components/TapisPathField) picks a single file or a directory. Defaults
+  // to "file" when omitted.
+  selectType?: "file" | "dir";
+  // "select" fields only: the fixed set of choices, rendered as a dropdown
+  // instead of free text (e.g. a CLI flag with an enum of valid values).
+  options?: string[];
 }
 
 // A port as normalized for the UI (see CustomNode's normalization).

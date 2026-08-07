@@ -10,8 +10,8 @@
   ],
   "config_schema": {
     "path": {
-      "type": "string",
-      "description": "Path or Tapis URI to the CSV file (e.g. tapis://storage-system/data/dataset.csv)",
+      "type": "tapis_path",
+      "description": "Tapis system + path to the CSV file.",
       "default": ""
     }
   }

@@ -28,13 +28,14 @@ resource id for a pipeline run. A run is assumed to have at most one
 geopackage-producing node (see _find_gpkg_producing_node); a run with two
 would silently pick the first WfNode match.
 """
+import json
 import os
+import sqlite3
 import tempfile
 import zipfile
 
 import geopandas as gpd
 import httpx
-import pyogrio
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
@@ -176,15 +177,43 @@ def _fetch_gpkg_at(system: str, path: str, user: AppUser, db: Session, dest_path
         f.write(resp.content)
 
 
+def _list_layer_names(gpkg_path: str) -> list:
+    """List every feature-layer name straight from the GeoPackage's own
+    gpkg_contents table via sqlite3, bypassing GDAL/pyogrio's geometry-type
+    enumeration entirely.
+
+    pyogrio.list_layers() (and gpd.read_file, for that matter) eagerly
+    resolves every layer's OGR geometry-type code up front, and raises if ANY
+    layer in the file uses a generic/'Unknown' type combined with
+    Z-coordinates (OGR code wkbUnknown | wkb25DBit = 2147483648) — a real,
+    spec-legal GeoPackage construct (OGC's own gdal_sample.gpkg conformance
+    fixture has exactly this, in layers named geometry2d/geometry3d). One such
+    layer would otherwise take down listing for the WHOLE file, even when the
+    layers this app actually cares about (typed Point/Polygon layers, as the
+    'geospatial' step always produces) are completely readable on their own.
+    GeoPackage is a SQLite database and gpkg_contents is a mandatory table per
+    the spec, so this is always available without touching GDAL's type
+    resolution at all.
+    """
+    conn = sqlite3.connect(gpkg_path)
+    try:
+        rows = conn.execute(
+            "SELECT table_name FROM gpkg_contents WHERE data_type = 'features'"
+        ).fetchall()
+    finally:
+        conn.close()
+    return [r[0] for r in rows]
+
+
 def _list_labels_at(system: str, path: str, user: AppUser, db: Session) -> dict:
     with tempfile.TemporaryDirectory() as tmp:
         gpkg_path = os.path.join(tmp, "geo.gpkg")
         _fetch_gpkg_at(system, path, user, db, gpkg_path)
         try:
-            layers = pyogrio.list_layers(gpkg_path)
+            labels = _list_layer_names(gpkg_path)
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Could not read GeoPackage: {e}")
-    return {"labels": [row[0] for row in layers]}
+    return {"labels": labels}
 
 
 def _list_missing_at(system: str, path: str, user: AppUser, db: Session) -> dict:
@@ -193,7 +222,7 @@ def _list_missing_at(system: str, path: str, user: AppUser, db: Session) -> dict
         gpkg_path = os.path.join(tmp, "geo.gpkg")
         _fetch_gpkg_at(system, path, user, db, gpkg_path)
         try:
-            layer_names = {row[0] for row in pyogrio.list_layers(gpkg_path)}
+            layer_names = set(_list_layer_names(gpkg_path))
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Could not read GeoPackage: {e}")
         if "missing" not in layer_names:
@@ -206,15 +235,46 @@ def _list_missing_at(system: str, path: str, user: AppUser, db: Session) -> dict
     return {"missing": records}
 
 
+def _read_layer(gpkg_path: str, label: str):
+    """gpd.read_file(layer=label), with GDAL/pyogrio failure modes translated
+    into clearer HTTP errors.
+
+    A genuinely missing layer name is a plain 404. A layer that exists but
+    whose geometry type pyogrio can't resolve (GeometryError — a generic/
+    'Unknown' type combined with Z-coordinates; see _list_layer_names) is a
+    422: the layer is real, just not one this resource can convert.
+    """
+    from pyogrio.errors import GeometryError
+
+    try:
+        return gpd.read_file(gpkg_path, layer=label)
+    except GeometryError as e:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Layer '{label}' has a geometry type this resource can't convert "
+                f"(likely a generic/mixed type with Z-coordinates): {e}"
+            ),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Layer '{label}' not found or unreadable: {e}")
+
+
 def _geojson_at(system: str, path: str, label: str, user: AppUser, db: Session) -> Response:
     with tempfile.TemporaryDirectory() as tmp:
         gpkg_path = os.path.join(tmp, "geo.gpkg")
         _fetch_gpkg_at(system, path, user, db, gpkg_path)
+        gdf = _read_layer(gpkg_path, label)
+        # gdf.to_json() -> stdlib json.dumps under the hood, which doesn't know
+        # how to serialize pandas.Timestamp (or any other non-plain-Python
+        # scalar a GeoPackage attribute column can hold — e.g. a DATE/DATETIME
+        # field, as in OGC's own gdal_sample.gpkg conformance fixture).
+        # default=str stringifies anything json.dumps doesn't recognize,
+        # instead of failing the whole layer over one odd column.
         try:
-            gdf = gpd.read_file(gpkg_path, layer=label)
+            geojson_str = json.dumps(gdf.__geo_interface__, default=str)
         except Exception as e:
-            raise HTTPException(status_code=404, detail=f"Layer '{label}' not found or unreadable: {e}")
-        geojson_str = gdf.to_json()
+            raise HTTPException(status_code=500, detail=f"Could not convert layer '{label}' to GeoJSON: {e}")
     return Response(content=geojson_str, media_type="application/json")
 
 
@@ -222,10 +282,7 @@ def _export_shapefile_zip_at(system: str, path: str, label: str, user: AppUser, 
     with tempfile.TemporaryDirectory() as tmp:
         gpkg_path = os.path.join(tmp, "geo.gpkg")
         _fetch_gpkg_at(system, path, user, db, gpkg_path)
-        try:
-            gdf = gpd.read_file(gpkg_path, layer=label)
-        except Exception as e:
-            raise HTTPException(status_code=404, detail=f"Layer '{label}' not found or unreadable: {e}")
+        gdf = _read_layer(gpkg_path, label)
 
         shp_dir = os.path.join(tmp, "shp")
         os.makedirs(shp_dir, exist_ok=True)

@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ComponentProps, ComponentType, ReactElement } from "react";
 import { Group, TextInput, Button, Loader, Select, Paper, SegmentedControl, Text, Stack, Drawer, ActionIcon, Tooltip } from "@mantine/core";
-import { IconDeviceFloppy, IconLayoutSidebarLeftExpand, IconLayoutSidebarRightExpand } from "@tabler/icons-react";
+import { IconDeviceFloppy, IconLayoutSidebarLeftExpand, IconLayoutSidebarRightExpand, IconFileDownload } from "@tabler/icons-react";
 import { notifications } from "@mantine/notifications";
 import type { StepPanelProps } from "./types";
 import { BACKEND_URL, SAM3_ENDPOINT } from "../lib/api";
@@ -48,6 +48,18 @@ export default function SmartLabelerPanel({ config, onChange, step, nodeId, conn
   // (an upstream source_image_dir node), not its own config — see step.json.
   const imageInputPort = step.inputs.find((p) => p.data_type === "image_dir")?.port_name;
   const sourceDir = imageInputPort ? String(connectedInputs[imageInputPort]?.config?.path ?? "") : "";
+
+  // Optional 'annotations' input — lets this node resume labeling from an
+  // existing annotations.json (e.g. wired to another smart_labeler's
+  // 'annotations' output, or a source_json_file node) instead of starting
+  // blank. Like connectedInputs generally, this only resolves for a directly
+  // wired DESIGN-TIME node (one with its own system/path config, e.g.
+  // smart_labeler/source_json_file) — an upstream JOB step's output is a
+  // runtime artifact and isn't available here (see StepPanelProps.ConnectedInput).
+  const annotationsInputPort = step.inputs.find((p) => p.port_name === "annotations")?.port_name;
+  const upstreamAnnotations = annotationsInputPort ? connectedInputs[annotationsInputPort] : undefined;
+  const wiredAnnotationsSystem = String(upstreamAnnotations?.config?.system ?? "");
+  const wiredAnnotationsPath = String(upstreamAnnotations?.config?.path ?? "");
 
   // Load the three smart_labeler packages once, client-side only, and point the
   // file explorer at this deployment's Tapis proxy / systems.
@@ -137,6 +149,57 @@ export default function SmartLabelerPanel({ config, onChange, step, nodeId, conn
     },
     [config, annotationsByFile, currentPath, onChange]
   );
+
+  // Load annotations_by_file from the wired 'annotations' input, if any.
+  // Shared by the auto-load-on-connect effect below and the manual "Load from
+  // input" button — `notify` only shows a toast for the explicit button click,
+  // since the auto-load runs on mount/reconnect and a silent success (or
+  // silent no-op absence) matches this panel's other best-effort fetches.
+  const [loadingAnnotationsInput, setLoadingAnnotationsInput] = useState(false);
+  const loadAnnotationsFromInput = useCallback(
+    async (notify: boolean) => {
+      if (!wiredAnnotationsSystem || !wiredAnnotationsPath) {
+        if (notify) notifications.show({ color: "yellow", message: "Connect an annotations input first." });
+        return;
+      }
+      setLoadingAnnotationsInput(true);
+      try {
+        const res = await studioFetch(
+          `/api/tapis-files/content?system=${encodeURIComponent(wiredAnnotationsSystem)}&path=${encodeURIComponent(wiredAnnotationsPath)}`
+        );
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (!data || typeof data.annotations !== "object" || !data.annotations) {
+          throw new Error("File doesn't look like a smart_labeler annotations.json");
+        }
+        onChange({
+          ...config,
+          annotations_by_file: data.annotations,
+          annotation_type: data.annotation_type === "segmentation" ? "segmentation" : config.annotation_type,
+        });
+        if (notify) notifications.show({ color: "green", message: "Loaded annotations from the wired input." });
+      } catch (err: any) {
+        if (notify) {
+          notifications.show({ color: "red", title: "Load failed", message: err?.message || "Could not load annotations" });
+        }
+      } finally {
+        setLoadingAnnotationsInput(false);
+      }
+    },
+    [wiredAnnotationsSystem, wiredAnnotationsPath, config, onChange]
+  );
+
+  // Auto-load once, only when this node has no annotations yet — resumes a
+  // labeling session wired to a prior run's output without a manual step, but
+  // never silently clobbers work already done in this session.
+  const autoLoadedRef = useRef(false);
+  useEffect(() => {
+    if (autoLoadedRef.current) return;
+    if (!wiredAnnotationsSystem || !wiredAnnotationsPath) return;
+    if (Object.keys(annotationsByFile).length > 0) return;
+    autoLoadedRef.current = true;
+    loadAnnotationsFromInput(false);
+  }, [wiredAnnotationsSystem, wiredAnnotationsPath, annotationsByFile, loadAnnotationsFromInput]);
 
   const [saving, setSaving] = useState(false);
   const saveAnnotations = async () => {
@@ -247,6 +310,26 @@ export default function SmartLabelerPanel({ config, onChange, step, nodeId, conn
                 <IconLayoutSidebarRightExpand size={18} />
               </ActionIcon>
             </Tooltip>
+            {annotationsInputPort && (
+              <Tooltip
+                label={
+                  wiredAnnotationsPath
+                    ? "Reload annotations_by_file from the wired 'annotations' input, overwriting anything unsaved here"
+                    : "Connect an 'annotations' input to resume labeling from an existing annotations.json"
+                }
+              >
+                <Button
+                  size="xs"
+                  variant="default"
+                  leftSection={<IconFileDownload size={14} />}
+                  loading={loadingAnnotationsInput}
+                  disabled={!wiredAnnotationsPath}
+                  onClick={() => loadAnnotationsFromInput(true)}
+                >
+                  Load from input
+                </Button>
+              </Tooltip>
+            )}
             <Button
               size="xs"
               leftSection={<IconDeviceFloppy size={14} />}

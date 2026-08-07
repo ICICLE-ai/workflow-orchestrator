@@ -5,7 +5,8 @@
   "category": "Data Creation",
   "icon": "tag",
   "inputs": [
-    { "name": "images", "type": "image_dir" }
+    { "name": "images", "type": "image_dir" },
+    { "name": "annotations", "type": "json_results", "required": false }
   ],
   "outputs": [
     { "name": "annotations", "type": "json_results", "output_path": "annotations.json" },

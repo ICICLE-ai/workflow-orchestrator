@@ -9,14 +9,9 @@
     { "name": "geopackage", "type": "geopackage" }
   ],
   "config_schema": {
-    "system": {
-      "type": "tapis_system",
-      "description": "Tapis storage system the path below lives on.",
-      "default": ""
-    },
     "path": {
-      "type": "string",
-      "description": "Path to the GeoPackage on the system above (e.g. /geo/farm.gpkg), or a full tapis://system/path URI.",
+      "type": "tapis_path",
+      "description": "Tapis system + path to the GeoPackage (e.g. /geo/farm.gpkg).",
       "default": ""
     }
   }

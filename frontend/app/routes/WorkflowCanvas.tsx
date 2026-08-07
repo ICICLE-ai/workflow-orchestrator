@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { ReactFlow, ReactFlowProvider, addEdge, useNodesState, useEdgesState, Background, Controls } from '@xyflow/react';
-import { AppShell, Group, Button, Text, ActionIcon, Stack, Title, Drawer, TextInput, Textarea, Select, Notification, Loader, Alert, List } from '@mantine/core';
+import { AppShell, Group, Button, Text, ActionIcon, Stack, Title, Drawer, TextInput, Textarea, Select, Notification, Loader, Alert, List, Accordion } from '@mantine/core';
 import { IconArrowLeft, IconDeviceFloppy, IconX, IconPlayerPlay, IconAlertTriangle } from '@tabler/icons-react';
 import { useNavigate, useParams, useLoaderData } from 'react-router';
 import CustomNode from '../components/CustomNode';
@@ -149,6 +149,10 @@ function Flow() {
     exec_queue: 'gpu',
     work_dir: defaultWorkDir('pitzer-tapis', { slurmAccount: 'PAS2699' }),
     archive_system: 'pitzer-tapis',
+    // Optional override for the base archive directory (run_id/step_type_key/
+    // node_id is still appended beneath it). Empty means "derive from work_dir",
+    // same as before this field existed — see get_run_archive_context.
+    archive_dir: '',
     slurm_account: 'PAS2699',
   });
 
@@ -490,46 +494,67 @@ function Flow() {
       </AppShell.Header>
 
       <AppShell.Aside p="md" style={{ borderLeft: '1px solid #e2e8f0', background: '#f8fafc', overflowY: 'auto' }}>
-        {/* Data Sources — inputs, kept distinct from the pipeline stages */}
-        <Text fw={600} mb="xs">Data Sources</Text>
-        <Stack gap="xs" mb="xl">
-          {stepTypes.filter((s: any) => s.category === 'source').map((step: any) => (
-            <StepCard key={step.step_type_key} step={step} variant="source" />
-          ))}
-        </Stack>
-
-        {/* Pipeline stages, in execution order. Each stage groups its sub-steps
-            by the step's `category` (set in step.json). Empty stages still show
-            so the structure is visible and ready for future steps. */}
-        {STAGES.map((stage) => {
-          const stageSteps = stepTypes.filter((s: any) => s.category === stage);
-          return (
-            <div key={stage} style={{ marginBottom: 18 }}>
-              <Text fw={600} mb="xs">{stage}</Text>
+        {/* Categories (Data Sources, each pipeline stage, Data Sinks) are each
+            collapsible — `multiple` lets more than one stay open at once, and
+            the default value opens every section so this looks the same as
+            before until a section is deliberately collapsed. Kept in local
+            state (not persisted) — a fresh page load always starts fully open. */}
+        <Accordion
+          multiple
+          defaultValue={['__sources__', ...STAGES, '__sinks__']}
+          variant="separated"
+          chevronPosition="left"
+          styles={{ control: { padding: '8px 4px' }, panel: { paddingInline: 4 }, label: { padding: 0 } }}
+        >
+          {/* Data Sources — inputs, kept distinct from the pipeline stages */}
+          <Accordion.Item value="__sources__">
+            <Accordion.Control><Text fw={600}>Data Sources</Text></Accordion.Control>
+            <Accordion.Panel>
               <Stack gap="xs">
-                {stageSteps.length > 0 ? (
-                  stageSteps.map((step: any) => (
-                    <StepCard key={step.step_type_key} step={step} variant="processing" />
-                  ))
-                ) : (
-                  <Text size="xs" c="dimmed" fs="italic">No steps yet</Text>
-                )}
+                {stepTypes.filter((s: any) => s.category === 'source').map((step: any) => (
+                  <StepCard key={step.step_type_key} step={step} variant="source" />
+                ))}
               </Stack>
-            </div>
-          );
-        })}
+            </Accordion.Panel>
+          </Accordion.Item>
 
-        {/* Data Sinks — outputs, the write-side complement of Data Sources */}
-        {stepTypes.some((s: any) => s.category === 'sink') && (
-          <div style={{ marginBottom: 18 }}>
-            <Text fw={600} mb="xs">Data Sinks</Text>
-            <Stack gap="xs">
-              {stepTypes.filter((s: any) => s.category === 'sink').map((step: any) => (
-                <StepCard key={step.step_type_key} step={step} variant="sink" />
-              ))}
-            </Stack>
-          </div>
-        )}
+          {/* Pipeline stages, in execution order. Each stage groups its sub-steps
+              by the step's `category` (set in step.json). Empty stages still show
+              so the structure is visible and ready for future steps. */}
+          {STAGES.map((stage) => {
+            const stageSteps = stepTypes.filter((s: any) => s.category === stage);
+            return (
+              <Accordion.Item key={stage} value={stage}>
+                <Accordion.Control><Text fw={600}>{stage}</Text></Accordion.Control>
+                <Accordion.Panel>
+                  <Stack gap="xs">
+                    {stageSteps.length > 0 ? (
+                      stageSteps.map((step: any) => (
+                        <StepCard key={step.step_type_key} step={step} variant="processing" />
+                      ))
+                    ) : (
+                      <Text size="xs" c="dimmed" fs="italic">No steps yet</Text>
+                    )}
+                  </Stack>
+                </Accordion.Panel>
+              </Accordion.Item>
+            );
+          })}
+
+          {/* Data Sinks — outputs, the write-side complement of Data Sources */}
+          {stepTypes.some((s: any) => s.category === 'sink') && (
+            <Accordion.Item value="__sinks__">
+              <Accordion.Control><Text fw={600}>Data Sinks</Text></Accordion.Control>
+              <Accordion.Panel>
+                <Stack gap="xs">
+                  {stepTypes.filter((s: any) => s.category === 'sink').map((step: any) => (
+                    <StepCard key={step.step_type_key} step={step} variant="sink" />
+                  ))}
+                </Stack>
+              </Accordion.Panel>
+            </Accordion.Item>
+          )}
+        </Accordion>
       </AppShell.Aside>
 
       <AppShell.Main>
@@ -681,6 +706,13 @@ function Flow() {
             value={runOptions.archive_system}
             allowDeselect={false}
             onChange={(v) => setRunOptions((prev) => ({ ...prev, archive_system: v ?? prev.archive_system }))}
+          />
+          <TextInput
+            label="Archive dir (optional)"
+            description="Base archive directory on the archive system. Leave blank to derive it from Work dir instead — either way, each step still archives under .../{run_id}/{step_type_key}/{node_id}."
+            placeholder={runOptions.work_dir ? `${runOptions.work_dir.replace(/\/$/, '')}/wf_runs` : 'wf_runs'}
+            value={runOptions.archive_dir}
+            onChange={(e) => setRunOptions({ ...runOptions, archive_dir: e.currentTarget.value })}
           />
           <Button color="green" fullWidth mt="md" leftSection={<IconPlayerPlay size={16} />} onClick={handleRun}>
             Launch Run

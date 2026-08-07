@@ -1,0 +1,47 @@
+{
+  "step_type_key": "annotation_format_adapter",
+  "display_name": "🔄 Annotation Format Adapter",
+  "description": "Converts annotations between formats: 'native' (smart_labeler's own JSON), COCO, YOLO, and GeoPackage. Runs inline in the backend (design-time only, no Tapis job — conversion is data reshaping, not a compute job). GeoPackage output is NOT geo-referenced (no camera GPS/FOV model here) — it writes plain image-pixel-space geometry in one 'annotations' layer; use the 'geospatial' step for a real map-projected GeoPackage. YOLO assumes a flat label directory whose file stems match the image directory's file stems 1:1.",
+  "category": "Post-processing",
+  "icon": "replace",
+  "inputs": [
+    { "name": "annotations", "type": "json_results", "required": false },
+    { "name": "annotations_dir", "type": "yolo_annotations_dir", "required": false },
+    { "name": "annotations_gpkg", "type": "geopackage", "required": false },
+    { "name": "images", "type": "image_dir", "required": false }
+  ],
+  "outputs": [
+    {
+      "name": "converted",
+      "type": "json_results",
+      "description": "Points at whatever 'path' was saved to. Actual content depends on to_format: a JSON file (native/coco), a directory of .txt + classes.txt (yolo), or a binary .gpkg file (geopackage) — the declared 'json_results' type is a placeholder, not a literal guarantee, since this step's output shape varies by user choice."
+    }
+  ],
+  "config_schema": {
+    "system": {
+      "type": "string",
+      "description": "Tapis system the converted output is written to.",
+      "default": ""
+    },
+    "path": {
+      "type": "string",
+      "description": "Destination Tapis path for the converted output — a file path for native/coco/geopackage, a directory path for yolo.",
+      "default": ""
+    },
+    "from_format": {
+      "type": "select",
+      "options": ["native", "coco", "yolo", "geopackage"],
+      "description": "Source format. 'native' or 'coco' read from the wired 'annotations' input; 'yolo' reads 'annotations_dir' + 'images'; 'geopackage' reads 'annotations_gpkg'.",
+      "default": "native"
+    },
+    "to_format": {
+      "type": "select",
+      "options": ["native", "coco", "yolo", "geopackage"],
+      "description": "Destination format. 'coco' and 'yolo' additionally need the wired 'images' input, to read each referenced image's pixel dimensions.",
+      "default": "coco"
+    }
+  },
+  "tapis_app_id": null,
+  "tapis_job": null,
+  "submits_job": false
+}

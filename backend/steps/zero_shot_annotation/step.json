@@ -1,0 +1,182 @@
+{
+  "step_type_key": "zero_shot_annotation",
+  "display_name": "✨ Zero-Shot Annotation",
+  "description": "Annotates every image in a directory with a zero-shot open-vocabulary model (SAM3 by default) — no training, no class supports. Detects with free-text concepts, visual exemplar boxes, or both, optionally tiled (SAHI) for large imagery with small objects, via the zero-shot-annotation Tapis app.",
+  "category": "Data Creation",
+  "icon": "sparkles",
+  "tapis_app_id": "zero-shot-annotation",
+  "inputs": [
+    { "name": "images", "type": "image_dir" }
+  ],
+  "outputs": [
+    {
+      "name": "annotations",
+      "type": "json_results",
+      "output_path": "annotations",
+      "description": "Directory containing the run's annotations_<model>_<timestamp>.json (and, with output_format 'coco'/'both', annotations_coco_<model>_<timestamp>.json) — filenames carry a timestamp, so this port resolves to the containing directory rather than a single fixed file."
+    }
+  ],
+  "config_schema": {
+    "prompt_mode": {
+      "type": "select",
+      "options": ["text", "exemplar"],
+      "description": "Which kind of prompt drives detection. 'text' uses free-text concepts typed below. 'exemplar' uses visual exemplar boxes (plus optional paired text) from an uploaded prompt file. UI-only — doesn't change what's sent to the job; text_prompts and prompt_file are independently included whenever set, so the two can be combined.",
+      "default": "text"
+    },
+    "text_prompts": {
+      "type": "string",
+      "description": "Free-text concepts to detect, applied to every image (e.g. tree, \"parked car\", \"solar panel\"). Each detection is labelled with the prompt that found it. At least one of text_prompts or prompt_file is required.",
+      "default": ""
+    },
+    "prompt_file": {
+      "type": "tapis_path",
+      "selectType": "file",
+      "description": "JSON file with per-image exemplar boxes (SAM3 geometry prompts) and/or additional text prompts. Exemplar boxes are absolute pixel coordinates in a specific image, keyed by path relative to the image directory, bare filename, or 'default'. At least one of text_prompts or prompt_file is required.",
+      "default": ""
+    },
+    "model": {
+      "type": "select",
+      "options": ["sam3"],
+      "description": "Backend model from the zero-shot registry.",
+      "default": "sam3"
+    },
+    "model_id": {
+      "type": "string",
+      "description": "HuggingFace checkpoint override for the chosen backend. Blank uses the backend's default (facebook/sam3 for the sam3 backend).",
+      "default": ""
+    },
+    "is_sahi": {
+      "type": "boolean",
+      "description": "Slice each image into overlapping tiles before inference (SAHI) — improves detection of small objects in large imagery. Tile count grows quickly: images x prompts x tiles inferences per run.",
+      "default": false
+    },
+    "tile_size": {
+      "type": "int",
+      "description": "Tile size in pixels. Only used when SAHI is enabled.",
+      "default": 960
+    },
+    "overlap_ratio": {
+      "type": "float",
+      "description": "Fractional overlap (0-1) between adjacent tiles, so an object spanning a tile boundary is still fully captured in at least one tile. Only used when SAHI is enabled.",
+      "default": 0.2
+    },
+    "exemplar_tile_mode": {
+      "type": "select",
+      "options": ["intersecting", "all"],
+      "description": "With SAHI + exemplar prompts: 'intersecting' runs only tiles holding a positive exemplar (skipped tiles are logged). 'all' runs every tile, falling back to the exemplar's paired text on tiles with no visible exemplar (recorded as prompt_type 'text'). Only used when a prompt_file is set.",
+      "default": "intersecting"
+    },
+    "exemplar_min_visibility": {
+      "type": "float",
+      "description": "Minimum fraction (0-1) of an exemplar box's area that must fall inside a tile to count as visible there; the box is then clipped to the tile. Only used when a prompt_file is set.",
+      "default": 0.5
+    },
+    "batch_size": {
+      "type": "int",
+      "description": "Tiles per inference batch (not images — batches fill across images). Higher values are faster but use more GPU memory; a CUDA OOM falls back automatically to one tile at a time for that batch.",
+      "default": 8
+    },
+    "confidence": {
+      "type": "float",
+      "description": "Minimum score (0-1) for keeping a detected instance.",
+      "default": 0.3
+    },
+    "mask_threshold": {
+      "type": "float",
+      "description": "Threshold (0-1) for binarising predicted masks before they're turned into polygons.",
+      "default": 0.5
+    },
+    "nms_iou": {
+      "type": "float",
+      "description": "IoU threshold (0-1) for merging detections across tiles and prompts via Non-Maximum Suppression.",
+      "default": 0.5
+    },
+    "class_agnostic_nms": {
+      "type": "boolean",
+      "description": "Let detections from different prompts suppress each other during NMS, collapsing a text prompt and an exemplar prompt that both find the same object into a single box. Off by default, so each prompt keeps its own annotation.",
+      "default": false
+    },
+    "no_segmentation": {
+      "type": "boolean",
+      "description": "Skip mask-to-polygon extraction — boxes only, faster.",
+      "default": false
+    },
+    "output_format": {
+      "type": "select",
+      "options": ["flat", "coco", "both"],
+      "description": "'flat' matches the rest of this repo's annotation format. 'coco' writes standard COCO images/annotations/categories JSON. 'both' writes each.",
+      "default": "flat"
+    },
+    "max_images": {
+      "type": "int",
+      "description": "Annotate at most this many images — useful for smoke tests. 0 annotates every image.",
+      "default": 0
+    },
+    "hf_token": {
+      "type": "secret",
+      "description": "Team secret holding a HuggingFace access token with access to the gated facebook/sam3 checkpoint (huggingface.co/facebook/sam3 — request access, then create a token under HF account settings). Add it via the dashboard's secrets settings, then pick it here; passed to the job as the HF_TOKEN env var. Leave unset only if the checkpoint is already cached on the exec system and HF_HUB_OFFLINE=1 is set.",
+      "default": ""
+    }
+  },
+  "tapis_job": {
+    "name": "zero-shot-annotation",
+    "appId": "zero-shot-annotation",
+    "appVersion": "1.0.0",
+    "description": "Zero-shot open-vocabulary image annotation",
+    "execSystemId": "${exec_system}",
+    "execSystemLogicalQueue": "${exec_queue}",
+    "archiveSystemId": "${archive_system}",
+    "archiveSystemDir": "${archive_dir}",
+    "archiveOnAppError": true,
+    "nodeCount": 1,
+    "coresPerNode": 8,
+    "memoryMB": 16000,
+    "maxMinutes": 180,
+    "fileInputs": [
+      { "name": "images", "autoMountLocal": true, "sourceUrl": "${images}", "targetPath": "input/images" },
+      {
+        "name": "prompt_file",
+        "description": "Optional: exemplar/text prompt JSON, staged in when prompt_file is set.",
+        "if": "prompt_file",
+        "autoMountLocal": true,
+        "sourceUrl": "tapis://${system}${prompt_file}",
+        "targetPath": "input/prompts.json"
+      }
+    ],
+    "parameterSet": {
+      "appArgs": [
+        { "name": "image_dir", "arg": "--image_dir /job/input/images" },
+        { "name": "output_dir", "arg": "--output_dir /job/output" },
+        { "name": "model", "arg": "--model ${model}" },
+        { "name": "model_id", "arg": "--model_id ${model_id}", "if": "model_id" },
+        { "name": "text_prompts", "arg": "--text_prompts ${text_prompts}", "if": "text_prompts" },
+        { "name": "prompt_file", "arg": "--prompt_file /job/input/prompts.json", "if": "prompt_file" },
+        { "name": "is_sahi", "arg": "--is_sahi", "if": "is_sahi" },
+        { "name": "tile_size", "arg": "--tile_size ${tile_size}", "if": "is_sahi" },
+        { "name": "overlap_ratio", "arg": "--overlap_ratio ${overlap_ratio}", "if": "is_sahi" },
+        { "name": "exemplar_tile_mode", "arg": "--exemplar_tile_mode ${exemplar_tile_mode}", "if": "prompt_file" },
+        { "name": "exemplar_min_visibility", "arg": "--exemplar_min_visibility ${exemplar_min_visibility}", "if": "prompt_file" },
+        { "name": "batch_size", "arg": "--batch_size ${batch_size}" },
+        { "name": "confidence", "arg": "--confidence ${confidence}" },
+        { "name": "mask_threshold", "arg": "--mask_threshold ${mask_threshold}" },
+        { "name": "nms_iou", "arg": "--nms_iou ${nms_iou}" },
+        { "name": "class_agnostic_nms", "arg": "--class_agnostic_nms", "if": "class_agnostic_nms" },
+        { "name": "no_segmentation", "arg": "--no_segmentation", "if": "no_segmentation" },
+        { "name": "output_format", "arg": "--output_format ${output_format}" },
+        { "name": "max_images", "arg": "--max_images ${max_images}", "if": "max_images" }
+      ],
+      "envVariables": [
+        { "key": "HF_TOKEN", "value": "${hf_token}", "if": "hf_token" }
+      ],
+      "schedulerOptions": [
+        { "name": "gpu_per_node", "arg": "-G 1" },
+        { "name": "slurm account", "arg": "-A ${slurm_account}" }
+      ],
+      "containerArgs": [
+        { "name": "gpu", "arg": "--nv" },
+        { "name": "binding", "arg": "--bind $PWD:/job" }
+      ],
+      "archiveFilter": { "includeLaunchFiles": false }
+    }
+  }
+}
