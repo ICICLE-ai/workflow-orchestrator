@@ -1,5 +1,10 @@
 import type { ComponentType } from "react";
 import type { StepPanelProps } from "./types";
+//import HeatmapPanel from "./heatmap";
+//import ImagePlayground from "./imagePreprocessStudio";
+import TrainingPanel from "./TrainingPanel";
+import VisualizationPanel from "./VisualizationPanel";
+import PatraPanel from "./PatraPanel";
 import HeatmapPanel from "./heatmap";
 import ImagePlayground from "./imagePreprocessStudio";
 import SmartLabelerPanel from "./smartLabeler";
@@ -17,6 +22,11 @@ import AnnotationFormatAdapterPanel from "./annotationFormatAdapter";
 // example), then add one line here mapping its step_type_key to the component.
 // Step types not listed here fall back to GenericConfigForm automatically.
 export const stepPanels: Record<string, ComponentType<StepPanelProps>> = {
+  //heatmap: HeatmapPanel,
+  //"image-preprocess-studio": ImagePlayground,
+  training: TrainingPanel,
+  visualization: VisualizationPanel,
+  patra_upload: PatraPanel,
   heatmap: HeatmapPanel,
   "image-preprocess-studio": ImagePlayground,
   smart_labeler: SmartLabelerPanel,

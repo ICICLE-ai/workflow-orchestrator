@@ -184,7 +184,7 @@ def sync_step_registry(db: Session):
     # Port data types must exist before ports reference them (FK constraint).
     sync_port_data_types(db, step_files)
     for file_path in step_files:
-        with open(file_path, "r") as f:
+        with open(file_path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
         step_key = data["step_type_key"]
