@@ -1,0 +1,128 @@
+{
+  "step_type_key": "mission_export",
+  "display_name": "📤 Mission Export Adapter",
+  "description": "Converts a platform-agnostic flight_plan.json (from the 'flight_plan' step) into drone/GCS-specific mission files, one file per battery/tank-limited charge cycle, via the export-flight-mission Tapis app. Sprayer control is emitted as MAV_CMD_DO_SET_SERVO toggling a configurable servo/relay channel — portable across ArduPilot and PX4. The DJI (.kmz) output's spray-action tag and drone/payload enum values are unverified placeholders (DJI's public docs cover camera/gimbal actions, not Agras spray control) — see the drone_enum_value/payload_enum_value/spray_action_tag/spray_param_tag fields below; swap in real values once confirmed against an actual DJI Pilot 2 / Agras export.",
+  "category": "Post-processing",
+  "icon": "send",
+  "tapis_app_id": "export-flight-mission",
+  "inputs": [
+    { "name": "flight_plan", "type": "json_results" }
+  ],
+  "outputs": [
+    { "name": "missions_dir", "type": "mission_files_dir" }
+  ],
+  "config_schema": {
+    "format": {
+      "type": "select",
+      "options": ["all", "ardupilot", "px4", "generic_csv", "dji"],
+      "description": "Which mission format(s) to export. 'all' produces every format at once, each in its own subfolder.",
+      "default": "all"
+    },
+    "sprayer_servo_channel": {
+      "type": "int",
+      "description": "Servo/relay output channel number the sprayer valve is wired to (MAV_CMD_DO_SET_SERVO channel).",
+      "default": 9
+    },
+    "sprayer_pwm_on": {
+      "type": "int",
+      "description": "PWM value (microseconds) that switches the sprayer ON.",
+      "default": 1900
+    },
+    "sprayer_pwm_off": {
+      "type": "int",
+      "description": "PWM value (microseconds) that switches the sprayer OFF.",
+      "default": 1100
+    },
+    "hover_speed_mps": {
+      "type": "float",
+      "description": "PX4 .plan only: the hoverSpeed field — speed PX4 uses for vertical/hovering maneuvers, separate from horizontal cruise speed. Has no effect on ArduPilot or DJI output.",
+      "default": 5.0
+    },
+    "cruise_speed_mps": {
+      "type": "float",
+      "description": "PX4 .plan only: horizontal cruise speed, in meters per second. Optional — leave blank to derive it automatically from flight_plan.json's meta.speed_mph instead."
+    },
+    "drone_enum_value": {
+      "type": "int",
+      "description": "DJI WPML drone model enum value. UNVERIFIED PLACEHOLDER — only affects the 'dji' output; DJI's spray-control schema isn't publicly documented. Confirm against a real DJI Pilot 2 / Agras export before relying on this.",
+      "default": 0
+    },
+    "drone_sub_enum_value": {
+      "type": "int",
+      "description": "DJI WPML drone sub-model enum value. UNVERIFIED PLACEHOLDER — same caveat as drone_enum_value.",
+      "default": 0
+    },
+    "payload_enum_value": {
+      "type": "int",
+      "description": "DJI WPML payload (sprayer) enum value. UNVERIFIED PLACEHOLDER — same caveat as drone_enum_value.",
+      "default": 0
+    },
+    "spray_action_tag": {
+      "type": "string",
+      "description": "DJI WPML action tag name used to enable the sprayer. UNVERIFIED PLACEHOLDER — same caveat as drone_enum_value.",
+      "default": "sprayerEnable"
+    },
+    "spray_param_tag": {
+      "type": "string",
+      "description": "DJI WPML action parameter tag name for the sprayer. UNVERIFIED PLACEHOLDER — same caveat as drone_enum_value.",
+      "default": "sprayerEnable"
+    }
+  },
+  "tapis_job": {
+    "name": "mission-export",
+    "appId": "export-flight-mission",
+    "appVersion": "1.0.0",
+    "description": "Export platform-specific drone missions from a flight plan",
+    "execSystemId": "${exec_system}",
+    "execSystemLogicalQueue": "${exec_queue}",
+    "archiveSystemId": "${archive_system}",
+    "archiveSystemDir": "${archive_dir}",
+    "nodeCount": 1,
+    "coresPerNode": 2,
+    "memoryMB": 2048,
+    "maxMinutes": 30,
+    "fileInputs": [
+      { "name": "flight_plan", "envKey": "flight_plan", "autoMountLocal": true, "sourceUrl": "${flight_plan}", "targetPath": "input/flight_plan.json" }
+    ],
+    "parameterSet": {
+      "appArgs": [
+        { "name": "json", "arg": "--json" },
+        { "name": "json value", "arg": "/input/flight_plan.json" },
+        { "name": "outdir", "arg": "--outdir" },
+        { "name": "outdir value", "arg": "/output" },
+        { "name": "format", "arg": "--format" },
+        { "name": "format value", "arg": "${format}" },
+        { "name": "sprayer servo channel", "arg": "--sprayer-servo-channel" },
+        { "name": "sprayer servo channel value", "arg": "${sprayer_servo_channel}" },
+        { "name": "sprayer pwm on", "arg": "--sprayer-pwm-on" },
+        { "name": "sprayer pwm on value", "arg": "${sprayer_pwm_on}" },
+        { "name": "sprayer pwm off", "arg": "--sprayer-pwm-off" },
+        { "name": "sprayer pwm off value", "arg": "${sprayer_pwm_off}" },
+        { "name": "hover speed", "arg": "--hover-speed-mps" },
+        { "name": "hover speed value", "arg": "${hover_speed_mps}" },
+        { "name": "cruise speed", "arg": "--cruise-speed-mps", "if": "cruise_speed_mps" },
+        { "name": "cruise speed value", "arg": "${cruise_speed_mps}", "if": "cruise_speed_mps" },
+        { "name": "drone enum value", "arg": "--drone-enum-value" },
+        { "name": "drone enum value value", "arg": "${drone_enum_value}" },
+        { "name": "drone sub enum value", "arg": "--drone-sub-enum-value" },
+        { "name": "drone sub enum value value", "arg": "${drone_sub_enum_value}" },
+        { "name": "payload enum value", "arg": "--payload-enum-value" },
+        { "name": "payload enum value value", "arg": "${payload_enum_value}" },
+        { "name": "spray action tag", "arg": "--spray-action-tag" },
+        { "name": "spray action tag value", "arg": "${spray_action_tag}" },
+        { "name": "spray param tag", "arg": "--spray-param-tag" },
+        { "name": "spray param tag value", "arg": "${spray_param_tag}" }
+      ],
+      "schedulerOptions": [
+        { "name": "slurm account", "arg": "-A ${slurm_account}" },
+        { "name": "job name", "arg": "--job-name=mission-export" },
+        { "name": "cpu cores", "arg": "--cpus-per-task=2" }
+      ],
+      "containerArgs": [
+        { "name": "binding", "arg": "--bind $PWD/input:/input,$PWD/output:/output" }
+      ],
+      "envVariables": [],
+      "archiveFilter": { "includeLaunchFiles": false }
+    }
+  }
+}

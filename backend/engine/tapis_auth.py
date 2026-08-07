@@ -33,6 +33,17 @@ TAPIS_TENANT = os.getenv("TAPIS_TENANT", "icicleai")
 TAPIS_CLIENT_ID = os.getenv("TAPIS_CLIENT_ID")
 TAPIS_CLIENT_KEY = os.getenv("TAPIS_CLIENT_KEY")
 
+# Direct-token mode: supply a Tapis access (and optional refresh) token via env to
+# bypass the per-user OAuth flow entirely. When TAPIS_ACCESS_TOKEN is set, ALL
+# Tapis calls (job submission + file browsing) use it regardless of which user
+# owns the run — intended for dev / service-account use. If a refresh token AND a
+# confidential client are also configured, it's auto-refreshed in-memory near
+# expiry; otherwise it's used as-is until it lapses.
+_env_token_state = {
+    "access": os.getenv("TAPIS_ACCESS_TOKEN"),
+    "refresh": os.getenv("TAPIS_REFRESH_TOKEN"),
+}
+
 # Refresh a token this many seconds before it actually expires, so a token that
 # is about to lapse is renewed proactively rather than after a mid-request 401.
 _EXPIRY_SKEW_SECONDS = 60
@@ -41,6 +52,41 @@ _EXPIRY_SKEW_SECONDS = 60
 def oauth_client_configured() -> bool:
     """True when a confidential OAuth2 client is configured for real Tapis auth."""
     return bool(TAPIS_CLIENT_ID and TAPIS_CLIENT_KEY)
+
+
+def env_token_mode() -> bool:
+    """True when a Tapis token is supplied directly via env (TAPIS_ACCESS_TOKEN),
+    bypassing per-user OAuth for all Tapis calls."""
+    return bool(_env_token_state["access"])
+
+
+def _jwt_seconds_left(token: str) -> float | None:
+    """Seconds until a JWT's `exp`, or None if it can't be read."""
+    try:
+        exp = jwt.get_unverified_claims(token).get("exp")
+        return None if exp is None else float(exp) - datetime.now(timezone.utc).timestamp()
+    except Exception:
+        return None
+
+
+def get_env_token() -> str | None:
+    """Return the env-provided Tapis access token, refreshing it in-memory when it
+    nears expiry (requires TAPIS_REFRESH_TOKEN + a confidential client)."""
+    access = _env_token_state["access"]
+    if not access:
+        return None
+    left = _jwt_seconds_left(access)
+    if left is not None and left < _EXPIRY_SKEW_SECONDS and _env_token_state["refresh"] and oauth_client_configured():
+        tokens = _post_token_grant({
+            "grant_type": "refresh_token",
+            "refresh_token": _env_token_state["refresh"],
+        })
+        if tokens:
+            _env_token_state["access"] = tokens["access_token"]
+            if tokens.get("refresh_token"):
+                _env_token_state["refresh"] = tokens["refresh_token"]
+            return tokens["access_token"]
+    return access
 
 
 def _token_endpoint() -> str:
@@ -161,6 +207,9 @@ def _token_is_fresh(user) -> bool:
 def get_token_for_user(user, db) -> str | None:
     """Return a usable access token for `user`, refreshing if it's expired/expiring.
     Returns None if the user has no tokens and can't refresh (must re-login)."""
+    # Direct-token (env) mode overrides per-user resolution entirely.
+    if env_token_mode():
+        return get_env_token()
     if user is None:
         return None
     if _token_is_fresh(user):
@@ -174,6 +223,10 @@ def get_token_for_run(run_id: int) -> str | None:
     resolves and (if needed) refreshes the token, and returns it. Resolving fresh
     at each call lets long durable workflows survive access-token expiry.
     """
+    # Direct-token (env) mode: use the env token for any run, no DB lookup needed.
+    if env_token_mode():
+        return get_env_token()
+
     # Imported lazily to avoid importing the app DB layer at module import time.
     from db import SessionLocal
     from models import PipelineRun, AppUser
@@ -226,6 +279,14 @@ def describe_credentials() -> dict:
     use_mock = os.getenv("TAPIS_USE_MOCK", "false").lower() == "true"
     if use_mock:
         return {"mode": "mock", "reason": "TAPIS_USE_MOCK=true"}
+    if env_token_mode():
+        return {
+            "mode": "env-token",
+            "reason": "TAPIS_ACCESS_TOKEN set — using direct token for all Tapis calls",
+            "auto_refresh": bool(_env_token_state["refresh"] and oauth_client_configured()),
+            "base_url": TAPIS_BASE_URL,
+            "tenant": TAPIS_TENANT,
+        }
     if not oauth_client_configured():
         return {"mode": "mock", "reason": "no OAuth client configured (set TAPIS_CLIENT_ID/KEY)"}
     return {

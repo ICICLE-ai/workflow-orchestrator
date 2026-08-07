@@ -1,10 +1,11 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { ReactFlow, ReactFlowProvider, addEdge, useNodesState, useEdgesState, Background, Controls } from '@xyflow/react';
-import { AppShell, Group, Button, Text, ActionIcon, Stack, Title, Drawer, TextInput, Textarea, Notification, Code, Badge, Loader, Alert, List } from '@mantine/core';
+import { AppShell, Group, Button, Text, ActionIcon, Stack, Title, Drawer, TextInput, Textarea, Select, Notification, Loader, Alert, List, Accordion } from '@mantine/core';
 import { IconArrowLeft, IconDeviceFloppy, IconX, IconPlayerPlay, IconAlertTriangle } from '@tabler/icons-react';
 import { useNavigate, useParams, useLoaderData } from 'react-router';
 import CustomNode from '../components/CustomNode';
-import { apiFetch } from '../lib/api';
+import { apiFetch, fetchCurrentUser } from '../lib/api';
+import { TAPIS_SYSTEMS, defaultWorkDir } from '../lib/tapis';
 
 const nodeTypes = { customNode: CustomNode };
 
@@ -70,6 +71,7 @@ function buildTypeChecker(portDataTypes: any[]) {
 // a stage when its `category` (from step.json) matches one of these names.
 const STAGES = [
   'Data Collection',
+  'Data Creation',
   'Data Pre-processing',
   'Data Harmonization',
   'Training',
@@ -93,15 +95,29 @@ function StepCard({ step, variant }: { step: any; variant: 'source' | 'processin
         e.dataTransfer.effectAllowed = 'move';
       }}
       draggable
-      title={step.description || step.display_name}
       style={{
+        width: '100%',
+        boxSizing: 'border-box',
         padding: '10px', background: 'white',
         border: styles.border,
-        borderRadius: '6px', cursor: 'grab', fontSize: '13px', fontWeight: 500,
-        color: styles.color, boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
+        borderRadius: '6px', cursor: 'grab',
+        boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
       }}
     >
-      {step.display_name}
+      <div style={{
+        fontSize: '13px', fontWeight: 500, color: styles.color,
+        overflowWrap: 'break-word', wordBreak: 'break-word',
+      }}>
+        {step.display_name}
+      </div>
+      {step.description && (
+        <div style={{
+          fontSize: '11px', fontWeight: 400, color: '#64748b', marginTop: 4,
+          whiteSpace: 'normal', overflowWrap: 'break-word', wordBreak: 'break-word',
+        }}>
+          {step.description}
+        </div>
+      )}
     </div>
   );
 }
@@ -116,17 +132,14 @@ function Flow() {
   const [reactFlowInstance, setReactFlowInstance] = useState<any>(null);
   
   const [drawerOpened, setDrawerOpened] = useState(false);
-  const [formData, setFormData] = useState({ name: '', description: '', category: 'Custom' });
+  const [formData, setFormData] = useState({ name: '', description: '', category: 'Custom', allocation_account: 'uot260' });
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string[]>([]);
   const [outputWarnings, setOutputWarnings] = useState<string[]>([]);
 
-  // Workflow run state (DBOS execution)
+  // Workflow run kickoff (DBOS execution) — the run's live status is shown on
+  // /runs/:runId, which we navigate to as soon as launch succeeds.
   const [running, setRunning] = useState(false);
-  const [runState, setRunState] = useState<string | null>(null); // overall DBOS state
-  const [runSteps, setRunSteps] = useState<any[]>([]);
-  const [progressGraph, setProgressGraph] = useState<string>('');
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Run settings — where/how the workflow's Tapis jobs execute. Defaults target
   // OSC Pitzer (the working exec system); the user can edit before launching.
@@ -134,17 +147,68 @@ function Flow() {
   const [runOptions, setRunOptions] = useState({
     exec_system: 'pitzer-tapis',
     exec_queue: 'gpu',
-    work_dir: '/fs/ess/PAS2699/shyama',
+    work_dir: defaultWorkDir('pitzer-tapis', { slurmAccount: 'PAS2699' }),
     archive_system: 'pitzer-tapis',
+    // Optional override for the base archive directory (run_id/step_type_key/
+    // node_id is still appended beneath it). Empty means "derive from work_dir",
+    // same as before this field existed — see get_run_archive_context.
+    archive_dir: '',
     slurm_account: 'PAS2699',
   });
 
-  // Stop polling on unmount
+  // Tapis username — needed for expanse-tapis's per-user scratch path.
+  const [tapisUsername, setTapisUsername] = useState('');
   useEffect(() => {
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-    };
+    fetchCurrentUser().then((u) => setTapisUsername(u?.username || ''));
   }, []);
+
+  // The exec system fixes the run's working directory layout (each system has
+  // its own scratch/project path convention) — recompute it whenever the exec
+  // system, charge account, or Tapis username changes.
+  useEffect(() => {
+    setRunOptions((prev) => ({
+      ...prev,
+      work_dir: defaultWorkDir(prev.exec_system, { slurmAccount: prev.slurm_account, username: tapisUsername }),
+    }));
+  }, [runOptions.exec_system, runOptions.slurm_account, tapisUsername]);
+
+  // Queue choices come from the exec system itself (Tapis' batchLogicalQueues),
+  // not a hardcoded list — refetch whenever the exec system changes.
+  const [queues, setQueues] = useState<any[]>([]);
+  const [queuesLoading, setQueuesLoading] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    setQueuesLoading(true);
+    apiFetch(`/api/tapis-systems/${runOptions.exec_system}/queues`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (cancelled || !d) return;
+        setQueues(d.queues || []);
+        // Keep the current queue if it's still offered by this system;
+        // otherwise fall back to the system's default (or the first queue).
+        setRunOptions((prev) => {
+          const names = (d.queues || []).map((q: any) => q.name);
+          if (names.includes(prev.exec_queue)) return prev;
+          return { ...prev, exec_queue: d.default_queue || names[0] || prev.exec_queue };
+        });
+      })
+      .catch(() => { if (!cancelled) setQueues([]); })
+      .finally(() => { if (!cancelled) setQueuesLoading(false); });
+    return () => { cancelled = true; };
+  }, [runOptions.exec_system]);
+
+  // Human-readable limits for the currently selected queue, shown as the
+  // Select's description once queues have loaded.
+  const selectedQueueDetail = (() => {
+    const q = queues.find((qq: any) => qq.name === runOptions.exec_queue);
+    if (!q) return null;
+    const parts = [
+      q.maxNodeCount != null && `max ${q.maxNodeCount} node(s)`,
+      q.maxCoresPerNode != null && `${q.maxCoresPerNode} cores/node`,
+      q.maxMinutes != null && `${q.maxMinutes} min max`,
+    ].filter(Boolean);
+    return parts.length ? parts.join(" · ") : null;
+  })();
 
   // Build the type checker once
   const isTypeCompatible = useCallback(
@@ -154,8 +218,17 @@ function Flow() {
 
   useEffect(() => {
     if (templateData) {
-      setFormData({ name: templateData.name, description: templateData.description, category: templateData.category });
-      
+      setFormData({
+        name: templateData.name,
+        description: templateData.description,
+        category: templateData.category,
+        allocation_account: templateData.allocation_account || 'uot260',
+      });
+      // Prefill the run's charge account from the template's allocation account.
+      if (templateData.allocation_account) {
+        setRunOptions((prev) => ({ ...prev, slurm_account: templateData.allocation_account }));
+      }
+
       const hydratedNodes = templateData.nodes.map((n: any) => {
         const stepConfig = stepTypes.find((s: any) => s.step_type_key === n.data.nodeType);
         return {
@@ -361,14 +434,13 @@ function Flow() {
   };
 
   // Kick off durable execution of the saved template via the DBOS engine with
-  // the chosen run options (exec system / queue / paths), then poll status.
+  // the chosen run options (exec system / queue / paths), then jump straight
+  // to the run's live-status page — the execute endpoint creates the run
+  // synchronously so run_id is available immediately, no polling needed here.
   const handleRun = async () => {
     if (!templateData) return;
     setRunSettingsOpened(false);
     setRunning(true);
-    setRunState('PENDING');
-    setRunSteps([]);
-    setProgressGraph('');
 
     try {
       const res = await apiFetch(
@@ -383,37 +455,14 @@ function Flow() {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.detail || 'Failed to start workflow');
       }
-      const { dbos_workflow_id } = await res.json();
-
-      if (pollRef.current) clearInterval(pollRef.current);
-      pollRef.current = setInterval(async () => {
-        try {
-          const sRes = await apiFetch(`/api/pipeline-runs/status/${dbos_workflow_id}`);
-          if (!sRes.ok) return;
-          const status = await sRes.json();
-          const record = status.database_record || {};
-          setRunState(record.run_status || status.workflow_state);
-          setRunSteps(record.steps || []);
-          setProgressGraph(status.progress_graph || '');
-
-          if (record.run_status === 'COMPLETED' || record.run_status === 'FAILED') {
-            if (pollRef.current) clearInterval(pollRef.current);
-            setRunning(false);
-          }
-        } catch {
-          /* transient; keep polling */
-        }
-      }, 2000);
+      const { run_id } = await res.json();
+      navigate(`/runs/${run_id}`);
     } catch (e: any) {
-      setRunState('FAILED');
       setRunning(false);
       setConnectionError(e.message || 'Failed to start workflow');
       setTimeout(() => setConnectionError(null), 4000);
     }
   };
-
-  const stepColor = (s: string) =>
-    s === 'completed' ? 'teal' : s === 'running' ? 'blue' : s === 'failed' ? 'red' : 'gray';
 
   return (
     <AppShell header={{ height: 60 }} aside={{ width: 250, breakpoint: 'sm' }} padding="0">
@@ -445,46 +494,67 @@ function Flow() {
       </AppShell.Header>
 
       <AppShell.Aside p="md" style={{ borderLeft: '1px solid #e2e8f0', background: '#f8fafc', overflowY: 'auto' }}>
-        {/* Data Sources — inputs, kept distinct from the pipeline stages */}
-        <Text fw={600} mb="xs">Data Sources</Text>
-        <Stack gap="xs" mb="xl">
-          {stepTypes.filter((s: any) => s.category === 'source').map((step: any) => (
-            <StepCard key={step.step_type_key} step={step} variant="source" />
-          ))}
-        </Stack>
-
-        {/* Pipeline stages, in execution order. Each stage groups its sub-steps
-            by the step's `category` (set in step.json). Empty stages still show
-            so the structure is visible and ready for future steps. */}
-        {STAGES.map((stage) => {
-          const stageSteps = stepTypes.filter((s: any) => s.category === stage);
-          return (
-            <div key={stage} style={{ marginBottom: 18 }}>
-              <Text fw={600} mb="xs">{stage}</Text>
+        {/* Categories (Data Sources, each pipeline stage, Data Sinks) are each
+            collapsible — `multiple` lets more than one stay open at once, and
+            the default value opens every section so this looks the same as
+            before until a section is deliberately collapsed. Kept in local
+            state (not persisted) — a fresh page load always starts fully open. */}
+        <Accordion
+          multiple
+          defaultValue={['__sources__', ...STAGES, '__sinks__']}
+          variant="separated"
+          chevronPosition="left"
+          styles={{ control: { padding: '8px 4px' }, panel: { paddingInline: 4 }, label: { padding: 0 } }}
+        >
+          {/* Data Sources — inputs, kept distinct from the pipeline stages */}
+          <Accordion.Item value="__sources__">
+            <Accordion.Control><Text fw={600}>Data Sources</Text></Accordion.Control>
+            <Accordion.Panel>
               <Stack gap="xs">
-                {stageSteps.length > 0 ? (
-                  stageSteps.map((step: any) => (
-                    <StepCard key={step.step_type_key} step={step} variant="processing" />
-                  ))
-                ) : (
-                  <Text size="xs" c="dimmed" fs="italic">No steps yet</Text>
-                )}
+                {stepTypes.filter((s: any) => s.category === 'source').map((step: any) => (
+                  <StepCard key={step.step_type_key} step={step} variant="source" />
+                ))}
               </Stack>
-            </div>
-          );
-        })}
+            </Accordion.Panel>
+          </Accordion.Item>
 
-        {/* Data Sinks — outputs, the write-side complement of Data Sources */}
-        {stepTypes.some((s: any) => s.category === 'sink') && (
-          <div style={{ marginBottom: 18 }}>
-            <Text fw={600} mb="xs">Data Sinks</Text>
-            <Stack gap="xs">
-              {stepTypes.filter((s: any) => s.category === 'sink').map((step: any) => (
-                <StepCard key={step.step_type_key} step={step} variant="sink" />
-              ))}
-            </Stack>
-          </div>
-        )}
+          {/* Pipeline stages, in execution order. Each stage groups its sub-steps
+              by the step's `category` (set in step.json). Empty stages still show
+              so the structure is visible and ready for future steps. */}
+          {STAGES.map((stage) => {
+            const stageSteps = stepTypes.filter((s: any) => s.category === stage);
+            return (
+              <Accordion.Item key={stage} value={stage}>
+                <Accordion.Control><Text fw={600}>{stage}</Text></Accordion.Control>
+                <Accordion.Panel>
+                  <Stack gap="xs">
+                    {stageSteps.length > 0 ? (
+                      stageSteps.map((step: any) => (
+                        <StepCard key={step.step_type_key} step={step} variant="processing" />
+                      ))
+                    ) : (
+                      <Text size="xs" c="dimmed" fs="italic">No steps yet</Text>
+                    )}
+                  </Stack>
+                </Accordion.Panel>
+              </Accordion.Item>
+            );
+          })}
+
+          {/* Data Sinks — outputs, the write-side complement of Data Sources */}
+          {stepTypes.some((s: any) => s.category === 'sink') && (
+            <Accordion.Item value="__sinks__">
+              <Accordion.Control><Text fw={600}>Data Sinks</Text></Accordion.Control>
+              <Accordion.Panel>
+                <Stack gap="xs">
+                  {stepTypes.filter((s: any) => s.category === 'sink').map((step: any) => (
+                    <StepCard key={step.step_type_key} step={step} variant="sink" />
+                  ))}
+                </Stack>
+              </Accordion.Panel>
+            </Accordion.Item>
+          )}
+        </Accordion>
       </AppShell.Aside>
 
       <AppShell.Main>
@@ -505,37 +575,6 @@ function Flow() {
               >
                 {connectionError}
               </Notification>
-            </div>
-          )}
-          {/* Run status panel */}
-          {runState && (
-            <div style={{
-              position: 'absolute', top: 16, right: 16, zIndex: 1000,
-              width: 320, background: 'white', border: '1px solid #e2e8f0',
-              borderRadius: 10, boxShadow: '0 8px 24px rgba(0,0,0,0.12)', padding: 14,
-            }}>
-              <Group justify="space-between" mb="xs">
-                <Text fw={700} size="sm">Workflow Run</Text>
-                <Badge color={runState === 'COMPLETED' ? 'teal' : runState === 'FAILED' ? 'red' : 'blue'} variant="light">
-                  {runState}
-                </Badge>
-              </Group>
-              <Stack gap={6}>
-                {runSteps.map((s: any) => (
-                  <Group key={s.node_id} justify="space-between" wrap="nowrap">
-                    <Text size="xs" c="dark.6" style={{ whiteSpace: 'nowrap' }}>{s.node_id}</Text>
-                    <Badge size="xs" color={stepColor(s.status)} variant="light">{s.status}</Badge>
-                  </Group>
-                ))}
-              </Stack>
-              {progressGraph && (
-                <Code block mt="sm" style={{ fontSize: 10, lineHeight: 1.3 }}>{progressGraph}</Code>
-              )}
-              {!running && (
-                <Button size="xs" variant="subtle" mt="xs" fullWidth onClick={() => setRunState(null)}>
-                  Dismiss
-                </Button>
-              )}
             </div>
           )}
           <ReactFlow
@@ -569,6 +608,12 @@ function Flow() {
             label="Description"
             value={formData.description}
             onChange={(e) => setFormData({ ...formData, description: e.currentTarget.value })}
+          />
+          <TextInput
+            label="Allocation account"
+            description="Charge code for this template's runs (e.g. uot260)."
+            value={formData.allocation_account}
+            onChange={(e) => setFormData({ ...formData, allocation_account: e.currentTarget.value })}
           />
           {saveError.length > 0 && (
             <Alert color="red" icon={<IconAlertTriangle size={18} />} title="Workflow incomplete — cannot save">
@@ -614,17 +659,33 @@ function Flow() {
           <Text size="sm" c="dimmed">
             Where this workflow's jobs run on Tapis. Defaults target OSC Pitzer.
           </Text>
-          <TextInput
+          <Select
             label="Exec system"
-            description="Tapis compute system (e.g. pitzer-tapis, ascend-tapis)"
+            description="Tapis compute system this run's jobs execute on"
+            data={TAPIS_SYSTEMS}
             value={runOptions.exec_system}
-            onChange={(e) => setRunOptions({ ...runOptions, exec_system: e.currentTarget.value })}
+            allowDeselect={false}
+            onChange={(v) => setRunOptions((prev) => ({
+              ...prev,
+              exec_system: v ?? prev.exec_system,
+              // Default the archive system to match; the field below still
+              // lets it be pointed elsewhere afterward.
+              archive_system: v ?? prev.archive_system,
+            }))}
           />
-          <TextInput
+          <Select
             label="Queue"
-            description="Scheduler queue (OSC: cpu / gpu / nextgen)"
+            description={
+              queuesLoading
+                ? "Loading queues from the exec system…"
+                : selectedQueueDetail || "Scheduler queue offered by the exec system"
+            }
+            data={queues.map((q: any) => q.name).filter(Boolean)}
             value={runOptions.exec_queue}
-            onChange={(e) => setRunOptions({ ...runOptions, exec_queue: e.currentTarget.value })}
+            onChange={(v) => setRunOptions((prev) => ({ ...prev, exec_queue: v ?? prev.exec_queue }))}
+            disabled={queuesLoading}
+            placeholder={queuesLoading ? "Loading…" : "Select a queue"}
+            allowDeselect={false}
           />
           <TextInput
             label="Slurm account"
@@ -634,15 +695,24 @@ function Flow() {
           />
           <TextInput
             label="Work dir"
-            description="Absolute scratch/project base path for job working dirs"
+            description="Derived automatically from the exec system (and charge account / Tapis username)"
             value={runOptions.work_dir}
-            onChange={(e) => setRunOptions({ ...runOptions, work_dir: e.currentTarget.value })}
+            disabled
           />
-          <TextInput
+          <Select
             label="Archive system"
             description="Where step outputs are archived (unless a sink node overrides it)"
+            data={TAPIS_SYSTEMS}
             value={runOptions.archive_system}
-            onChange={(e) => setRunOptions({ ...runOptions, archive_system: e.currentTarget.value })}
+            allowDeselect={false}
+            onChange={(v) => setRunOptions((prev) => ({ ...prev, archive_system: v ?? prev.archive_system }))}
+          />
+          <TextInput
+            label="Archive dir (optional)"
+            description="Base archive directory on the archive system. Leave blank to derive it from Work dir instead — either way, each step still archives under .../{run_id}/{step_type_key}/{node_id}."
+            placeholder={runOptions.work_dir ? `${runOptions.work_dir.replace(/\/$/, '')}/wf_runs` : 'wf_runs'}
+            value={runOptions.archive_dir}
+            onChange={(e) => setRunOptions({ ...runOptions, archive_dir: e.currentTarget.value })}
           />
           <Button color="green" fullWidth mt="md" leftSection={<IconPlayerPlay size={16} />} onClick={handleRun}>
             Launch Run

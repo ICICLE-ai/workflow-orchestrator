@@ -1,0 +1,15 @@
+{
+  "step_type_key": "geospatial_map",
+  "display_name": "🗺️ Geospatial Map Viewer",
+  "description": "Renders a completed geospatial step's GeoPackage layers (detections, spray_zones, farm_boundary) on an OpenStreetMap basemap via the /api/pipeline-runs/{run_id}/geospatial/... resource. Design-time only — submits no Tapis job.",
+  "category": "Visualization",
+  "icon": "map",
+  "inputs": [
+    { "name": "gpkg", "type": "geopackage" }
+  ],
+  "outputs": [],
+  "config_schema": {},
+  "tapis_app_id": null,
+  "tapis_job": null,
+  "submits_job": false
+}

@@ -10,8 +10,8 @@
   ],
   "config_schema": {
     "path": {
-      "type": "string",
-      "description": "Path or Tapis URI to the model weights file (e.g. tapis://storage-system/models/yolov8.pth)",
+      "type": "tapis_path",
+      "description": "Tapis system + path to the model weights file.",
       "default": ""
     }
   }

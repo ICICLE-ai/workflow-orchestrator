@@ -9,6 +9,7 @@ The real contract mirrors the legacy harvest-webservers code:
   POST {base}/v3/jobs/submit        with the full job spec dict
   GET  {base}/v3/jobs/{uuid}/status -> result.status
 """
+import json
 import os
 
 import httpx
@@ -19,20 +20,33 @@ from engine.mock_tapis import tapis_client as _mock_client
 
 
 def _use_real() -> bool:
-    """Real Tapis only when not forced to mock AND an OAuth client is configured.
+    """Real Tapis only when not forced to mock AND we have a way to authenticate:
+    a direct env token (TAPIS_ACCESS_TOKEN) OR a confidential OAuth client.
 
     Whether a given *user* has a valid token is resolved per-run at call time (via
     tapis_auth.get_token_for_run); this only decides real-vs-mock at the client
-    level so local dev without a registered client keeps using the mock.
+    level so local dev without credentials keeps using the mock.
     """
     if os.getenv("TAPIS_USE_MOCK", "false").lower() == "true":
         return False
-    return tapis_auth.oauth_client_configured()
+    return tapis_auth.env_token_mode() or tapis_auth.oauth_client_configured()
 
 
 class TapisAuthError(RuntimeError):
     """Raised when a run's owner has no usable Tapis token, so a real job cannot
     be submitted. Surfaced to the user as a step failure asking them to re-login."""
+
+
+def _redact(text: str, secret_values: list[str] | None) -> str:
+    """Replace any occurrence of a resolved secret value with a placeholder,
+    so a rendered job spec containing a "secret"-typed field (see
+    engine.workflows._resolve_secrets) never reaches stdout/error text —
+    including Tapis' own validation-error response, which can echo submitted
+    fields back."""
+    for value in secret_values or ():
+        if value:
+            text = text.replace(value, "***REDACTED***")
+    return text
 
 
 def _require_run_token(run_id: int) -> str:
@@ -51,13 +65,18 @@ class TapisV3:
 
     @staticmethod
     @DBOS.step()
-    def submit_job(job_spec: dict, run_id: int) -> str:
+    def submit_job(job_spec: dict, run_id: int, redact: list[str] | None = None) -> str:
         """Submit a fully-rendered Tapis job spec as the run owner; return the UUID.
 
         job_spec is the step's `tapis_job` template with all ${...} placeholders
         already substituted (see engine.job_spec). run_id identifies the run whose
         owner's Tapis token authorizes the submission. In mock mode the spec's
         appId is used to drive the simulated job.
+
+        redact: real values of any "secret"-typed config field this job spec had
+        substituted in (see engine.workflows._resolve_secrets) — masked out of
+        the debug logging below, which otherwise dumps the full rendered spec
+        (and Tapis' own response, which can echo submitted fields back).
         """
         if _use_real():
             token = _require_run_token(run_id)
@@ -65,7 +84,17 @@ class TapisV3:
             headers = {"X-Tapis-Token": token, "Content-Type": "application/json"}
             print(f"[TapisV3] Submitting REAL job '{job_spec.get('name')}' appId={job_spec.get('appId')}")
             resp = httpx.post(url, json=job_spec, headers=headers, timeout=60)
-            resp.raise_for_status()
+            if resp.status_code >= 400:
+                # Tapis puts the validation reason in the body — surface it instead
+                # of a bare "400". Also dump the rendered spec so unresolved ${...}
+                # placeholders / bad fields are visible in the logs.
+                resp_text = _redact(resp.text, redact)
+                spec_text = _redact(json.dumps(job_spec, default=str), redact)
+                print(f"[TapisV3] Tapis REJECTED job (HTTP {resp.status_code}): {resp_text[:1500]}")
+                print(f"[TapisV3] Rendered job_spec was: {spec_text[:2000]}")
+                raise RuntimeError(
+                    f"Tapis job submit failed (HTTP {resp.status_code}): {resp_text[:600]}"
+                )
             return resp.json()["result"]["uuid"]
 
         # Mock path

@@ -10,8 +10,8 @@
   ],
   "config_schema": {
     "path": {
-      "type": "string",
-      "description": "Path or Tapis URI to the JSON file (e.g. tapis://storage-system/data/annotations.json)",
+      "type": "tapis_path",
+      "description": "Tapis system + path to the JSON file.",
       "default": ""
     }
   }

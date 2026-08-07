@@ -12,6 +12,7 @@ from engine.transactions import (
     get_step_input,
     update_step_inputs,
     get_node_tapis_template,
+    get_node_config_schema,
     get_node_output_ports,
     get_node_step_type,
     get_config_schema_defaults,
@@ -25,6 +26,7 @@ from engine.transactions import (
 )
 from engine.tapis import TapisV3, copy_tapis_path
 from engine import job_spec
+from engine import secrets as secrets_store
 
 
 def _resolve_inputs(run_id: int, node_key: str, node_config: dict) -> dict:
@@ -76,18 +78,38 @@ def _parse_tapis_uri(uri: str):
     return "", uri
 
 
-def _source_node_outputs(run_id: int, node_key: str, node_config: dict) -> dict:
+def _source_node_outputs(run_id: int, node_key: str, node_config: dict, resolved: dict) -> dict:
     """Outputs for a source (data-provider) node.
 
     A source node carries a user-entered `path` in its config and declares one
-    or more output ports (e.g. source_image_dir -> 'images'). We expose that path
-    on every output port so a downstream step's _resolve_inputs binds it into the
-    step's fileInputs. Also expose it under 'path' for convenience.
+    or more output ports (e.g. source_image_dir -> 'images'). By default we
+    expose that `path` on every output port so a downstream step's
+    _resolve_inputs binds it into the step's fileInputs.
+
+    A port whose name already matches a key in `resolved` uses that value
+    instead of `path` — this lets a design-time step pass an UPSTREAM input
+    straight through on one port while exposing its own config `path` on
+    another. E.g. smart_labeler wires an 'images' input (an upstream image
+    directory) and has its own 'path' config (where it writes
+    annotations.json): its 'images' output passes the wired directory
+    through unchanged, while its 'annotations' output exposes `path`.
+
+    A source step whose config_schema declares a "system" field (e.g.
+    source_geopackage, source_shapefile) lets the user enter a bare path
+    (no tapis:// scheme) and pick the Tapis system separately, rather than
+    hand-typing a full URI. If `path` isn't already a URI (no "://"),
+    `system` is prefixed on here so every downstream consumer (job
+    fileInputs, the geospatial resource's URI parser, ...) sees the same
+    tapis://system/path shape a job step's own outputs use.
     """
     path = (node_config or {}).get("path", "")
+    system = (node_config or {}).get("system", "")
+    if system and path and "://" not in path:
+        path = f"tapis://{system}/{path.lstrip('/')}"
     outputs = {"path": path}
     for port in get_node_output_ports(node_key):
-        outputs[port["name"]] = path
+        name = port["name"]
+        outputs[name] = resolved[name] if name in resolved else path
     return outputs
 
 
@@ -112,6 +134,41 @@ def _run_sink_node(run_id: int, node_key: str, node_config: dict) -> dict:
     ok = copy_tapis_path(src, dest, run_id, replace=True)
     print(f"[sink] copy {src} -> {dest} (replace): {'OK' if ok else 'FAILED'}")
     return {"path": dest, "source": src, "copied": bool(ok)}
+
+
+def _resolve_secrets(node_key: str, ctx: dict, team_id: int | None) -> tuple[dict, list[str]]:
+    """Substitute "secret"-typed config fields with their real decrypted value,
+    for job-template rendering ONLY.
+
+    A "secret" field's value in ctx (from node config / _resolve_inputs) is a
+    KEY reference (e.g. "WANDB_API_KEY"), not the value itself — that's what's
+    persisted onto run_step.config. Here we look up the actual value (scoped to
+    the run owner's team) and return an updated ctx for job_spec.render, plus
+    the list of real values substituted so the caller can redact them from any
+    logging of the rendered job spec (see engine.tapis.submit_job).
+
+    This is the config_schema "type": "secret" path — the user PICKS a secret
+    via a UI dropdown, and the step.json only ever sees a field name. For a
+    step author hardcoding a specific, always-the-same secret directly in the
+    tapis_job template (no per-node UI at all), see job_spec.resolve_secret_refs
+    and its ${secrets.KEY} syntax instead.
+    """
+    schema = get_node_config_schema(node_key)
+    secret_fields = [k for k, v in schema.items() if isinstance(v, dict) and v.get("type") == "secret"]
+    if not secret_fields:
+        return ctx, []
+
+    resolved_ctx = dict(ctx)
+    values = []
+    for field in secret_fields:
+        key_ref = ctx.get(field)
+        if not key_ref:
+            continue
+        value = secrets_store.resolve_secret(team_id, key_ref)
+        if value is not None:
+            resolved_ctx[field] = value
+            values.append(value)
+    return resolved_ctx, values
 
 
 def _derive_outputs(run_id: str, node_key: str, ctx: dict, job_uuid: str) -> dict:
@@ -152,7 +209,7 @@ def execute_node_workflow(node_key: str, run_id: int, orchestrator_workflow_id: 
         if step_type and step_type.startswith("sink"):
             outputs = _run_sink_node(run_id, node_key, node_config)
         else:
-            outputs = _source_node_outputs(run_id, node_key, node_config)
+            outputs = _source_node_outputs(run_id, node_key, node_config, resolved)
         complete_run_step(run_id, node_key, outputs)
         DBOS.send(destination_id=orchestrator_workflow_id, message=node_key, topic="step_complete")
         return outputs
@@ -160,12 +217,27 @@ def execute_node_workflow(node_key: str, run_id: int, orchestrator_workflow_id: 
     # 3. Build the substitution context. The step archives to its own per-node
     #    dir in the run workspace; per-port output paths are derived from that.
     ctx = {**get_run_archive_context(run_id, node_key), **resolved}
-    rendered = job_spec.render(template, ctx)
+    team_id = secrets_store.get_run_team_id(run_id)
+    # "secret"-typed config fields hold a KEY reference in ctx (and in whatever
+    # gets persisted above) — swap in the real value for rendering only, and
+    # keep the values around to redact from any logging of the rendered spec.
+    render_ctx, secret_values = _resolve_secrets(node_key, ctx, team_id)
+    rendered = job_spec.render(template, render_ctx)
+    # A step.json can also hardcode a specific secret directly in the template
+    # via ${secrets.KEY} (see job_spec.resolve_secret_refs) — no config_schema
+    # field or per-node UI involved. Resolved after render() since it doesn't
+    # depend on any resolved config value, just the literal ${secrets.KEY} text.
+    rendered, secret_ref_values = job_spec.resolve_secret_refs(rendered, team_id)
+    secret_values = secret_values + secret_ref_values
+    # Per-step compute resources (nodeCount, coresPerNode, memoryMB, maxMinutes,
+    # gpus), set via the canvas's Run Configuration panel and carried in the
+    # node's own config alongside its business params.
+    job_spec.apply_resource_overrides(rendered, resolved)
     rendered.setdefault("name", f"run-{run_id}-{node_key}")
 
     try:
         # 3. Submit and poll.
-        job_uuid = TapisV3.submit_job(rendered, run_id)
+        job_uuid = TapisV3.submit_job(rendered, run_id, redact=secret_values)
         update_run_step_status(
             run_id, node_key, "running",
             tapis_job_uuid=job_uuid, tapis_job_status="PENDING",
@@ -201,6 +273,7 @@ def execute_node_workflow(node_key: str, run_id: int, orchestrator_workflow_id: 
 
         # 4. Record each output port's path (Tapis URI) for downstream steps.
         outputs = _derive_outputs(run_id, node_key, ctx, job_uuid)
+        print(f"[workflows] node {node_key} (run {run_id}) derived outputs: {outputs}")
         complete_run_step(run_id, node_key, outputs)
 
         DBOS.send(destination_id=orchestrator_workflow_id, message=node_key, topic="step_complete")
@@ -235,20 +308,27 @@ def dag_orchestrator_workflow(dag_config: dict):
     while True:
         statuses = get_run_steps_status(run_id)
 
-        all_done = True
-        for node_key, status in statuses.items():
-            if status == "failed":
-                # Propagate failure to pending downstream nodes, then abort.
-                for n_key, n_status in statuses.items():
-                    if n_status == "pending":
-                        if any(statuses.get(d) == "failed" for d in deps[n_key]):
-                            update_run_step_status(run_id, n_key, "failed", error_message="Dependency failed")
-                update_run_status(run_id, "FAILED")
-                raise RuntimeError("DAG execution failed due to task failure.")
-            elif status != "completed":
-                all_done = False
+        if any(status == "failed" for status in statuses.values()):
+            # A real failure occurred. Every pending node reachable from a
+            # failed (or already-blocked) node can never run — mark it
+            # "blocked" rather than "failed" so the UI can tell "this step
+            # broke" apart from "skipped because an upstream step broke".
+            # Loop to fixed point since blocking must cascade transitively
+            # (grandchildren of the failed node are pending too).
+            changed = True
+            while changed:
+                changed = False
+                for node_key, status in statuses.items():
+                    if status == "pending" and any(
+                        statuses.get(d) in ("failed", "blocked") for d in deps[node_key]
+                    ):
+                        update_run_step_status(run_id, node_key, "blocked", error_message="Upstream step failed")
+                        statuses[node_key] = "blocked"
+                        changed = True
+            update_run_status(run_id, "FAILED")
+            raise RuntimeError("DAG execution failed due to task failure.")
 
-        if all_done:
+        if all(status == "completed" for status in statuses.values()):
             break
 
         # Spawn nodes whose dependencies are all completed.
