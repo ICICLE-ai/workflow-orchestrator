@@ -3,6 +3,7 @@ import { Modal, Stack, Group, Button } from "@mantine/core";
 import type { StepMeta, ConnectedInput } from "../pages/types";
 import { getStepPanel } from "../pages/registry";
 import GenericConfigForm from "../pages/GenericConfigForm";
+import PanelErrorBoundary from "./PanelErrorBoundary";
 
 // Host for a step's settings UI. Opened by the gear icon on a node. Resolves the
 // step type to its registered custom page (registry.ts) or falls back to the
@@ -57,18 +58,25 @@ export default function StepSettingsModal({
 
   const handleSave = () => onSave(config);
 
+  // Every custom panel in the app renders through here (the gear icon on a node
+  // and the run page's node click are the only two call sites), so one boundary
+  // covers all of them — including any panel added to registry.ts later. A crash
+  // inside a panel is contained to the modal body: the footer buttons below stay
+  // mounted, and the canvas underneath is untouched.
   const panel = (
-    <Panel
-      config={config}
-      onChange={setConfig}
-      step={step}
-      nodeId={nodeId}
-      templateVersionId={templateVersionId}
-      connectedInputs={connectedInputs}
-      runId={runId}
-      onSave={handleSave}
-      onClose={onClose}
-    />
+    <PanelErrorBoundary stepName={step.display_name} onClose={onClose} resetKey={`${nodeId}:${step.step_type_key}`}>
+      <Panel
+        config={config}
+        onChange={setConfig}
+        step={step}
+        nodeId={nodeId}
+        templateVersionId={templateVersionId}
+        connectedInputs={connectedInputs}
+        runId={runId}
+        onSave={handleSave}
+        onClose={onClose}
+      />
+    </PanelErrorBoundary>
   );
 
   // Full-screen panels own the whole surface; render them edge-to-edge with a

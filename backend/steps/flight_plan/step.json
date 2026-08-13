@@ -1,5 +1,6 @@
 {
   "step_type_key": "flight_plan",
+  "resources": { "gpu": false },
   "display_name": "🚁 Flight Plan Generator",
   "description": "Generates an autonomous spray-drone flight plan (waypoints + timing) from a farm GeoPackage, accounting for nozzle swath, tank capacity, dispersion rate, and battery limits, via the generate-flight-plan Tapis app. Produces an updated GeoPackage (flight paths) and a flight_plan.json (waypoints/timing).",
   "category": "Post-processing",

@@ -2,11 +2,16 @@
   "step_type_key": "smart_labeler",
   "display_name": "🏷️ Smart Labeler",
   "description": "Interactively browse a source image directory and hand-label bounding boxes or segmentation masks, producing an annotations.json file. Design-time only — submits no Tapis job.",
-  "category": "Data Creation",
+  "category": "Inference",
   "icon": "tag",
   "inputs": [
     { "name": "images", "type": "image_dir" },
-    { "name": "annotations", "type": "json_results", "required": false }
+    {
+      "name": "resume_annotations",
+      "type": "json_results",
+      "required": false,
+      "description": "Optional: an existing annotations.json (or zero_shot_annotation flat output) to resume labeling from — see the panel's 'Load from input'. Deliberately NOT named 'annotations' — CustomNode's resolveOutputPath (frontend) and _source_node_outputs (backend) both treat an output port as a pure passthrough whenever its name matches one of this node's OWN input port names (the pattern the 'images' output intentionally relies on). Naming this the same as the 'annotations' output previously made that output silently stop using this node's own saved path/system and try to resolve through this (usually unwired) input instead, resolving to nothing."
+    }
   ],
   "outputs": [
     { "name": "annotations", "type": "json_results", "output_path": "annotations.json" },

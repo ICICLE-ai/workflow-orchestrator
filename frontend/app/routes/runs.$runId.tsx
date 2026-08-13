@@ -7,6 +7,7 @@ import { ReactFlow, ReactFlowProvider, Background, Controls } from "@xyflow/reac
 import CustomNode from "../components/CustomNode";
 import StepSettingsModal from "../components/StepSettingsModal";
 import { getStepPanel } from "../pages/registry";
+import TopNav from "../components/TopNav";
 import type { StepMeta, ConnectedInput } from "../pages/types";
 import { StepLogsModal } from "./runs";
 import { apiFetch } from "../lib/api";
@@ -288,6 +289,7 @@ export default function RunView({ loaderData }: Route.ComponentProps) {
               <IconActivity size={16} />
             </ThemeIcon>
             <Text fw={700}>Run #{runId}</Text>
+            <TopNav />
             {detail.template_version_id && (
               <Button size="xs" variant="subtle" color="gray" leftSection={<IconEdit size={14} />}
                 onClick={() => navigate(`/templates/${detail.template_version_id}/edit`)}>

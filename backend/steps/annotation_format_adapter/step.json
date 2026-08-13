@@ -1,7 +1,7 @@
 {
   "step_type_key": "annotation_format_adapter",
   "display_name": "🔄 Annotation Format Adapter",
-  "description": "Converts annotations between formats: 'native' (smart_labeler's own JSON), COCO, YOLO, and GeoPackage. Runs inline in the backend (design-time only, no Tapis job — conversion is data reshaping, not a compute job). GeoPackage output is NOT geo-referenced (no camera GPS/FOV model here) — it writes plain image-pixel-space geometry in one 'annotations' layer; use the 'geospatial' step for a real map-projected GeoPackage. YOLO assumes a flat label directory whose file stems match the image directory's file stems 1:1.",
+  "description": "Converts annotations between formats: 'native' (smart_labeler's own JSON), COCO, YOLO, and GeoPackage — plus a write-only 'sam3_exemplars' destination that turns hand-drawn smart_labeler boxes into the zero_shot_annotation step's exemplar prompt file. Runs inline in the backend, not as a Tapis job (conversion is data reshaping, not a compute job): during a run the engine performs the conversion in-process when the node's turn comes (engine/inline_steps.py), so a source produced by an upstream step is converted with this run's real data; the panel's 'Convert now' button does the same thing on demand at design time. GeoPackage output is NOT geo-referenced (no camera GPS/FOV model here) — it writes plain image-pixel-space geometry in one 'annotations' layer; use the 'geospatial' step for a real map-projected GeoPackage. YOLO assumes a flat label directory whose file stems match the image directory's file stems 1:1.",
   "category": "Post-processing",
   "icon": "replace",
   "inputs": [
@@ -14,7 +14,7 @@
     {
       "name": "converted",
       "type": "json_results",
-      "description": "Points at whatever 'path' was saved to. Actual content depends on to_format: a JSON file (native/coco), a directory of .txt + classes.txt (yolo), or a binary .gpkg file (geopackage) — the declared 'json_results' type is a placeholder, not a literal guarantee, since this step's output shape varies by user choice."
+      "description": "Points at whatever 'path' was saved to — written by the run itself, so a downstream job can stage it as a fileInput. Actual content depends on to_format: a JSON file (native/coco), a directory of .txt + classes.txt (yolo), or a binary .gpkg file (geopackage) — the declared 'json_results' type is a placeholder, not a literal guarantee, since this step's output shape varies by user choice."
     }
   ],
   "config_schema": {
@@ -36,9 +36,14 @@
     },
     "to_format": {
       "type": "select",
-      "options": ["native", "coco", "yolo", "geopackage"],
-      "description": "Destination format. 'coco' and 'yolo' additionally need the wired 'images' input, to read each referenced image's pixel dimensions.",
+      "options": ["native", "coco", "yolo", "geopackage", "sam3_exemplars"],
+      "description": "Destination format. 'coco' and 'yolo' additionally need the wired 'images' input, to read each referenced image's pixel dimensions. 'sam3_exemplars' writes the zero_shot_annotation step's PROMPT file rather than an annotation file — wire this step's 'converted' output into that step's 'annotation_file' input. It's write-only: nothing converts back OUT of it, so it can't be chosen as from_format.",
       "default": "coco"
+    },
+    "text_prompts": {
+      "type": "string",
+      "description": "Only used when to_format is 'sam3_exemplars'. Comma-separated free-text concepts written into the prompt file's top-level 'text_prompts'. Exemplar boxes only apply to the images they were drawn on, so these cover every OTHER image in the directory — with a single labeled image and no text prompts, most of a run has nothing to detect with.",
+      "default": ""
     }
   },
   "tapis_app_id": null,

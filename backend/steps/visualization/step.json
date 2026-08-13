@@ -1,5 +1,6 @@
 {
   "step_type_key": "visualization",
+  "resources": { "gpu": false },
   "display_name": "Visualization",
   "description": "Generates visualization artifacts from results / processed data.",
   "category": "Visualization",
@@ -17,8 +18,8 @@
     "appId": "harvest-visualization",
     "appVersion": "0.2.9",
     "description": "Generate visualization artifacts",
-    "execSystemId": "expanse-tapis",
-    "execSystemLogicalQueue": "tapisShared",
+    "execSystemId": "${exec_system}",
+    "execSystemLogicalQueue": "${exec_queue}",
     "archiveSystemId": "${archive_system}",
     "archiveSystemDir": "${archive_dir}",
     "nodeCount": 1,

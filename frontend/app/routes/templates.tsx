@@ -3,6 +3,7 @@ import { AppShell, Container, Title, Text, Button, Group, Card, SimpleGrid, Them
 import { IconActivity, IconArrowLeft, IconPlus, IconEdit } from "@tabler/icons-react";
 import { useNavigate, Link } from "react-router";
 import { apiFetch } from "../lib/api";
+import TopNav from "../components/TopNav";
 
 export async function clientLoader() {
   const res = await apiFetch("/api/workflow-templates");
@@ -26,6 +27,7 @@ export default function Templates({ loaderData }: Route.ComponentProps) {
               <IconActivity size={16} />
             </ThemeIcon>
             <Text fw={700}>Harvest</Text>
+            <TopNav />
           </Group>
         </Group>
       </AppShell.Header>

@@ -1,5 +1,6 @@
 {
   "step_type_key": "custom_shapefile",
+  "resources": { "gpu": false },
   "display_name": "🌾 Custom Shapefile (Weed / Residue)",
   "description": "Builds geospatial heatmaps and farm-boundary shapefiles from Harvest-style JSON: weed detection bounding boxes + image EXIF GPS, or residue sample points with lat/lon and residue fraction.",
   "category": "Post-processing",
@@ -79,8 +80,8 @@
     "appId": "harvest-Custom-Shapefile-gupta1543",
     "appVersion": "1.0.0",
     "description": "Generate weed/residue heatmap + farm-boundary shapefiles",
-    "execSystemId": "expanse-tapis",
-    "execSystemLogicalQueue": "tapisShared",
+    "execSystemId": "${exec_system}",
+    "execSystemLogicalQueue": "${exec_queue}",
     "archiveSystemId": "${archive_system}",
     "archiveSystemDir": "${archive_dir}",
     "nodeCount": 1,

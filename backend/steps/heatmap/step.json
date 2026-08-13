@@ -1,5 +1,6 @@
 {
   "step_type_key": "heatmap",
+  "resources": { "gpu": false },
   "display_name": "Heatmap Generation",
   "description": "Generates a spatial heatmap (residue/weed density) from results + imagery.",
   "category": "Visualization",
@@ -49,8 +50,8 @@
     "appId": "harvest-Custom-Shapefile-gupta1543",
     "appVersion": "1.0.0",
     "description": "Generate spatial heatmap from results",
-    "execSystemId": "expanse-tapis",
-    "execSystemLogicalQueue": "tapisShared",
+    "execSystemId": "${exec_system}",
+    "execSystemLogicalQueue": "${exec_queue}",
     "archiveSystemId": "${archive_system}",
     "archiveSystemDir": "${archive_dir}",
     "nodeCount": 1,

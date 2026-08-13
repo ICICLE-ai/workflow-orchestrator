@@ -1,11 +1,12 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { ReactFlow, ReactFlowProvider, addEdge, useNodesState, useEdgesState, Background, Controls } from '@xyflow/react';
-import { AppShell, Group, Button, Text, ActionIcon, Stack, Title, Drawer, TextInput, Textarea, Select, Notification, Loader, Alert, List, Accordion } from '@mantine/core';
+import { AppShell, Group, Button, Text, ActionIcon, Stack, Title, Drawer, TextInput, Textarea, Select, Notification, Loader, Alert, List, Accordion, Divider, Modal, Badge } from '@mantine/core';
 import { IconArrowLeft, IconDeviceFloppy, IconX, IconPlayerPlay, IconAlertTriangle } from '@tabler/icons-react';
 import { useNavigate, useParams, useLoaderData } from 'react-router';
 import CustomNode from '../components/CustomNode';
 import { apiFetch, fetchCurrentUser } from '../lib/api';
 import { TAPIS_SYSTEMS, defaultWorkDir } from '../lib/tapis';
+import TopNav from '../components/TopNav';
 
 const nodeTypes = { customNode: CustomNode };
 
@@ -80,6 +81,25 @@ const STAGES = [
   'Post-processing',
 ];
 
+// Canonical string form of the graph, for detecting unsaved changes. Covers
+// exactly what a saved version persists — each node's type and config, and each
+// edge's endpoints and ports — and deliberately NOT node positions: nudging a
+// box on the canvas changes nothing about what would run, and treating it as a
+// modification would make the "unsaved changes" prompt fire constantly.
+//
+// Nodes and edges are sorted because React Flow reorders them freely (selecting
+// a node moves it to the end so it renders on top), which would otherwise read
+// as a change.
+function graphSnapshot(nodes: any[], edges: any[]): string {
+  const n = nodes
+    .map((x: any) => JSON.stringify([x.id, x.data?.nodeType, x.data?.config_values ?? {}]))
+    .sort();
+  const e = edges
+    .map((x: any) => JSON.stringify([x.source, x.sourceHandle, x.target, x.targetHandle]))
+    .sort();
+  return JSON.stringify({ n, e });
+}
+
 // A draggable palette card for a step type. `variant` switches the accent color:
 // data sources (green, dashed), pipeline steps (blue), data sinks (amber, dashed).
 function StepCard({ step, variant }: { step: any; variant: 'source' | 'processing' | 'sink' }) {
@@ -125,6 +145,16 @@ function StepCard({ step, variant }: { step: any; variant: 'source' | 'processin
 function Flow() {
   const { stepTypes, portDataTypes, templateData, id } = useLoaderData() as any;
   const navigate = useNavigate();
+
+  // Steps offered in the palette. `hidden` (step.json -> StepTypeRegistry.hidden)
+  // takes a step out of the drag-and-drop list without unregistering it, so a
+  // step that's registered but not ready to be offered stops appearing.
+  //
+  // Only the PALETTE filters. The full `stepTypes` list is still what saved
+  // templates resolve their nodes against below — filtering there would leave
+  // every existing template that uses a hidden step with port-less,
+  // unconfigurable nodes.
+  const paletteSteps = (stepTypes as any[]).filter((s: any) => !s.hidden);
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
 
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
@@ -141,12 +171,30 @@ function Flow() {
   // /runs/:runId, which we navigate to as soon as launch succeeds.
   const [running, setRunning] = useState(false);
 
+  // The graph as of the last load/save (see graphSnapshot). `null` until a
+  // template is loaded, and for a brand-new unsaved canvas.
+  const [savedSnapshot, setSavedSnapshot] = useState<string | null>(null);
+  // Prompt shown when Run is pressed with unsaved edits — see handleRun.
+  const [unsavedPromptOpen, setUnsavedPromptOpen] = useState(false);
+  const isDirty = savedSnapshot !== null && graphSnapshot(nodes, edges) !== savedSnapshot;
+
   // Run settings — where/how the workflow's Tapis jobs execute. Defaults target
   // OSC Pitzer (the working exec system); the user can edit before launching.
   const [runSettingsOpened, setRunSettingsOpened] = useState(false);
   const [runOptions, setRunOptions] = useState({
+    // The run declares TWO exec targets, not one: each step's step.json says
+    // whether it needs a GPU ("resources": {"gpu": true}), and the engine routes
+    // it to the matching pair (engine/transactions.py resolve_node_exec_target).
+    // That's what lets zero_shot_annotation land on a GPU queue while
+    // flight_plan/geospatial go to a CPU queue in the SAME run — previously
+    // impossible, since every step either followed one run-level pair or
+    // hardcoded its own site in step.json.
     exec_system: 'pitzer-tapis',
-    exec_queue: 'gpu',
+    exec_queue: 'cpu',
+    // Blank inherits the CPU pair above, preserving single-target behaviour for
+    // runs that don't care to split.
+    gpu_exec_system: 'pitzer-tapis',
+    gpu_exec_queue: 'gpu',
     work_dir: defaultWorkDir('pitzer-tapis', { slurmAccount: 'PAS2699' }),
     archive_system: 'pitzer-tapis',
     // Optional override for the base archive directory (run_id/step_type_key/
@@ -162,45 +210,61 @@ function Flow() {
     fetchCurrentUser().then((u) => setTapisUsername(u?.username || ''));
   }, []);
 
-  // The exec system fixes the run's working directory layout (each system has
-  // its own scratch/project path convention) — recompute it whenever the exec
-  // system, charge account, or Tapis username changes.
+  // work_dir is the base every step ARCHIVES under, and archiving stays
+  // run-level even now that exec target is per-node — so it follows the
+  // ARCHIVE system's scratch/project layout, not any one step's exec system.
+  // (A run whose GPU steps are on Expanse and CPU steps on OSC has no single
+  // exec system to inherit a path from; its artifacts still have one home.)
   useEffect(() => {
     setRunOptions((prev) => ({
       ...prev,
-      work_dir: defaultWorkDir(prev.exec_system, { slurmAccount: prev.slurm_account, username: tapisUsername }),
+      work_dir: defaultWorkDir(prev.archive_system, { slurmAccount: prev.slurm_account, username: tapisUsername }),
     }));
-  }, [runOptions.exec_system, runOptions.slurm_account, tapisUsername]);
+  }, [runOptions.archive_system, runOptions.slurm_account, tapisUsername]);
 
   // Queue choices come from the exec system itself (Tapis' batchLogicalQueues),
-  // not a hardcoded list — refetch whenever the exec system changes.
-  const [queues, setQueues] = useState<any[]>([]);
-  const [queuesLoading, setQueuesLoading] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    setQueuesLoading(true);
-    apiFetch(`/api/tapis-systems/${runOptions.exec_system}/queues`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => {
-        if (cancelled || !d) return;
-        setQueues(d.queues || []);
-        // Keep the current queue if it's still offered by this system;
-        // otherwise fall back to the system's default (or the first queue).
-        setRunOptions((prev) => {
-          const names = (d.queues || []).map((q: any) => q.name);
-          if (names.includes(prev.exec_queue)) return prev;
-          return { ...prev, exec_queue: d.default_queue || names[0] || prev.exec_queue };
-        });
-      })
-      .catch(() => { if (!cancelled) setQueues([]); })
-      .finally(() => { if (!cancelled) setQueuesLoading(false); });
-    return () => { cancelled = true; };
-  }, [runOptions.exec_system]);
+  // not a hardcoded list. Fetched once per system, for each of the two targets.
+  const cpuQueues = useSystemQueues(runOptions.exec_system);
+  const gpuQueues = useSystemQueues(runOptions.gpu_exec_system);
 
-  // Human-readable limits for the currently selected queue, shown as the
-  // Select's description once queues have loaded.
-  const selectedQueueDetail = (() => {
-    const q = queues.find((qq: any) => qq.name === runOptions.exec_queue);
+  // Keep each queue valid for its own system: when a system changes, a queue
+  // name it doesn't offer is replaced by that system's default.
+  useEffect(() => {
+    const names = cpuQueues.queues.map((q: any) => q.name);
+    if (!names.length) return;
+    setRunOptions((prev) =>
+      names.includes(prev.exec_queue)
+        ? prev
+        : { ...prev, exec_queue: cpuQueues.defaultQueue || names[0] || prev.exec_queue }
+    );
+  }, [cpuQueues.queues, cpuQueues.defaultQueue]);
+  useEffect(() => {
+    const names = gpuQueues.queues.map((q: any) => q.name);
+    if (!names.length) return;
+    setRunOptions((prev) =>
+      names.includes(prev.gpu_exec_queue)
+        ? prev
+        : { ...prev, gpu_exec_queue: gpuQueues.defaultQueue || names[0] || prev.gpu_exec_queue }
+    );
+  }, [gpuQueues.queues, gpuQueues.defaultQueue]);
+
+  const queues = cpuQueues.queues;
+  const queuesLoading = cpuQueues.loading;
+
+  // Which steps actually on this canvas will follow the GPU target — makes the
+  // routing concrete instead of asking the user to remember which step types
+  // declare "resources": {"gpu": true}.
+  const gpuStepNames = Array.from(new Set(
+    nodes
+      .filter((n: any) => n.data?.fullStepConfig?.resources?.gpu)
+      .map((n: any) => n.data?.fullStepConfig?.display_name || n.data?.nodeType)
+      .filter(Boolean)
+  )) as string[];
+
+  // Human-readable limits for a selected queue, shown as the Select's
+  // description once queues have loaded.
+  const queueDetail = (qs: any[], name: string) => {
+    const q = qs.find((qq: any) => qq.name === name);
     if (!q) return null;
     const parts = [
       q.maxNodeCount != null && `max ${q.maxNodeCount} node(s)`,
@@ -208,7 +272,9 @@ function Flow() {
       q.maxMinutes != null && `${q.maxMinutes} min max`,
     ].filter(Boolean);
     return parts.length ? parts.join(" · ") : null;
-  })();
+  };
+  const selectedQueueDetail = queueDetail(queues, runOptions.exec_queue);
+  const gpuQueueDetail = queueDetail(gpuQueues.queues, runOptions.gpu_exec_queue);
 
   // Build the type checker once
   const isTypeCompatible = useCallback(
@@ -238,6 +304,9 @@ function Flow() {
       });
       setNodes(hydratedNodes);
       setEdges(templateData.edges || []);
+      // Baseline for the unsaved-changes check below: what the loaded version
+      // actually contains. Anything the user does from here diverges from it.
+      setSavedSnapshot(graphSnapshot(hydratedNodes, templateData.edges || []));
     }
   }, [templateData, stepTypes]);
 
@@ -433,24 +502,57 @@ function Flow() {
     }
   };
 
-  // Kick off durable execution of the saved template via the DBOS engine with
-  // the chosen run options (exec system / queue / paths), then jump straight
-  // to the run's live-status page — the execute endpoint creates the run
-  // synchronously so run_id is available immediately, no polling needed here.
-  const handleRun = async () => {
-    if (!templateData) return;
-    setRunSettingsOpened(false);
-    setRunning(true);
+  // Persist the current canvas as a new version and return its
+  // template_version_id. `draft` marks it as a "run without saving" snapshot —
+  // same rows, but hidden from the template list (see WorkflowTemplate.is_draft).
+  // Unlike handleSave this doesn't navigate away, because the run flow needs to
+  // keep going with the id it returns.
+  const persistVersion = async (draft: boolean): Promise<number> => {
+    const payload = {
+      ...formData,
+      nodes: nodes.map((n: any) => ({
+        id: n.id,
+        type: n.data.nodeType,
+        position: n.position,
+        data: { config_values: n.data.config_values },
+      })),
+      edges: edges.map((e: any) => ({
+        id: e.id, source: e.source, target: e.target,
+        sourceHandle: e.sourceHandle, targetHandle: e.targetHandle,
+      })),
+    };
+    const res = await apiFetch(
+      `/api/workflow-templates/${templateData.template_id}/versions${draft ? '?draft=true' : ''}`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || 'Could not save the workflow');
+    }
+    const data = await res.json();
+    return data.template_version_id;
+  };
 
+  // Kick off durable execution via the DBOS engine with the chosen run options
+  // (exec system / queue / paths), then jump straight to the run's live-status
+  // page — the execute endpoint creates the run synchronously so run_id is
+  // available immediately, no polling needed here.
+  //
+  // `versionId` is which version to execute. It is ALWAYS a version that
+  // reflects what's on screen: with unsaved edits, handleRun persists one first
+  // (as a real version or a draft, the user's choice) rather than running the
+  // last-saved graph. Running a stale version silently produced results for a
+  // workflow the user was no longer looking at.
+  const executeVersion = async (versionId: number) => {
+    setRunSettingsOpened(false);
+    setUnsavedPromptOpen(false);
+    setRunning(true);
     try {
-      const res = await apiFetch(
-        `/api/pipeline-runs/${templateData.template_version_id}/execute`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(runOptions),
-        }
-      );
+      const res = await apiFetch(`/api/pipeline-runs/${versionId}/execute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(runOptions),
+      });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.detail || 'Failed to start workflow');
@@ -464,6 +566,34 @@ function Flow() {
     }
   };
 
+  const handleRun = async () => {
+    if (!templateData) return;
+    if (isDirty) {
+      // Don't launch anything yet — ask how the changes should be handled.
+      setRunSettingsOpened(false);
+      setUnsavedPromptOpen(true);
+      return;
+    }
+    executeVersion(templateData.template_version_id);
+  };
+
+  // Both answers to that prompt: capture the canvas, then run what was captured.
+  const runWithUnsavedChanges = async (saveAsVersion: boolean) => {
+    setRunning(true);
+    try {
+      const versionId = await persistVersion(!saveAsVersion);
+      // The canvas now matches what's stored, so Run stops prompting until the
+      // next edit — whichever option was taken.
+      setSavedSnapshot(graphSnapshot(nodes, edges));
+      await executeVersion(versionId);
+    } catch (e: any) {
+      setRunning(false);
+      setUnsavedPromptOpen(false);
+      setConnectionError(e.message || 'Could not save the workflow');
+      setTimeout(() => setConnectionError(null), 6000);
+    }
+  };
+
   return (
     <AppShell header={{ height: 60 }} aside={{ width: 250, breakpoint: 'sm' }} padding="0">
       <AppShell.Header>
@@ -473,6 +603,7 @@ function Flow() {
               <IconArrowLeft size={20} />
             </ActionIcon>
             <Title order={4}>{templateData ? `${templateData.name} v${templateData.version}` : 'New Template'}</Title>
+            <TopNav />
           </Group>
           <Group gap="sm">
             {templateData && (
@@ -485,6 +616,13 @@ function Flow() {
               >
                 {running ? 'Running…' : 'Run Workflow'}
               </Button>
+            )}
+            {/* Standing indicator, so the state that changes what Run does is
+                visible before Run is pressed rather than only in the prompt. */}
+            {isDirty && (
+              <Badge color="yellow" variant="light" title="The canvas differs from the last saved version">
+                Unsaved changes
+              </Badge>
             )}
             <Button leftSection={<IconDeviceFloppy size={16} />} onClick={() => setDrawerOpened(true)}>
               {templateData ? 'Save New Version' : 'Save Template'}
@@ -511,7 +649,7 @@ function Flow() {
             <Accordion.Control><Text fw={600}>Data Sources</Text></Accordion.Control>
             <Accordion.Panel>
               <Stack gap="xs">
-                {stepTypes.filter((s: any) => s.category === 'source').map((step: any) => (
+                {paletteSteps.filter((s: any) => s.category === 'source').map((step: any) => (
                   <StepCard key={step.step_type_key} step={step} variant="source" />
                 ))}
               </Stack>
@@ -522,7 +660,7 @@ function Flow() {
               by the step's `category` (set in step.json). Empty stages still show
               so the structure is visible and ready for future steps. */}
           {STAGES.map((stage) => {
-            const stageSteps = stepTypes.filter((s: any) => s.category === stage);
+            const stageSteps = paletteSteps.filter((s: any) => s.category === stage);
             return (
               <Accordion.Item key={stage} value={stage}>
                 <Accordion.Control><Text fw={600}>{stage}</Text></Accordion.Control>
@@ -542,12 +680,12 @@ function Flow() {
           })}
 
           {/* Data Sinks — outputs, the write-side complement of Data Sources */}
-          {stepTypes.some((s: any) => s.category === 'sink') && (
+          {paletteSteps.some((s: any) => s.category === 'sink') && (
             <Accordion.Item value="__sinks__">
               <Accordion.Control><Text fw={600}>Data Sinks</Text></Accordion.Control>
               <Accordion.Panel>
                 <Stack gap="xs">
-                  {stepTypes.filter((s: any) => s.category === 'sink').map((step: any) => (
+                  {paletteSteps.filter((s: any) => s.category === 'sink').map((step: any) => (
                     <StepCard key={step.step_type_key} step={step} variant="sink" />
                   ))}
                 </Stack>
@@ -657,11 +795,16 @@ function Flow() {
       <Drawer opened={runSettingsOpened} onClose={() => setRunSettingsOpened(false)} title="Run Settings" position="right">
         <Stack>
           <Text size="sm" c="dimmed">
-            Where this workflow's jobs run on Tapis. Defaults target OSC Pitzer.
+            Where this workflow's jobs run on Tapis. Each step declares whether it needs a GPU, and is routed
+            to the matching target below — so GPU steps (zero-shot, training) and CPU steps (flight plan,
+            geospatial) can run on different systems and queues within one run. A step can still pin its own
+            system via its Run Configuration.
           </Text>
+
+          <Divider label="CPU target" labelPosition="left" />
           <Select
             label="Exec system"
-            description="Tapis compute system this run's jobs execute on"
+            description="Where steps with no GPU requirement run"
             data={TAPIS_SYSTEMS}
             value={runOptions.exec_system}
             allowDeselect={false}
@@ -687,6 +830,32 @@ function Flow() {
             placeholder={queuesLoading ? "Loading…" : "Select a queue"}
             allowDeselect={false}
           />
+
+          <Divider label="GPU target" labelPosition="left" />
+          <Select
+            label="Exec system"
+            description={`Where steps declaring a GPU requirement run${gpuStepNames.length ? ` — ${gpuStepNames.join(', ')} on this canvas` : ' (none on this canvas yet)'}`}
+            data={TAPIS_SYSTEMS}
+            value={runOptions.gpu_exec_system}
+            allowDeselect={false}
+            onChange={(v) => setRunOptions((prev) => ({ ...prev, gpu_exec_system: v ?? prev.gpu_exec_system }))}
+          />
+          <Select
+            label="Queue"
+            description={
+              gpuQueues.loading
+                ? "Loading queues from the GPU exec system…"
+                : gpuQueueDetail || "Scheduler queue offered by the GPU exec system"
+            }
+            data={gpuQueues.queues.map((q: any) => q.name).filter(Boolean)}
+            value={runOptions.gpu_exec_queue}
+            onChange={(v) => setRunOptions((prev) => ({ ...prev, gpu_exec_queue: v ?? prev.gpu_exec_queue }))}
+            disabled={gpuQueues.loading}
+            placeholder={gpuQueues.loading ? "Loading…" : "Select a queue"}
+            allowDeselect={false}
+          />
+
+          <Divider label="Shared" labelPosition="left" />
           <TextInput
             label="Slurm account"
             description="Allocation to charge (e.g. PAS2699)"
@@ -719,8 +888,79 @@ function Flow() {
           </Button>
         </Stack>
       </Drawer>
+
+      {/* Unsaved changes at launch time. The run has NOT started at this point —
+          whichever option is taken, what executes is the graph currently on the
+          canvas, never the last-saved one. */}
+      <Modal
+        opened={unsavedPromptOpen}
+        onClose={() => setUnsavedPromptOpen(false)}
+        title="This workflow has unsaved changes"
+        centered
+      >
+        <Stack gap="md">
+          <Text size="sm">
+            The canvas differs from the last saved version. Your changes will be what runs either way — choose
+            whether to keep them in this workflow's version history.
+          </Text>
+          <Button
+            fullWidth
+            loading={running}
+            leftSection={<IconDeviceFloppy size={16} />}
+            onClick={() => runWithUnsavedChanges(true)}
+          >
+            Save as a new version, then run
+          </Button>
+          <Button
+            fullWidth
+            variant="default"
+            loading={running}
+            leftSection={<IconPlayerPlay size={16} />}
+            onClick={() => runWithUnsavedChanges(false)}
+          >
+            Run these changes without saving a version
+          </Button>
+          <Text size="xs" c="dimmed">
+            "Without saving" still records the exact graph behind the scenes so the run stays reproducible — it
+            just won't appear as a version of this workflow, and won't change what opens next time.
+          </Text>
+          <Button variant="subtle" color="gray" onClick={() => setUnsavedPromptOpen(false)} disabled={running}>
+            Cancel
+          </Button>
+        </Stack>
+      </Modal>
     </AppShell>
   );
+}
+
+// Fetch a Tapis exec system's batch logical queues. Used once per exec target
+// (the run declares a CPU one and a GPU one), so it's a hook rather than an
+// inline effect — two copies of the fetch/cancel/failure handling would
+// otherwise sit side by side in Flow.
+function useSystemQueues(system: string) {
+  const [queues, setQueues] = useState<any[]>([]);
+  const [defaultQueue, setDefaultQueue] = useState<string>('');
+  const [loading, setLoading] = useState(false);
+  useEffect(() => {
+    if (!system) {
+      setQueues([]);
+      setDefaultQueue('');
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    apiFetch(`/api/tapis-systems/${system}/queues`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (cancelled || !d) return;
+        setQueues(d.queues || []);
+        setDefaultQueue(d.default_queue || '');
+      })
+      .catch(() => { if (!cancelled) setQueues([]); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [system]);
+  return { queues, defaultQueue, loading };
 }
 
 export default function WorkflowCanvasWrapper() {

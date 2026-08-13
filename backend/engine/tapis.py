@@ -9,6 +9,7 @@ The real contract mirrors the legacy harvest-webservers code:
   POST {base}/v3/jobs/submit        with the full job spec dict
   GET  {base}/v3/jobs/{uuid}/status -> result.status
 """
+import fnmatch
 import json
 import os
 
@@ -19,7 +20,7 @@ from engine import tapis_auth
 from engine.mock_tapis import tapis_client as _mock_client
 
 
-def _use_real() -> bool:
+def use_real_tapis() -> bool:
     """Real Tapis only when not forced to mock AND we have a way to authenticate:
     a direct env token (TAPIS_ACCESS_TOKEN) OR a confidential OAuth client.
 
@@ -78,7 +79,7 @@ class TapisV3:
         the debug logging below, which otherwise dumps the full rendered spec
         (and Tapis' own response, which can echo submitted fields back).
         """
-        if _use_real():
+        if use_real_tapis():
             token = _require_run_token(run_id)
             url = f"{tapis_auth.TAPIS_BASE_URL}/v3/jobs/submit"
             headers = {"X-Tapis-Token": token, "Content-Type": "application/json"}
@@ -116,7 +117,7 @@ class TapisV3:
         'FINISHED' for success, 'FAILED'/'CANCELLED' for failure, otherwise an
         in-progress status string. run_id resolves the run owner's token.
         """
-        if _use_real():
+        if use_real_tapis():
             url = f"{tapis_auth.TAPIS_BASE_URL}/v3/jobs/{job_uuid}/status"
             resp = httpx.get(url, headers={"X-Tapis-Token": _require_run_token(run_id)}, timeout=60)
             # A 401 mid-run usually means the access token expired during a long
@@ -140,7 +141,7 @@ def cancel_tapis_job(job_uuid: str, run_id: int) -> bool:
     terminal, gone, or no creds)."""
     if not job_uuid:
         return False
-    if not _use_real():
+    if not use_real_tapis():
         return True  # mock jobs have nothing to cancel remotely
     try:
         token = tapis_auth.get_token_for_run(run_id)
@@ -154,7 +155,7 @@ def cancel_tapis_job(job_uuid: str, run_id: int) -> bool:
         return False
 
 
-def _split_uri(uri: str):
+def split_tapis_uri(uri: str):
     """tapis://system/abs/path -> (system, /abs/path). Bare path -> (None, path)."""
     if uri.startswith("tapis://"):
         rest = uri[len("tapis://"):]
@@ -212,11 +213,11 @@ def copy_tapis_path(src_uri: str, dest_uri: str, run_id: int, replace: bool = Fa
     cleared first, so the sink reflects ONLY this run's wired output (no residue
     from earlier runs that may have used a different output layout).
     """
-    if not _use_real():
+    if not use_real_tapis():
         print(f"[tapis] (mock) copy {src_uri} -> {dest_uri}{' (replace)' if replace else ''}")
         return True
-    src_sys, src_path = _split_uri(src_uri)
-    dest_sys, dest_path = _split_uri(dest_uri)
+    src_sys, src_path = split_tapis_uri(src_uri)
+    dest_sys, dest_path = split_tapis_uri(dest_uri)
     token = _require_run_token(run_id)
     headers = {"X-Tapis-Token": token, "Content-Type": "application/json"}
     try:
@@ -238,3 +239,53 @@ def copy_tapis_path(src_uri: str, dest_uri: str, run_id: int, replace: bool = Fa
     except Exception as e:
         print(f"[tapis] copy_tapis_path error: {type(e).__name__}: {e}")
         return False
+
+
+@DBOS.step()
+def resolve_latest_file(dir_uri: str, run_id: int, pattern: str) -> str | None:
+    """Find the file inside `dir_uri` (a tapis://system/path directory) whose
+    bare name matches `pattern` (fnmatch, e.g. 'annotations_*.json'), and
+    return its full tapis://system/path URI.
+
+    For an output port whose step.json declares a `file_glob` (see
+    StepTypePort.file_glob / _derive_outputs in engine/workflows.py): some
+    tools write their own dynamically (e.g. timestamp-)named file into a
+    directory rather than a fixed filename, so the port's static output_path
+    can only name that containing directory — this resolves the actual file
+    within it once the job has actually run and the name is knowable.
+
+    Ties are broken by name, descending — correct for zero-padded
+    timestamp-suffixed names (e.g. ...YYYYMMDD_HHMMSS.json), where the latest
+    file also sorts last; not a guarantee for arbitrary naming.
+
+    Returns None if the directory can't be listed, is empty, or nothing
+    matches — the caller falls back to the directory URI itself rather than
+    treating this as fatal. In mock mode, returns None immediately (nothing
+    was really written for real listing to find).
+    """
+    if not use_real_tapis():
+        return None
+    sys_id, path = split_tapis_uri(dir_uri)
+    if not sys_id:
+        return None
+    token = _require_run_token(run_id)
+    try:
+        resp = httpx.get(
+            f"{tapis_auth.TAPIS_BASE_URL}/v3/files/ops/{sys_id}{path}",
+            headers={"X-Tapis-Token": token}, timeout=60,
+        )
+    except Exception as e:
+        print(f"[tapis] resolve_latest_file list error {dir_uri}: {type(e).__name__}")
+        return None
+    if resp.status_code != 200:
+        print(f"[tapis] resolve_latest_file list HTTP {resp.status_code}: {resp.text[:150]}")
+        return None
+    names = [
+        item.get("name") for item in resp.json().get("result", [])
+        if item.get("name") and item.get("type") != "dir" and fnmatch.fnmatch(item["name"], pattern)
+    ]
+    if not names:
+        print(f"[tapis] resolve_latest_file: no file in {dir_uri} matched {pattern!r}")
+        return None
+    best = sorted(names)[-1]
+    return f"tapis://{sys_id}{path.rstrip('/')}/{best}"

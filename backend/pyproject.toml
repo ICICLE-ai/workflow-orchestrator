@@ -17,6 +17,12 @@ dependencies = [
     "geopandas>=1.1.4",
     "pyogrio>=0.13.0",
     "itsdangerous>=2.2.0",
+    # annotation_adapter._image_sizes imports PIL to read each referenced image's
+    # pixel dimensions. It was listed in requirements.txt but never here, so it
+    # was absent from uv.lock and from any environment built from this file —
+    # fine locally, where the venv happened to have it, but a container built
+    # from the lock would 500 on every coco/yolo conversion.
+    "pillow>=11.0",
 ]
 
 [tool.uv]

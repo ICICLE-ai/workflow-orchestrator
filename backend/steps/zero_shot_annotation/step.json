@@ -1,37 +1,45 @@
 {
   "step_type_key": "zero_shot_annotation",
+  "resources": { "gpu": true },
   "display_name": "✨ Zero-Shot Annotation",
   "description": "Annotates every image in a directory with a zero-shot open-vocabulary model (SAM3 by default) — no training, no class supports. Detects with free-text concepts, visual exemplar boxes, or both, optionally tiled (SAHI) for large imagery with small objects, via the zero-shot-annotation Tapis app.",
-  "category": "Data Creation",
+  "category": "Inference",
   "icon": "sparkles",
   "tapis_app_id": "zero-shot-annotation",
   "inputs": [
-    { "name": "images", "type": "image_dir" }
+    { "name": "images", "type": "image_dir" },
+    {
+      "name": "annotation_file",
+      "type": "json_results",
+      "required": false,
+      "description": "Optional: an existing annotations/exemplar-prompt JSON to use for exemplar prompts — wiring this in populates the panel's 'Prompt file' field (the annotation_file config key, same name as this port) with its path instead of having to browse/type it by hand, and flips the panel to Exemplar-prompts mode so it's actually visible. Only useful for a directly-wired DESIGN-TIME node (its own system/path config, e.g. smart_labeler, source_json_file, or the annotation_format_adapter's 'converted' output) — see the panel; an upstream JOB step's output isn't resolvable at design time."
+    }
   ],
   "outputs": [
     {
       "name": "annotations",
       "type": "json_results",
       "output_path": "annotations",
-      "description": "Directory containing the run's annotations_<model>_<timestamp>.json (and, with output_format 'coco'/'both', annotations_coco_<model>_<timestamp>.json) — filenames carry a timestamp, so this port resolves to the containing directory rather than a single fixed file."
+      "file_glob": "annotations_[!c]*.json",
+      "description": "The run's annotations_<model>_<timestamp>.json — filenames carry a timestamp, so the actual file is resolved (via a real Tapis directory listing once the job finishes) from inside the 'annotations' output directory rather than being a static path; see file_glob. The glob's '[!c]' deliberately excludes annotations_coco_<model>_<timestamp>.json (written alongside it when output_format is 'coco'/'both') by assuming the model name doesn't start with 'c' — true for every backend registered today (sam3). If that ever changes, or you specifically need the coco file with output_format='both', browse the run's archive directory manually instead of this port."
     }
   ],
   "config_schema": {
     "prompt_mode": {
       "type": "select",
       "options": ["text", "exemplar"],
-      "description": "Which kind of prompt drives detection. 'text' uses free-text concepts typed below. 'exemplar' uses visual exemplar boxes (plus optional paired text) from an uploaded prompt file. UI-only — doesn't change what's sent to the job; text_prompts and prompt_file are independently included whenever set, so the two can be combined.",
+      "description": "Which kind of prompt drives detection. 'text' uses free-text concepts typed below. 'exemplar' uses visual exemplar boxes (plus optional paired text) from an uploaded prompt file. UI-only — doesn't change what's sent to the job; text_prompts and annotation_file are independently included whenever set, so the two can be combined.",
       "default": "text"
     },
     "text_prompts": {
       "type": "string",
-      "description": "Free-text concepts to detect, applied to every image (e.g. tree, \"parked car\", \"solar panel\"). Each detection is labelled with the prompt that found it. At least one of text_prompts or prompt_file is required.",
+      "description": "Free-text concepts to detect, applied to every image (e.g. tree, \"parked car\", \"solar panel\"). Each detection is labelled with the prompt that found it. At least one of text_prompts or annotation_file is required.",
       "default": ""
     },
-    "prompt_file": {
-      "type": "tapis_path",
+    "annotation_file": {
+      "type": "json_results",
       "selectType": "file",
-      "description": "JSON file with per-image exemplar boxes (SAM3 geometry prompts) and/or additional text prompts. Exemplar boxes are absolute pixel coordinates in a specific image, keyed by path relative to the image directory, bare filename, or 'default'. At least one of text_prompts or prompt_file is required.",
+      "description": "Full tapis://system/path URI of a JSON file with per-image exemplar boxes (SAM3 geometry prompts) and/or additional text prompts. Exemplar boxes are absolute pixel coordinates in a specific image, keyed by path relative to the image directory, bare filename, or 'default'. At least one of text_prompts or annotation_file is required. Stored as a URI rather than a bare path + separate 'system' field precisely because this key doubles as an INPUT PORT NAME: when the port is wired, _resolve_inputs overwrites this config value with the upstream output's URI at run time, so the two forms have to be interchangeable. Auto-filled from the wired 'annotation_file' input when connected — see that input's description — but can still be browsed/typed by hand; an explicit edit here always takes precedence over the wired value.",
       "default": ""
     },
     "model": {
@@ -63,12 +71,12 @@
     "exemplar_tile_mode": {
       "type": "select",
       "options": ["intersecting", "all"],
-      "description": "With SAHI + exemplar prompts: 'intersecting' runs only tiles holding a positive exemplar (skipped tiles are logged). 'all' runs every tile, falling back to the exemplar's paired text on tiles with no visible exemplar (recorded as prompt_type 'text'). Only used when a prompt_file is set.",
+      "description": "With SAHI + exemplar prompts: 'intersecting' runs only tiles holding a positive exemplar (skipped tiles are logged). 'all' runs every tile, falling back to the exemplar's paired text on tiles with no visible exemplar (recorded as prompt_type 'text'). Only used when an annotation_file is set.",
       "default": "intersecting"
     },
     "exemplar_min_visibility": {
       "type": "float",
-      "description": "Minimum fraction (0-1) of an exemplar box's area that must fall inside a tile to count as visible there; the box is then clipped to the tile. Only used when a prompt_file is set.",
+      "description": "Minimum fraction (0-1) of an exemplar box's area that must fall inside a tile to count as visible there; the box is then clipped to the tile. Only used when an annotation_file is set.",
       "default": 0.5
     },
     "batch_size": {
@@ -136,10 +144,10 @@
       { "name": "images", "autoMountLocal": true, "sourceUrl": "${images}", "targetPath": "input/images" },
       {
         "name": "prompt_file",
-        "description": "Optional: exemplar/text prompt JSON, staged in when prompt_file is set.",
-        "if": "prompt_file",
+        "description": "Optional: exemplar/text prompt JSON, staged in when annotation_file is set. Note this text is itself placeholder-substituted (job_spec renders every string leaf, descriptions included), so it deliberately spells no placeholder out literally. sourceUrl is the annotation_file value verbatim — always a full tapis://system/path URI, whether it came from this node's own config (the panel stores the system inside the URI, see zeroShotAnnotation.tsx) or from the wired 'annotation_file' input, which _resolve_inputs overrides the config value with at run time. Re-adding a 'tapis://' + system prefix here (as this did while the config key was still named prompt_file) doubles the scheme on the wired path.",
+        "if": "annotation_file",
         "autoMountLocal": true,
-        "sourceUrl": "tapis://${system}${prompt_file}",
+        "sourceUrl": "${annotation_file}",
         "targetPath": "input/prompts.json"
       }
     ],
@@ -150,12 +158,12 @@
         { "name": "model", "arg": "--model ${model}" },
         { "name": "model_id", "arg": "--model_id ${model_id}", "if": "model_id" },
         { "name": "text_prompts", "arg": "--text_prompts ${text_prompts}", "if": "text_prompts" },
-        { "name": "prompt_file", "arg": "--prompt_file /job/input/prompts.json", "if": "prompt_file" },
+        { "name": "prompt_file", "arg": "--prompt_file /job/input/prompts.json", "if": "annotation_file" },
         { "name": "is_sahi", "arg": "--is_sahi", "if": "is_sahi" },
         { "name": "tile_size", "arg": "--tile_size ${tile_size}", "if": "is_sahi" },
         { "name": "overlap_ratio", "arg": "--overlap_ratio ${overlap_ratio}", "if": "is_sahi" },
-        { "name": "exemplar_tile_mode", "arg": "--exemplar_tile_mode ${exemplar_tile_mode}", "if": "prompt_file" },
-        { "name": "exemplar_min_visibility", "arg": "--exemplar_min_visibility ${exemplar_min_visibility}", "if": "prompt_file" },
+        { "name": "exemplar_tile_mode", "arg": "--exemplar_tile_mode ${exemplar_tile_mode}", "if": "annotation_file" },
+        { "name": "exemplar_min_visibility", "arg": "--exemplar_min_visibility ${exemplar_min_visibility}", "if": "annotation_file" },
         { "name": "batch_size", "arg": "--batch_size ${batch_size}" },
         { "name": "confidence", "arg": "--confidence ${confidence}" },
         { "name": "mask_threshold", "arg": "--mask_threshold ${mask_threshold}" },

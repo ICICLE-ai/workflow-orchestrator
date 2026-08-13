@@ -1,5 +1,7 @@
 {
   "step_type_key": "image_crop",
+  "hidden": true,
+  "resources": { "gpu": false },
   "display_name": "Image Crop",
   "description": "Crops a directory of images, applying perspective correction.",
   "category": "Data Pre-processing",
@@ -28,8 +30,8 @@
     "appId": "image-extract-perspective-4",
     "appVersion": "1.0.0",
     "description": "Crop images with perspective correction",
-    "execSystemId": "expanse-tapis",
-    "execSystemLogicalQueue": "tapisGPUshared",
+    "execSystemId": "${exec_system}",
+    "execSystemLogicalQueue": "${exec_queue}",
     "archiveSystemId": "${archive_system}",
     "archiveSystemDir": "${archive_dir}",
     "nodeCount": 1,

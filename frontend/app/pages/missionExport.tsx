@@ -5,6 +5,7 @@ import {
 import { IconAlertTriangle } from "@tabler/icons-react";
 import type { StepPanelProps } from "./types";
 import { apiFetch } from "../lib/api";
+import { splitTapisUri } from "../lib/tapis";
 import ParamSection from "../components/ParamSection";
 
 // Settings panel for the 'mission_export' step (backend/steps/mission_export/step.json)
@@ -164,14 +165,6 @@ export default function MissionExportPanel({ config, onChange, step, connectedIn
 (MissionExportPanel as any).fullScreen = true;
 
 // --- helpers -------------------------------------------------------------
-
-function splitTapisUri(uri: string): { system: string; path: string } | null {
-  if (!uri || !uri.startsWith("tapis://")) return null;
-  const rest = uri.slice("tapis://".length);
-  const slash = rest.indexOf("/");
-  if (slash === -1) return null;
-  return { system: rest.slice(0, slash), path: rest.slice(slash) };
-}
 
 const ALL_FORMATS = [
   { key: "ardupilot", label: "ArduPilot", ext: ".waypoints" },

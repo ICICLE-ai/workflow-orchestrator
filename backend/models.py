@@ -81,6 +81,25 @@ class StepTypeRegistry(Base):
     # Configuration control for them. Defaults from step.json's `tapis_job` when
     # the step.json doesn't set it explicitly (see main.sync_step_registry).
     submits_job = Column(Boolean, default=True)
+    # What this step NEEDS from an exec system, not where it runs — currently
+    # just {"gpu": bool}. Mirrored from step.json's "resources" each sync. The
+    # run supplies a CPU target and a GPU target (RunOptions), and
+    # get_run_archive_context routes each node to the matching pair, so a
+    # GPU step (zero_shot_annotation, training) and a CPU step (flight_plan,
+    # geospatial) in the SAME run land on different systems/queues without
+    # either one hardcoding a site the way several step.json files used to.
+    resources = Column(JSON, default=dict)
+    # Hide this step from the canvas PALETTE without removing it. Distinct from
+    # is_active, which the registry sync owns (a step.json that disappears is
+    # deactivated, one that reappears is reactivated) and so can't express a
+    # deliberate "keep it registered but don't offer it yet". Mirrored from
+    # step.json's "hidden" each sync.
+    #
+    # Hidden steps are still RETURNED by /api/step-types: a saved template
+    # resolves each of its nodes against that list (WorkflowCanvas.tsx), so
+    # dropping one would leave every existing template containing it with
+    # unconfigurable, port-less nodes. Only the palette filters on it.
+    hidden = Column(Boolean, default=False)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -108,6 +127,16 @@ class StepTypePort(Base):
     # (e.g. 'predictions.json' or 'annotated'). Lets a step expose multiple
     # distinct outputs, each routable to its own downstream node / sink.
     output_path = Column(String, default=None)
+    # For OUTPUT ports whose output_path is a DIRECTORY containing a single
+    # dynamically-named file (e.g. a script that stamps its own output
+    # filename with a timestamp) rather than the file itself: an fnmatch
+    # pattern (matched against bare filenames, e.g. 'annotations_*.json') used
+    # to resolve the actual file inside that directory once the job completes
+    # — see engine.tapis.resolve_latest_file and _derive_outputs in
+    # engine/workflows.py. None for every other port (output_path already
+    # names the exact artifact, or the port IS meant to be a directory, e.g.
+    # an image_dir output).
+    file_glob = Column(String, default=None)
 
     __table_args__ = (
         UniqueConstraint('step_type_key', 'port_name', 'direction', name='uix_step_port'),
@@ -130,6 +159,17 @@ class WorkflowTemplate(Base):
     # Allocation/charge account (e.g. 'uot260') set at template creation; used as
     # the default slurm_account when running this template.
     allocation_account = Column(String)
+    # A version created implicitly by "run these changes without saving" rather
+    # than by an explicit Save.
+    #
+    # The engine cannot run an unsaved canvas: it reads a node's job template,
+    # config schema, ports and — critically — its EDGES from wf_node/wf_edge
+    # rows keyed by template_version_id (see engine/transactions.py's
+    # get_incoming_edges), not from the run's frozen_config. So "don't save a
+    # version" still has to persist one; this flag is what keeps it out of the
+    # template list and out of the user's version numbering in spirit, while
+    # leaving the run fully reproducible and traceable.
+    is_draft = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

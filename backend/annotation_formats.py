@@ -58,11 +58,19 @@ def _slug(text: str) -> str:
 # --- native ------------------------------------------------------------
 
 def parse_native(data: dict) -> dict:
-    raw = (data or {}).get("annotations") or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"expected a JSON object at the top level, got {type(data).__name__}")
+    raw = data.get("annotations") or {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"'annotations' must be an object of {{file_path: [...]}}, got {type(raw).__name__}")
     out = {}
     for file_path, items in raw.items():
+        if not isinstance(items, list):
+            raise ValueError(f"annotations['{file_path}'] must be a list, got {type(items).__name__}")
         dets = []
         for item in items or []:
+            if not isinstance(item, dict):
+                raise ValueError(f"annotations['{file_path}'] entries must be objects, got {type(item).__name__}")
             points = item.get("points")
             if points:
                 polygon = [[p["x"], p["y"]] for p in points]
@@ -70,7 +78,19 @@ def parse_native(data: dict) -> dict:
             else:
                 polygon = None
                 bbox = [item.get("x", 0), item.get("y", 0), item.get("width", 0), item.get("height", 0)]
-            dets.append({"label": item.get("label", "object"), "score": item.get("score"), "bbox": bbox, "polygon": polygon})
+            dets.append({
+                "label": item.get("label", "object"),
+                "score": item.get("score"),
+                "bbox": bbox,
+                "polygon": polygon,
+                # Carried through the canonical shape (rather than dropped like
+                # the rest of smart_labeler's per-annotation fields) because
+                # build_sam3_exemplars reads it to decide box_labels: a box
+                # flagged NEGATIVE_FLAG is a "not this" exemplar. No other
+                # format reads or writes it, so it's simply absent from every
+                # other parser's Detections.
+                "flag": item.get("flag"),
+            })
         out[file_path] = dets
     return out
 
@@ -87,6 +107,8 @@ def build_native(per_file: dict, annotation_type: str | None = None) -> dict:
             entry = {"id": f"{_slug(file_path)}-{i}", "label": d.get("label", "object")}
             if d.get("score") is not None:
                 entry["score"] = d["score"]
+            if d.get("flag"):
+                entry["flag"] = d["flag"]
             if inferred_type == "segmentation" and d.get("polygon"):
                 entry["points"] = [{"x": p[0], "y": p[1]} for p in d["polygon"]]
             else:
@@ -100,10 +122,25 @@ def build_native(per_file: dict, annotation_type: str | None = None) -> dict:
 # --- coco ----------------------------------------------------------------
 
 def parse_coco(data: dict) -> dict:
-    images = {img["id"]: img for img in (data or {}).get("images", [])}
-    categories = {c["id"]: c.get("name", str(c["id"])) for c in (data or {}).get("categories", [])}
+    if not isinstance(data, dict):
+        raise ValueError(f"expected a JSON object at the top level, got {type(data).__name__}")
+    images_raw = data.get("images", [])
+    if not isinstance(images_raw, list):
+        raise ValueError(
+            f"'images' must be a list of COCO image objects, got {type(images_raw).__name__} — "
+            "this doesn't look like a COCO annotations file."
+        )
+    annotations_raw = data.get("annotations", [])
+    if not isinstance(annotations_raw, list):
+        raise ValueError(f"'annotations' must be a list of COCO annotation objects, got {type(annotations_raw).__name__}")
+    categories_raw = data.get("categories", [])
+    if not isinstance(categories_raw, list):
+        raise ValueError(f"'categories' must be a list of COCO category objects, got {type(categories_raw).__name__}")
+
+    images = {img["id"]: img for img in images_raw}
+    categories = {c["id"]: c.get("name", str(c["id"])) for c in categories_raw}
     out: dict = {}
-    for ann in (data or {}).get("annotations", []):
+    for ann in annotations_raw:
         img = images.get(ann.get("image_id"))
         if not img:
             continue
@@ -256,6 +293,115 @@ def build_geopackage(per_file: dict, dest_path: str, layer: str = "annotations")
 def _xyxy(bbox: list) -> list:
     x, y, w, h = bbox
     return [x, y, x + w, y + h]
+
+
+# --- sam3_exemplars (write-only) -----------------------------------------
+
+# An annotation whose `flag` equals this (case-insensitive) becomes a NEGATIVE
+# exemplar — box_labels 0, "the thing in this box is NOT what I want" — rather
+# than a positive one. `flag` is already a first-class, filterable, bulk-
+# editable field on smart_labeler's annotations (see @icicle-ai/annotation-
+# details' BaseAnnotation), so marking negatives needs no new labeling UI.
+NEGATIVE_FLAG = "negative"
+
+
+def relpath_within(file_path: str, image_dir: str | None) -> str:
+    """Turn a per_file key into the key SAM3 expects: a path relative to the
+    image directory, or a bare filename.
+
+    smart_labeler writes annotations_by_file keyed by whatever path its file
+    browser reported — in practice an ABSOLUTE Tapis path
+    ('/fs/ess/PAS2699/Demo_data/Weed_data/img.JPG'), while the job stages
+    images at /job/input/images and looks them up relative to that. Stripping
+    the image dir keeps any subdirectory structure ('batch_a/img_001.jpg');
+    with no image dir known, or a key from somewhere else entirely, the
+    basename is the documented fallback the app also accepts.
+    """
+    key = (file_path or "").lstrip("/")
+    if image_dir:
+        prefix = image_dir.strip("/")
+        if prefix and (key == prefix or key.startswith(prefix + "/")):
+            return key[len(prefix):].lstrip("/") or os.path.basename(key)
+    return key if "/" not in key else os.path.basename(key)
+
+
+def build_sam3_exemplars(
+    per_file: dict,
+    image_dir: str | None = None,
+    text_prompts: list | None = None,
+) -> dict:
+    """Build the zero_shot_annotation prompt file (SAM3 geometry prompts).
+
+    Write-only: this is a PROMPT format, not an annotation format, so it has
+    no parser and can't round-trip (hence its absence from PARSERS below, and
+    from the adapter's FROM_FORMATS). Shape:
+
+        {"text_prompts": ["tree", "car"],
+         "exemplars": {"batch_a/img_001.jpg": [
+             {"label": "shrub", "text": "shrub",
+              "boxes": [[x1, y1, x2, y2], ...], "box_labels": [1, 0, ...]}]}}
+
+    Detections are grouped by LABEL within each image — SAM3 takes one box
+    list per concept, not one entry per box, so N boxes sharing a label become
+    one entry with N boxes rather than N single-box entries. `text` is set to
+    the label: with exemplar_tile_mode='all' the job falls back to an
+    exemplar's paired text on tiles where no box is visible (see the step's
+    config_schema), and the label is the only text this pipeline actually
+    knows for a hand-drawn box.
+
+    Boxes are emitted as absolute-pixel [x1, y1, x2, y2] corners, rounded to
+    int — the canonical Detection shape carries [x, y, w, h], and a polygon
+    (segmentation-mode annotation) contributes its bounding box, since a
+    geometry prompt is a box either way.
+
+    Note there is deliberately no 'default' key: exemplar boxes are pixel
+    coordinates inside ONE specific image, so promoting them to apply to every
+    image is only meaningful if the job crops the exemplar from a reference
+    image rather than reading the coordinates against each target. That's
+    decided inside the zero-shot .sif, not here — so this keys strictly by the
+    image the boxes were actually drawn on. Add an opt-in parameter once the
+    app's 'default' semantics are confirmed.
+    """
+    exemplars = {}
+    for file_path, dets in per_file.items():
+        by_label = {}
+        for d in dets:
+            bbox = d.get("bbox")
+            if not bbox and d.get("polygon"):
+                bbox = _bbox_from_polygon(d["polygon"])
+            if not bbox:
+                continue
+            label = d.get("label") or "object"
+            group = by_label.setdefault(label, {"boxes": [], "box_labels": []})
+            x1, y1, x2, y2 = _xyxy(bbox)
+            group["boxes"].append([round(x1), round(y1), round(x2), round(y2)])
+            is_negative = str(d.get("flag") or "").strip().lower() == NEGATIVE_FLAG
+            group["box_labels"].append(0 if is_negative else 1)
+        if not by_label:
+            continue
+        key = relpath_within(file_path, image_dir)
+        # Two source keys can collapse onto one relative key (e.g. the same
+        # basename in different directories, with no image_dir to disambiguate)
+        # — merge rather than let the later one silently replace the earlier.
+        entries = exemplars.setdefault(key, [])
+        for label, group in by_label.items():
+            existing = next((e for e in entries if e["label"] == label), None)
+            if existing:
+                existing["boxes"].extend(group["boxes"])
+                existing["box_labels"].extend(group["box_labels"])
+            else:
+                entries.append({
+                    "label": label,
+                    "text": label,
+                    "boxes": group["boxes"],
+                    "box_labels": group["box_labels"],
+                })
+
+    out = {}
+    if text_prompts:
+        out["text_prompts"] = [t for t in text_prompts if t]
+    out["exemplars"] = exemplars
+    return out
 
 
 PARSERS = {"native": parse_native, "coco": parse_coco}

@@ -4,7 +4,7 @@ import { IconDeviceFloppy, IconSettings } from "@tabler/icons-react";
 import { notifications } from "@mantine/notifications";
 import type { StepPanelProps } from "./types";
 import { BACKEND_URL } from "../lib/api";
-import { TAPIS_SYSTEMS, DEFAULT_TAPIS_SYSTEM } from "../lib/tapis";
+import { TAPIS_SYSTEMS, DEFAULT_TAPIS_SYSTEM, resolveWiredLocation } from "../lib/tapis";
 import TapisDirectoryBrowser, { parentOf } from "../components/TapisDirectoryBrowser";
 // Type-only imports — erased at build, so the heavy opencv-js package is NOT
 // pulled into the SSR bundle. The runtime component is loaded lazily below.
@@ -33,13 +33,22 @@ export default function ImagePreprocessStudioPanel({ config, onChange, step, con
   const field = (key: string) => String(config[key] ?? step.config_schema[key]?.default ?? "");
   const setField = (key: string, value: string) => onChange({ ...config, [key]: value });
 
-  // System defaults to the shared default (expanse-tapis-static / env) until set.
-  const system = String(config.source_system ?? "") || DEFAULT_TAPIS_SYSTEM;
-
   // Directory wired into the step's image_dir input (from an upstream source
   // node's `path`), used as the browse root when the user hasn't picked one.
+  // resolveWiredLocation pulls the system OFF the wired value itself
+  // (CustomNode's resolveOutputPath returns a full tapis://system/path URI
+  // for a wired source-like node) rather than assuming it shares whatever
+  // `system` below defaults to.
   const imageInputPort = step.inputs.find((p) => p.data_type === "image_dir")?.port_name;
-  const wiredDir = imageInputPort ? connectedInputs[imageInputPort]?.config?.path : undefined;
+  const wiredLocation = imageInputPort ? resolveWiredLocation(connectedInputs[imageInputPort]) : null;
+  const wiredDir = wiredLocation?.path;
+
+  // System: explicit user pick > the wired directory's own system > shared
+  // default. Falling straight to DEFAULT_TAPIS_SYSTEM regardless of a wired
+  // input was the "browsing a wired directory silently uses the wrong
+  // system" bug — this `system` value is shared for browsing sourceDir below
+  // AND for where operations.json gets saved.
+  const system = String(config.source_system ?? "") || wiredLocation?.system || DEFAULT_TAPIS_SYSTEM;
 
   // Source dir precedence: explicitly browsed value > wired input > schema default.
   const sourceDir =
@@ -117,10 +126,18 @@ export default function ImagePreprocessStudioPanel({ config, onChange, step, con
     [dirSource, handlePipelineChange]
   );
 
+  // Manual save to a chosen location. NOT what feeds the job any more — the run
+  // writes operations.json itself from `config.operations`, so a pipeline built
+  // here reaches the job whether or not this button is ever pressed. Kept for
+  // exporting the pipeline somewhere of your own choosing.
   const [saving, setSaving] = useState(false);
   const savePipeline = async () => {
     if (!system || !pipelinePath) {
-      notifications.show({ color: "yellow", message: "Select a Tapis system and set a pipeline path first." });
+      notifications.show({
+        color: "yellow",
+        message:
+          "Set a pipeline path under 'Paths' to save a copy here. (Not required to run — the workflow writes operations.json itself.)",
+      });
       return;
     }
     setSaving(true);
@@ -192,9 +209,18 @@ export default function ImagePreprocessStudioPanel({ config, onChange, step, con
                   readOnly
                   variant="filled"
                 />
+                {/* Optional since the RUN writes operations.json itself, from
+                    the `operations` pipeline stored on this node's config (see
+                    _image_preprocess_studio_presubmit). Before that, leaving
+                    this blank meant the job staged a file nobody had ever
+                    written — and the placeholder went out unsubstituted, since
+                    a schema field with no default never reaches the render
+                    context. Kept as an override for putting the file somewhere
+                    specific, or pointing at one maintained outside this app. */}
                 <TextInput
                   label="Pipeline path (operations.json target)"
-                  placeholder="/path/on/tapis/operations.json"
+                  description="Optional — leave blank and the run writes it to this step's archive dir."
+                  placeholder="Auto (written to this step's archive dir)"
                   value={pipelinePath}
                   onChange={(e) => setField("pipeline_path", e.currentTarget.value)}
                 />

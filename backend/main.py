@@ -221,6 +221,12 @@ def sync_step_registry(db: Session):
         # (design-time-only steps like smart_labeler/geospatial_map do); otherwise
         # it's inferred from whether a tapis_job template is present.
         registry_entry.submits_job = data.get("submits_job", data.get("tapis_job") is not None)
+        # Compute requirement ({"gpu": bool}) — see StepTypeRegistry.resources.
+        registry_entry.resources = data.get("resources") or {}
+        # Palette visibility. Mirrored every sync (not just on insert) so
+        # flipping "hidden" in step.json takes effect on the next restart,
+        # in both directions.
+        registry_entry.hidden = bool(data.get("hidden", False))
         db.commit()
         print(f"  Synced registry: {step_key} (config_schema keys: {list(data.get('config_schema', {}).keys())})")
         
@@ -238,6 +244,7 @@ def sync_step_registry(db: Session):
                     "type": p["type"],
                     "required": p.get("required", True),
                     "output_path": p.get("output_path"),
+                    "file_glob": p.get("file_glob"),
                 }
 
         try:
@@ -259,6 +266,7 @@ def sync_step_registry(db: Session):
                         data_type=spec["type"], direction=direction,
                         is_required=spec["required"],
                         output_path=spec.get("output_path"),
+                        file_glob=spec.get("file_glob"),
                     ))
                 else:
                     if existing.data_type != spec["type"]:
@@ -267,6 +275,8 @@ def sync_step_registry(db: Session):
                         existing.is_required = spec["required"]
                     if existing.output_path != spec.get("output_path"):
                         existing.output_path = spec.get("output_path")
+                    if existing.file_glob != spec.get("file_glob"):
+                        existing.file_glob = spec.get("file_glob")
 
             db.commit()
         except Exception as e:
@@ -327,11 +337,18 @@ def on_startup():
             ))
             conn.execute(text(
                 "ALTER TABLE workflow_template "
-                "ADD COLUMN IF NOT EXISTS allocation_account VARCHAR;"
+                "ADD COLUMN IF NOT EXISTS allocation_account VARCHAR, "
+                "ADD COLUMN IF NOT EXISTS is_draft BOOLEAN DEFAULT FALSE;"
             ))
             conn.execute(text(
                 "ALTER TABLE step_type_registry "
-                "ADD COLUMN IF NOT EXISTS submits_job BOOLEAN DEFAULT TRUE;"
+                "ADD COLUMN IF NOT EXISTS submits_job BOOLEAN DEFAULT TRUE, "
+                "ADD COLUMN IF NOT EXISTS hidden BOOLEAN DEFAULT FALSE, "
+                "ADD COLUMN IF NOT EXISTS resources JSON DEFAULT '{}'::json;"
+            ))
+            conn.execute(text(
+                "ALTER TABLE step_type_port "
+                "ADD COLUMN IF NOT EXISTS file_glob VARCHAR;"
             ))
         print("Database schema created.")
         
@@ -418,6 +435,14 @@ def get_step_types(db: Session = Depends(get_db), user: AppUser = Depends(get_cu
             "icon": step.icon,
             "config_schema": step.config_schema,
             "submits_job": step.submits_job,
+            # Palette visibility only — hidden steps are still returned so
+            # saved templates using them keep resolving (see
+            # StepTypeRegistry.hidden).
+            "hidden": bool(step.hidden),
+            # Drives the Run Configuration modal's default exec target (a
+            # gpu:true step defaults to the run's GPU pair) — see
+            # RunConfigModal.tsx.
+            "resources": step.resources or {},
             "inputs": inputs,
             "outputs": outputs
         })
@@ -437,17 +462,26 @@ def get_port_data_types(db: Session = Depends(get_db), user: AppUser = Depends(g
 
 @app.get("/api/workflow-templates")
 def list_workflow_templates(db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)):
-    # Group by template_id to get the latest version of each template
+    # Group by template_id to get the latest version of each template.
+    #
+    # Drafts (versions created by "run without saving" — see
+    # WorkflowTemplate.is_draft) are excluded from BOTH sides: from the
+    # max-version subquery, so an ad-hoc run doesn't decide which version is
+    # "latest", and from the selected rows, so it can't be the one listed. Miss
+    # either half and every run-without-saving silently becomes the template
+    # everyone opens next.
+    not_draft = WorkflowTemplate.is_draft.isnot(True)
+
     subquery = db.query(
         WorkflowTemplate.template_id,
         func.max(WorkflowTemplate.version).label("max_version")
-    ).group_by(WorkflowTemplate.template_id).subquery()
+    ).filter(not_draft).group_by(WorkflowTemplate.template_id).subquery()
 
     templates = db.query(WorkflowTemplate).join(
         subquery,
         (WorkflowTemplate.template_id == subquery.c.template_id) &
         (WorkflowTemplate.version == subquery.c.max_version)
-    ).all()
+    ).filter(not_draft).all()
     
     return [
         {
@@ -467,6 +501,9 @@ def get_workflow_template_history(template_id: int, db: Session = Depends(get_db
     if not versions:
         raise HTTPException(status_code=404, detail="Template history not found")
         
+    # Drafts ARE listed here, flagged — unlike the template list, which hides
+    # them. A draft is what a "run without saving" actually executed, so keeping
+    # it visible in history is what makes that run traceable back to a graph.
     return [
         {
             "template_version_id": t.template_version_id,
@@ -475,6 +512,7 @@ def get_workflow_template_history(template_id: int, db: Session = Depends(get_db
             "name": t.name,
             "description": t.description,
             "category": t.category,
+            "is_draft": bool(t.is_draft),
             "created_at": t.created_at
         } for t in versions
     ]
@@ -495,8 +533,20 @@ def get_workflow_template(template_version_id: int, db: Session = Depends(get_db
     for e in edges:
         source_port = port_by_id.get(e.source_port_id)
         target_port = port_by_id.get(e.target_port_id)
+        # The id MUST include the ports, not just the node pair. Two nodes can be
+        # joined by several edges at once — smart_labeler -> zero_shot_annotation
+        # wires 'images'->'images' AND 'annotations'->'annotation_file', which is
+        # exactly what smart_labeler's passthrough 'images' output exists for.
+        # React Flow keys its edge store by id, so a node-pair-only id made every
+        # such edge collide: on reload only ONE of them survived, silently
+        # dropping the others from the canvas (and from CustomNode's
+        # connectedInputs, so the downstream panel showed no wired value). The DB
+        # rows were always correct — only this response collapsed them, which is
+        # why the wiring worked until the template was saved and reopened.
+        # Port IDs (not names) keep it unique even for a port pair that shares a
+        # name across directions.
         edge_list.append({
-            "id": f"e_{e.source_node_id}_{e.target_node_id}",
+            "id": f"e_{e.source_node_id}_{e.source_port_id}_{e.target_node_id}_{e.target_port_id}",
             "source": str(e.source_node_id),
             "target": str(e.target_node_id),
             "sourceHandle": source_port.port_name if source_port else None,
@@ -626,7 +676,24 @@ def create_workflow_template(template: WorkflowTemplateCreate, db: Session = Dep
     return {"message": "Template created successfully", "template_version_id": new_template.template_version_id}
 
 @app.post("/api/workflow-templates/{template_id}/versions")
-def create_template_version(template_id: int, template: WorkflowTemplateCreate, db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)):
+def create_template_version(
+    template_id: int,
+    template: WorkflowTemplateCreate,
+    draft: bool = False,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
+    """Persist the canvas as a new version of `template_id`.
+
+    draft=true marks it WorkflowTemplate.is_draft — the "run these changes
+    without saving a version" path. The rows are identical in every other
+    respect (the engine needs real wf_node/wf_edge rows to run anything at all;
+    see the is_draft docstring), they're just excluded from the template list so
+    an ad-hoc run doesn't become the template everyone else opens.
+
+    Validation applies to drafts too: a workflow with unsatisfied required
+    inputs can't run, so there's nothing to be gained by letting it through.
+    """
     _validate_no_hanging_inputs(template, db)
 
     max_version = db.query(func.max(WorkflowTemplate.version)).filter(WorkflowTemplate.template_id == template_id).scalar() or 0
@@ -641,7 +708,8 @@ def create_template_version(template_id: int, template: WorkflowTemplateCreate, 
         description=template.description,
         category=template.category,
         allocation_account=template.allocation_account,
-        owner_id=owner_id
+        owner_id=owner_id,
+        is_draft=draft,
     )
     db.add(new_template)
     db.commit()
@@ -686,7 +754,15 @@ def create_template_version(template_id: int, template: WorkflowTemplateCreate, 
             db.add(wf_edge)
     
     db.commit()
-    return {"message": f"Version {next_version} saved successfully", "template_version_id": new_template.template_version_id}
+    return {
+        "message": (
+            f"Unsaved changes captured for this run (not added to version history)"
+            if draft else f"Version {next_version} saved successfully"
+        ),
+        "template_version_id": new_template.template_version_id,
+        "version": next_version,
+        "is_draft": draft,
+    }
 
 @app.get("/api/pipeline-runs")
 def list_pipeline_runs(db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)):
@@ -873,6 +949,13 @@ class RunOptions(BaseModel):
     # the base scratch/project path for OSC execSystem*Dir fields.
     exec_system: Optional[str] = None
     exec_queue: Optional[str] = None
+    # GPU target for this run. A step whose step.json declares
+    # "resources": {"gpu": true} (zero_shot_annotation, training, …) routes
+    # here instead of the CPU pair above, so one run can span both without any
+    # step hardcoding a site — see engine.transactions.resolve_node_exec_target.
+    # Falls back to the CPU pair when unset, matching pre-split behaviour.
+    gpu_exec_system: Optional[str] = None
+    gpu_exec_queue: Optional[str] = None
     work_dir: Optional[str] = None
     archive_system: Optional[str] = None
     # Base directory step outputs archive under (run_id/node_id is still
@@ -909,8 +992,12 @@ def execute_workflow(template_version_id: int, options: Optional[RunOptions] = N
     dag_config.setdefault("slurm_account", (template and template.allocation_account) or "uot260")
 
     # Record the launching user so the run is owned by them and the engine can
-    # resolve their Tapis token (get_token_for_run) when submitting jobs.
+    # resolve their Tapis token (get_token_for_run) when submitting jobs. The
+    # username is also needed to derive expanse-tapis's per-user scratch path
+    # when a run spans systems and can't inherit one work_dir (see
+    # engine.transactions._default_work_dir).
     dag_config["owner_id"] = user.user_id
+    dag_config.setdefault("tapis_username", user.username)
 
     # Pick the DBOS workflow id ourselves (instead of letting DBOS generate one)
     # so we can create the pipeline_run row referencing it before the workflow

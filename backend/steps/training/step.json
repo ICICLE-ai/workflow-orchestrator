@@ -1,5 +1,6 @@
 {
   "step_type_key": "training",
+  "resources": { "gpu": true },
   "display_name": "Model Training",
   "description": "Trains YOLO or HuggingFace models for classification, detection and segmentation.",
   "category": "Training",

@@ -1,21 +1,31 @@
 import { useState } from "react";
-import { Stack, Group, Text, Title, Select, Button, ScrollArea, Divider, Alert, TextInput, Badge } from "@mantine/core";
+import { Stack, Group, Text, Title, Select, Button, ScrollArea, Divider, Alert, TextInput, Badge, TagsInput } from "@mantine/core";
 import { IconArrowRight, IconAlertTriangle, IconCircleCheck } from "@tabler/icons-react";
 import type { StepPanelProps } from "./types";
 import { apiFetch } from "../lib/api";
 import ParamSection from "../components/ParamSection";
 import TapisPathField from "../components/TapisPathField";
+import { resolveWiredLocation } from "../lib/tapis";
 
 // Settings panel for the 'annotation_format_adapter' step
 // (backend/steps/annotation_format_adapter/step.json) — converts annotations
 // between native (smart_labeler JSON), COCO, YOLO, and GeoPackage.
 //
-// Design-time only: there's no Tapis job to configure a run against, just a
-// "Convert now" action that calls POST /api/annotation-adapter/convert (see
-// annotation_adapter.py) directly, the same way smart_labeler's Save button
-// writes straight to Tapis instead of going through a job. Each wired input
-// port only resolves here when it comes from a directly-wired DESIGN-TIME
-// node (its own system/path config) — see StepPanelProps.ConnectedInput.
+// There's no Tapis job to configure a run against: the conversion runs inline
+// in the backend, in two places that share the same code path —
+//   * during a RUN, in-process when the node's turn comes in the DAG
+//     (backend/engine/inline_steps.py). This is the one that matters for a
+//     source an upstream step produces, since that file doesn't exist yet at
+//     design time.
+//   * from the "Convert now" button here, via POST
+//     /api/annotation-adapter/convert (see annotation_adapter.py) — an
+//     immediate, design-time convenience for a source that already exists,
+//     the same way smart_labeler's Save button writes straight to Tapis.
+// So the button is optional, not a prerequisite for running the workflow.
+// Each wired input port only resolves HERE when it comes from a directly-wired
+// DESIGN-TIME node (its own system/path config) — see
+// StepPanelProps.ConnectedInput — which is why "Convert now" can be disabled
+// for a wiring the run itself handles fine.
 //
 // Registered in registry.ts under the key "annotation_format_adapter".
 export default function AnnotationFormatAdapterPanel({ config, onChange, step, connectedInputs }: StepPanelProps) {
@@ -28,9 +38,25 @@ export default function AnnotationFormatAdapterPanel({ config, onChange, step, c
   const destSystem = String(config.system ?? "");
   const destPath = String(config.path ?? "");
 
+  // 'sam3_exemplars' writes zero_shot_annotation's PROMPT file, not an
+  // annotation file — it's a destination only (no parser exists), so it's
+  // filtered out of the "From" list even though step.json lists it under
+  // to_format. See annotation_adapter.py's FROM_FORMATS/TO_FORMATS.
+  const isExemplars = toFormat === "sam3_exemplars";
+  const textPrompts = String(field("text_prompts") ?? "");
+  const textPromptList = textPrompts.split(",").map((t) => t.trim()).filter(Boolean);
+
+  // resolveWiredLocation pulls the system OFF the wired value itself
+  // (CustomNode's resolveOutputPath returns a full tapis://system/path URI
+  // for a wired source-like node), rather than assuming a bare `.config.path`
+  // paired with some unrelated field — the exact "directory won't open,
+  // defaulted to the wrong system" bug class this step, and every other
+  // panel reading connectedInputs for a browsable/fetchable location, needs
+  // to avoid.
   const wired = (portName: string) => {
     const c = connectedInputs[portName];
-    return { system: String(c?.config?.system ?? ""), path: String(c?.config?.path ?? ""), wired: !!c };
+    const loc = resolveWiredLocation(c);
+    return { system: loc?.system ?? "", path: loc?.path ?? "", wired: !!c };
   };
   const annotationsIn = wired("annotations");
   const annotationsDirIn = wired("annotations_dir");
@@ -72,6 +98,7 @@ export default function AnnotationFormatAdapterPanel({ config, onChange, step, c
       if (fromFormat === "yolo") body.annotations_dir = { system: annotationsDirIn.system, path: annotationsDirIn.path };
       if (fromFormat === "geopackage") body.annotations_gpkg = { system: annotationsGpkgIn.system, path: annotationsGpkgIn.path };
       if (imagesIn.path) body.images = { system: imagesIn.system, path: imagesIn.path };
+      if (isExemplars) body.text_prompts = textPromptList;
 
       const res = await apiFetch("/api/annotation-adapter/convert", {
         method: "POST",
@@ -98,8 +125,11 @@ export default function AnnotationFormatAdapterPanel({ config, onChange, step, c
           <Title order={3}>🔄 Annotation Format Adapter</Title>
           <Text size="sm" c="dimmed" mt={4}>
             Converts annotations between native (smart_labeler JSON), COCO, YOLO, and GeoPackage. Runs inline —
-            no Tapis job, just a direct conversion + upload. GeoPackage output here is pixel-space, not
-            geo-referenced (see the 'geospatial' step for real map-projected output).
+            no Tapis job, just a direct conversion + upload. The workflow run performs the conversion itself when
+            this step's turn comes, so a source produced by an upstream step is converted with that run's real
+            data; "Convert now" below is an optional design-time shortcut for a source that already exists.
+            GeoPackage output here is pixel-space, not geo-referenced (see the 'geospatial' step for real
+            map-projected output).
           </Text>
         </div>
 
@@ -110,7 +140,9 @@ export default function AnnotationFormatAdapterPanel({ config, onChange, step, c
           <Group grow align="center">
             <Select
               label="From"
-              data={schema.from_format?.options || ["native", "coco", "yolo", "geopackage"]}
+              data={(schema.from_format?.options || ["native", "coco", "yolo", "geopackage"]).filter(
+                (f: string) => f !== "sam3_exemplars"
+              )}
               value={fromFormat}
               onChange={(v) => set("from_format", v ?? "native")}
               allowDeselect={false}
@@ -118,13 +150,41 @@ export default function AnnotationFormatAdapterPanel({ config, onChange, step, c
             <IconArrowRight size={18} style={{ marginTop: 22, flexShrink: 0 }} />
             <Select
               label="To"
-              data={schema.to_format?.options || ["native", "coco", "yolo", "geopackage"]}
+              data={schema.to_format?.options || ["native", "coco", "yolo", "geopackage", "sam3_exemplars"]}
               value={toFormat}
               onChange={(v) => set("to_format", v ?? "coco")}
               allowDeselect={false}
             />
           </Group>
+          {isExemplars && (
+            <Text size="xs" c="dimmed" mt="xs">
+              Writes the zero-shot step's exemplar prompt file: boxes grouped by label per image, as absolute
+              pixel <code>[x1, y1, x2, y2]</code> corners. Wire this step's <b>converted</b> output into
+              zero_shot_annotation's <b>annotation_file</b> input. A box whose <b>flag</b> is set
+              to <code>negative</code> in the labeler becomes a negative exemplar (<code>box_labels</code> 0).
+            </Text>
+          )}
         </ParamSection>
+
+        {isExemplars && (
+          <ParamSection
+            title="Text prompts"
+            explainer="Exemplar boxes only apply to the images they were actually drawn on. These free-text concepts are written to the prompt file's top-level 'text_prompts' and apply to every image — without them, images you never labeled have nothing to detect with."
+          >
+            <TagsInput
+              label="Text prompts"
+              description={schema.text_prompts?.description}
+              placeholder="Type a concept and press Enter (e.g. plant)"
+              value={textPromptList}
+              onChange={(tags) => set("text_prompts", tags.map((t) => t.trim()).filter(Boolean).join(","))}
+            />
+            {textPromptList.length === 0 && (
+              <Badge mt="xs" size="xs" variant="light" color="yellow">
+                No text prompts — only the labeled images will have anything to detect.
+              </Badge>
+            )}
+          </ParamSection>
+        )}
 
         <ParamSection
           title="Inputs"
@@ -140,7 +200,15 @@ export default function AnnotationFormatAdapterPanel({ config, onChange, step, c
             {fromFormat === "geopackage" && (
               <InputStatus label="annotations_gpkg (GeoPackage)" wiredPath={annotationsGpkgIn.path} required />
             )}
-            <InputStatus label="images" wiredPath={imagesIn.path} required={needsImages} />
+            <InputStatus
+              label="images"
+              wiredPath={imagesIn.path}
+              required={needsImages}
+              // Optional for sam3_exemplars, but it decides whether an
+              // exemplar key keeps its subdirectory ("batch_a/img.jpg") or
+              // falls back to a bare filename — both of which the job accepts.
+              optionalNote={isExemplars ? "improves keys" : undefined}
+            />
           </Stack>
         </ParamSection>
 
@@ -166,6 +234,16 @@ export default function AnnotationFormatAdapterPanel({ config, onChange, step, c
           <Button onClick={convert} loading={converting} disabled={!sourceReady || !imagesReady || !destSystem || !destPath}>
             Convert now
           </Button>
+          {/* A source coming from a JOB step has no design-time path to fetch,
+              so this button stays disabled — that's expected, not a misconfigured
+              node. Say so, otherwise a disabled button reads as "this step can't
+              run" when the run will convert it just fine. */}
+          {(!sourceReady || !imagesReady) && !!destSystem && !!destPath && !result && (
+            <Text size="xs" c="dimmed" flex={1}>
+              The inputs aren't available at design time (they're produced by an upstream step at run time), so
+              there's nothing to convert right now. The workflow run will do the conversion itself.
+            </Text>
+          )}
           {result && (
             <Alert
               flex={1}
@@ -187,7 +265,19 @@ export default function AnnotationFormatAdapterPanel({ config, onChange, step, c
 // panels (see StepSettingsModal, which honors this static flag).
 (AnnotationFormatAdapterPanel as any).fullScreen = true;
 
-function InputStatus({ label, wiredPath, required }: { label: string; wiredPath: string; required: boolean }) {
+function InputStatus({
+  label,
+  wiredPath,
+  required,
+  optionalNote,
+}: {
+  label: string;
+  wiredPath: string;
+  required: boolean;
+  // Shown instead of "not needed" when the port is genuinely optional but
+  // still does something useful for the current format pair.
+  optionalNote?: string;
+}) {
   return (
     <Group gap="xs" wrap="nowrap">
       <TextInput
@@ -198,8 +288,8 @@ function InputStatus({ label, wiredPath, required }: { label: string; wiredPath:
         variant="filled"
         style={{ flex: 1 }}
       />
-      <Badge mt={22} size="xs" variant="light" color={wiredPath ? "green" : required ? "red" : "gray"}>
-        {wiredPath ? "connected" : required ? "required" : "not needed"}
+      <Badge mt={22} size="xs" variant="light" color={wiredPath ? "green" : required ? "red" : optionalNote ? "blue" : "gray"}>
+        {wiredPath ? "connected" : required ? "required" : optionalNote || "not needed"}
       </Badge>
     </Group>
   );

@@ -1,5 +1,6 @@
 {
    "step_type_key": "few_shot_annotation",
+   "resources": { "gpu": true },
    "display_name": "🎯 Few-Shot Annotation",
    "description": "Bootstraps a few-shot object annotator from an initial annotation file and ground-truth examples, then proposes and embeds regions across the target dataset. Custom UI — Tapis app/job wiring to follow.",
    "category": "Inference",
@@ -32,12 +33,12 @@
       },
       "proposer_model": {
          "type": "string",
-         "description": "Patra model card used as the region PROPOSER — generates candidate regions/boxes before embedding & similarity matching against the few-shot examples.",
+         "description": "Model NAME used as the region PROPOSER — generates candidate regions/boxes before embedding & similarity matching against the few-shot examples. Substituted into '--proposers', so it must be a name the few_shot_detection app recognizes (owlv2, sam3, dinov3, bioclip), NOT a Patra card UUID. The panel picks a Patra card and maps its name to one of these; see MODEL_NAME_RULES in frontend/app/pages/fewShotAnnotation.tsx.",
          "default": ""
       },
       "embedder_model": {
          "type": "string",
-         "description": "Patra model card used as the EMBEDDER — produces feature embeddings for proposed regions, compared against the few-shot examples' embeddings to assign labels.",
+         "description": "Model NAME used as the EMBEDDER — produces feature embeddings for proposed regions, compared against the few-shot examples' embeddings to assign labels. Substituted into '--embedder', so it must be a name the few_shot_detection app recognizes (owlv2, sam3, dinov3, bioclip), NOT a Patra card UUID. The panel picks a Patra card and maps its name to one of these; see MODEL_NAME_RULES in frontend/app/pages/fewShotAnnotation.tsx.",
          "default": ""
       },
       "use_sahi": {

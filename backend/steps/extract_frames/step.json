@@ -1,5 +1,6 @@
 {
   "step_type_key": "extract_frames",
+  "resources": { "gpu": true },
   "display_name": "Extract Frames",
   "description": "Extracts image frames from a video stream/file for downstream processing.",
   "category": "Data Collection",
@@ -28,8 +29,8 @@
     "appId": "extract-frames-from-stream",
     "appVersion": "1.1.0",
     "description": "Extract frames from an ARA-Harvest video stream",
-    "execSystemId": "expanse-tapis",
-    "execSystemLogicalQueue": "tapisGPUshared",
+    "execSystemId": "${exec_system}",
+    "execSystemLogicalQueue": "${exec_queue}",
     "archiveSystemId": "${archive_system}",
     "archiveSystemDir": "${archive_dir}",
     "nodeCount": 1,
