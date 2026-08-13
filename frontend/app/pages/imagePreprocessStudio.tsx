@@ -126,10 +126,18 @@ export default function ImagePreprocessStudioPanel({ config, onChange, step, con
     [dirSource, handlePipelineChange]
   );
 
+  // Manual save to a chosen location. NOT what feeds the job any more — the run
+  // writes operations.json itself from `config.operations`, so a pipeline built
+  // here reaches the job whether or not this button is ever pressed. Kept for
+  // exporting the pipeline somewhere of your own choosing.
   const [saving, setSaving] = useState(false);
   const savePipeline = async () => {
     if (!system || !pipelinePath) {
-      notifications.show({ color: "yellow", message: "Select a Tapis system and set a pipeline path first." });
+      notifications.show({
+        color: "yellow",
+        message:
+          "Set a pipeline path under 'Paths' to save a copy here. (Not required to run — the workflow writes operations.json itself.)",
+      });
       return;
     }
     setSaving(true);
@@ -201,9 +209,18 @@ export default function ImagePreprocessStudioPanel({ config, onChange, step, con
                   readOnly
                   variant="filled"
                 />
+                {/* Optional since the RUN writes operations.json itself, from
+                    the `operations` pipeline stored on this node's config (see
+                    _image_preprocess_studio_presubmit). Before that, leaving
+                    this blank meant the job staged a file nobody had ever
+                    written — and the placeholder went out unsubstituted, since
+                    a schema field with no default never reaches the render
+                    context. Kept as an override for putting the file somewhere
+                    specific, or pointing at one maintained outside this app. */}
                 <TextInput
                   label="Pipeline path (operations.json target)"
-                  placeholder="/path/on/tapis/operations.json"
+                  description="Optional — leave blank and the run writes it to this step's archive dir."
+                  placeholder="Auto (written to this step's archive dir)"
                   value={pipelinePath}
                   onChange={(e) => setField("pipeline_path", e.currentTarget.value)}
                 />

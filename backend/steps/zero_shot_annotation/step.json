@@ -3,7 +3,7 @@
   "resources": { "gpu": true },
   "display_name": "✨ Zero-Shot Annotation",
   "description": "Annotates every image in a directory with a zero-shot open-vocabulary model (SAM3 by default) — no training, no class supports. Detects with free-text concepts, visual exemplar boxes, or both, optionally tiled (SAHI) for large imagery with small objects, via the zero-shot-annotation Tapis app.",
-  "category": "Data Creation",
+  "category": "Inference",
   "icon": "sparkles",
   "tapis_app_id": "zero-shot-annotation",
   "inputs": [

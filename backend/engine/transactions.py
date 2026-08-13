@@ -338,28 +338,44 @@ def get_downstream_sink_path(run_id: int, node_key: str) -> str:
 # mirrors frontend/app/lib/tapis.ts's OSC_SCRATCH_SYSTEMS grouping.
 _OSC_EXEC_SYSTEMS = {"pitzer-tapis", "cardinal-tapis", "ascend-tapis"}
 
-
-def _exec_system_dirs(exec_system: str, slurm_account: str) -> tuple:
+def _exec_system_dirs(exec_system: str, slurm_account: str, username: str = "") -> tuple:
     """Return (execSystemExecDir, execSystemInputDir, execSystemOutputDir) for a
-    Tapis job targeting `exec_system`, or (None, None, None) when that system
-    doesn't use these fields (Tapis applies the app's own default layout
-    instead) — job_spec.render() drops a field entirely when its context value
-    is falsy, rather than rendering a broken/empty path.
+    Tapis job targeting `exec_system`, or (None, None, None) when we have no
+    site-appropriate value — job_spec.render() drops a field entirely when its
+    context value is falsy, rather than rendering a broken/empty path.
+
+    OMITTING THESE IS NOT NEUTRAL. Tapis fills any field the submitted job
+    leaves out from the APP definition's own jobAttributes, and several of the
+    apps here were registered against OSC and carry those paths baked in — e.g.
+    'opencv-preprocess' defaults to execSystemExecDir
+    '/fs/scratch/PAS2699/harvest_jobs/${JobUUID}' (a hardcoded allocation, not
+    the run's own). Leave the field out on an Expanse run and the job silently
+    inherits an OSC scratch path that doesn't exist there. So every system we
+    recognize sends explicit values; only a system we know nothing about falls
+    through, where the app's default is genuinely the best available guess.
 
     ${JobUUID} is a Tapis-side macro (filled in by Tapis at submission, not by
     us) — left as literal text here since our own ${...} substitution only
     replaces keys actually present in the context dict, and "JobUUID" never is.
     """
     if exec_system in _OSC_EXEC_SYSTEMS:
-        return (
-            f"/fs/scratch/{slurm_account}/harvest_jobs/${{JobUUID}}",
-            f"/fs/scratch/{slurm_account}/harvest_jobs/${{JobUUID}}",
-            f"/fs/scratch/{slurm_account}/harvest_jobs/${{JobUUID}}/output",
-        )
+        base = f"/fs/scratch/{slurm_account}/harvest_jobs/${{JobUUID}}"
+        return (base, base, f"{base}/output")
     if exec_system == "expanse-tapis-static":
-        return ("/jobs/${JobUUID}", "/jobs/${JobUUID}", "/jobs/${JobUUID}")
-    # expanse-tapis (and anything unrecognized) — omit, let the Tapis app's own
-    # default exec/input/output dirs apply.
+        base = "/jobs/${JobUUID}"
+        return (base, base, base)
+    if exec_system == "expanse-tapis":
+        # Per-USER scratch, not per-allocation — see _default_work_dir. The
+        # username check is on `username` itself, not on the returned path:
+        # _default_work_dir interpolates it unconditionally, so an empty one
+        # yields a truthy-but-broken '/expanse/lustre/scratch//temp_project/...'
+        # rather than "". Better to fall through to the app's default than to
+        # send a path with a hole in it.
+        work = _default_work_dir(exec_system, slurm_account, username).rstrip("/") if username else ""
+        if not work:
+            return (None, None, None)
+        base = f"{work}/${{JobUUID}}"
+        return (base, base, base)
     return (None, None, None)
 
 
@@ -522,7 +538,9 @@ def get_run_archive_context(run_id: int, node_key: str = None) -> dict:
     else:
         archive_dir = workspace
 
-    exec_dir, input_dir, output_dir = _exec_system_dirs(exec_system, slurm_account)
+    # username matters for expanse-tapis, whose scratch is per-user rather than
+    # per-allocation (unlike OSC's, which is keyed by slurm_account).
+    exec_dir, input_dir, output_dir = _exec_system_dirs(exec_system, slurm_account, username)
 
     return {
         "run_id": run_id,

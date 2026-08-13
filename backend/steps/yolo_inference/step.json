@@ -1,5 +1,6 @@
 {
   "step_type_key": "yolo_inference",
+  "hidden": true,
   "resources": { "gpu": true },
   "display_name": "YOLO Inference",
   "description": "Runs an Ultralytics YOLO model on an image directory; writes predictions + annotated images.",

@@ -18,11 +18,13 @@
       },
       "pipeline_path": {
          "type": "string",
-         "description": "Target height for resizing images."
+         "description": "Optional Tapis path for the operations.json this step stages. Leave it blank and the run writes the pipeline built in the panel to this step's own archive dir automatically; set it only to keep the file somewhere specific, or to point at an operations.json maintained outside this app. Either way the run rewrites it to a full tapis://system/path URI before submitting — see engine/inline_steps.py. The empty default is load-bearing: get_config_schema_defaults skips any field with no 'default' at all, so this key never entered the render context and the job spec went out carrying a literal '${pipeline_path}'.",
+         "default": ""
       },
       "output_path": {
          "type": "image_dir",
-         "description": "Target height for resizing images."
+         "description": "Directory the preprocessed images are archived to — this step's archiveSystemDir as well as its output port. Being a port, it resolves to a full tapis://system/path URI at run time, which archiveSystemDir must NOT be (Tapis names the system separately in archiveSystemId, and mangles a URI into '/tapis:/<system>/<dir>'); job_spec._normalize_archive_dir strips it back to a plain path and moves the system onto archiveSystemId. Leaving this unset is also handled there — it falls back to the run's own archive_dir rather than archiving into a literal '${output_path}'.",
+         "default": ""
       }
    },
    "tapis_job": {
@@ -45,24 +47,21 @@
             { "name": "output-dir", "arg": "--output output" },
             { "name": "pipeline", "arg": "--pipeline operations.json" }
          ],
-         "envVariables": [
-            {
-               "key": "IMAGE_EXTENSIONS",
-               "value": ".jpg,.jpeg,.png,.bmp,.tiff,.tif"
-            }
-         ],
+         "envVariables": [],
          "schedulerOptions": [{ "name": "slurm account", "arg": "-A ${slurm_account}" }]
       },
       "fileInputs": [
          {
             "name": "input-images",
+            "description": "The 'tapis://${exec_system}/' prefix covers only the UNWIRED case, where source_dir is still the bare path the panel stores. source_dir is ALSO a wired input port, and at run time _resolve_inputs replaces that bare path with the upstream output's full tapis://system/path URI — prefixing it again produced 'tapis://sys/tapis://sys/...', which Tapis rejects at the transfer stage. job_spec._normalize_file_inputs now collapses that doubled form back to the inner URI, so both cases render correctly; don't 'fix' this by dropping the prefix, which would break the unwired case instead.",
             "sourceUrl": "tapis://${exec_system}/${source_dir}",
             "targetPath": "input",
             "autoMountLocal": true
          },
          {
             "name": "pipeline",
-            "sourceUrl": "tapis://${exec_system}/${pipeline_path}",
+            "description": "No 'tapis://${exec_system}/' prefix here, unlike input-images: pipeline_path is always rewritten to a FULL URI by engine.inline_steps._image_preprocess_studio_presubmit, which writes the node's `operations` pipeline out as operations.json before the job is submitted and points this at what it wrote. That file lives on the ARCHIVE system, which needn't be the exec system this node runs on, so the system has to travel with the path.",
+            "sourceUrl": "${pipeline_path}",
             "targetPath": "operations.json",
             "autoMountLocal": true
          }

@@ -26,21 +26,63 @@ type AnnotationDetailsProps = ComponentProps<typeof AnnotationDetailsComponent>;
 // toEngineShape) recompute every render even when nothing changed.
 const EMPTY_ANNOTATIONS: Anno[] = [];
 
+// A usable coordinate is a FINITE number: `undefined`/`null` (a half-written
+// annotation) and NaN (what Math.min over a malformed point list produces) both
+// have to be treated as missing, since every consumer downstream — the canvas
+// engines and AnnotationDetails' `humanCoords`/`humanInfo` describers — calls
+// .toFixed() on these straight away.
+const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+const num = (v: unknown): number => (isNum(v) ? v : 0);
+
+// Both shapes an outline can arrive in: the {x, y} objects this panel and
+// build_native write, and [x, y] pairs (GeoPackage/COCO-derived outlines, or a
+// hand-written file). Anything else in the list is dropped rather than passed
+// through as {x: undefined}.
+function toPoints(raw: unknown): { x: number; y: number }[] {
+  if (!Array.isArray(raw)) return [];
+  const out: { x: number; y: number }[] = [];
+  for (const p of raw) {
+    if (Array.isArray(p)) out.push({ x: num(p[0]), y: num(p[1]) });
+    else if (p && typeof p === "object") out.push({ x: num((p as any).x), y: num((p as any).y) });
+  }
+  return out;
+}
+
+const hasBox = (a: Anno) => isNum(a.x) && isNum(a.y) && isNum(a.width) && isNum(a.height);
+const hasPoints = (a: Anno) =>
+  Array.isArray(a.points) && a.points.length > 0 && a.points.every((p: any) => p && isNum(p.x) && isNum(p.y));
+
 // Reshape one annotation to whatever `mode` ("detection" | "segmentation")
 // needs, synthesizing the missing half from whichever half IS present rather
 // than leaving it undefined (see the crash this works around, at its call
 // site below). A round-trip through the "wrong" mode's synthesized shape is
 // harmless — editing there and switching back re-derives the other half from
 // whatever was actually edited.
+//
+// The checks here are ALL-OR-NOTHING on purpose. Testing only x+width (and
+// assuming y/height came along) let a partially-shaped annotation return
+// unchanged and reach AnnotationDetails' detection describer, which does
+// `b.y.toFixed(0)` with no guard of its own — "Cannot read properties of
+// undefined (reading 'toFixed')" the moment the Masks->Boxes toggle flips
+// variant to "detection". Same reasoning for points: one malformed entry makes
+// Math.min return NaN for the whole outline, so the list is re-derived rather
+// than trusted piecemeal. An already-valid annotation is returned by identity,
+// which keeps the canvas engines from re-diffing every annotation each render.
 function toEngineShape(a: Anno, mode: "detection" | "segmentation"): Anno {
   if (mode === "segmentation") {
-    if (Array.isArray(a.points)) return a;
-    const x = a.x ?? 0, y = a.y ?? 0, w = a.width ?? 0, h = a.height ?? 0;
+    if (hasPoints(a)) return a;
+    const pts = toPoints(a.points);
+    if (pts.length > 0) return { ...a, points: pts };
+    // No usable outline at all — fall back to the box's four corners, zeroing
+    // whichever box fields are themselves missing.
+    const x = num(a.x), y = num(a.y), w = num(a.width), h = num(a.height);
     return { ...a, points: [{ x, y }, { x: x + w, y }, { x: x + w, y: y + h }, { x, y: y + h }] };
   }
-  if (typeof a.x === "number" && typeof a.width === "number") return a;
-  const pts: { x: number; y: number }[] = Array.isArray(a.points) ? a.points : [];
-  if (pts.length === 0) return { ...a, x: 0, y: 0, width: 0, height: 0 };
+  if (hasBox(a)) return a;
+  const pts = hasPoints(a) ? (a.points as { x: number; y: number }[]) : toPoints(a.points);
+  if (pts.length === 0) {
+    return { ...a, x: num(a.x), y: num(a.y), width: num(a.width), height: num(a.height) };
+  }
   const xs = pts.map((p) => p.x);
   const ys = pts.map((p) => p.y);
   const minX = Math.min(...xs), minY = Math.min(...ys), maxX = Math.max(...xs), maxY = Math.max(...ys);

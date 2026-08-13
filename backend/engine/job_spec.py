@@ -70,6 +70,184 @@ _EXEC_DIR_FIELDS = {
 }
 
 
+_URI_SCHEME = re.compile(r"[a-zA-Z][a-zA-Z0-9+.\-]*://")
+
+
+def _collapse_nested_uri(url: str) -> str:
+    """Reduce a sourceUrl that ended up with a scheme inside a scheme to just
+    the inner URI:
+
+      tapis://expanse-tapis-static/tapis://expanse-tapis-static/users/x/images
+      -> tapis://expanse-tapis-static/users/x/images
+
+    This happens whenever a step.json writes "tapis://${system}/${port}" for a
+    value that is ALREADY a full URI. Most config fields that name a location
+    are also wired input PORTS, and _resolve_inputs overwrites the config value
+    with the upstream output's full tapis://system/path URI at run time — so a
+    template that looks right against its own bare-path default silently
+    doubles the scheme the moment someone connects an edge to it.
+
+    The INNER URI wins, not the outer prefix, and that's the substantive part
+    rather than just cosmetic tidying: the inner one carries the system the data
+    actually lives on, which needn't be the system the job executes on (archive
+    stays run-level while exec target varies per node — see
+    get_run_archive_context). Truncating to the last scheme keeps the data's own
+    system; stripping the inner one instead would silently retarget the transfer
+    at the exec system and 404 there.
+
+    Left alone: a string with a single scheme (the normal case), and a bare path.
+    """
+    matches = list(_URI_SCHEME.finditer(url))
+    if len(matches) < 2:
+        return url
+    return url[matches[-1].start():]
+
+
+def _tidy_source_url(url: str) -> str:
+    """_collapse_nested_uri, plus squashing repeated slashes in the path of a
+    tapis:// URI.
+
+    The same "tapis://${system}/${path}" templates that cause the nested-URI
+    case also produce 'tapis://sys//abs/path' whenever the configured path is
+    absolute (which it usually is — the panels' path fields and Tapis browsers
+    all hand back a leading slash), since the template supplies a separator of
+    its own. Restricted to tapis:// so an https:// postit redeem URL, where a
+    path segment is opaque to us, is never rewritten.
+    """
+    url = _collapse_nested_uri(url)
+    if not url.startswith("tapis://"):
+        return url
+    scheme, rest = url[: len("tapis://")], url[len("tapis://") :]
+    return scheme + re.sub(r"/{2,}", "/", rest)
+
+
+def _warn_on_comma_env_values(rendered: dict) -> None:
+    """Flag env-var values containing a comma, which a container runtime that
+    takes its environment as ONE delimited string cannot express.
+
+    Tapis joins every entry of parameterSet.envVariables into a single
+    comma-separated `--env k=v,k=v,...` argument. Apptainer/Singularity then
+    splits that back apart on commas, so a value with a comma of its own breaks
+    the whole flag — every fragment after the first has no '=' and the job dies
+    before it starts, with a bare "must be formatted as key=value" followed by
+    the runtime's entire usage text. Nothing in the message names the variable
+    at fault, which is why this warns by name at submit time instead.
+
+    Concretely: image_preprocess_studio used to pass
+    IMAGE_EXTENSIONS='.jpg,.jpeg,.png,...' and every one of its jobs failed this
+    way. The established workaround in this repo is a space-separated list —
+    see custom_shapefile's SPRAY_LEVELS/SPRAY_THRESHOLDS, documented as
+    space-separated for exactly this reason.
+
+    A warning rather than a hard failure: the limitation belongs to the
+    apptainer/singularity runtimes, and the runtime lives on the Tapis APP
+    definition, which isn't visible from here — a DOCKER-runtime app takes one
+    --env flag per variable and is unaffected.
+    """
+    for item in (rendered.get("parameterSet") or {}).get("envVariables") or []:
+        if not isinstance(item, dict):
+            continue
+        value = item.get("value")
+        if isinstance(value, str) and "," in value:
+            print(
+                f"[job_spec] WARNING: env var {item.get('key')!r} value {value!r} contains a comma. "
+                f"On an apptainer/singularity app this breaks the job's --env flag entirely "
+                f"(the runtime splits it on commas). Use a space-separated list instead."
+            )
+
+
+def _split_uri(url: str) -> tuple:
+    """'tapis://sys/abs/path' -> ('sys', '/abs/path'); a bare path -> ('', path).
+
+    Local rather than reusing engine.tapis.split_tapis_uri so this module stays
+    a pure renderer with no engine imports (it's exercised directly by tooling
+    that has no Tapis/DBOS setup).
+    """
+    m = _URI_SCHEME.match(url)
+    if not m:
+        return "", url
+    rest = url[m.end():]
+    system, _, path = rest.partition("/")
+    return system, "/" + path
+
+
+def _normalize_archive_dir(rendered: dict, context: dict) -> None:
+    """Force archiveSystemDir to a PLAIN directory path, in place.
+
+    Tapis wants a path here, not a URI — the system is named separately by
+    archiveSystemId. Feed it 'tapis://expanse-tapis-static/users/x/out' and it
+    treats the whole thing as a path, mangling it into
+    '/tapis:/expanse-tapis-static/users/x/out'.
+
+    A template hits this whenever it points archiveSystemDir at a config field
+    or port rather than at ${archive_dir} (image_preprocess_studio's
+    ${output_path}, say): those values are full tapis://system/path URIs at run
+    time, because that's what every other consumer of them — fileInput
+    sourceUrls, downstream edges — requires.
+
+    The URI's system wins over whatever archiveSystemId rendered to: a user who
+    pointed this step's output at a specific location meant that location, and
+    archiving the path to a DIFFERENT system would silently scatter the run's
+    outputs across two sites.
+
+    Also covers the value rendering empty or still holding an unsubstituted
+    ${placeholder} (a config field with no default never enters the context at
+    all) by falling back to the run's own archive_dir, so a half-configured node
+    archives somewhere real instead of into a literal '${output_path}'.
+    """
+    value = rendered.get("archiveSystemDir")
+    if not isinstance(value, str):
+        return
+    original = value
+
+    if "://" in value:
+        system, value = _split_uri(_collapse_nested_uri(value))
+        if system:
+            rendered["archiveSystemId"] = system
+
+    if not value.strip() or _PLACEHOLDER.search(value):
+        fallback = context.get("archive_dir")
+        if not fallback:
+            print(f"[job_spec] archiveSystemDir is unusable ({original!r}) and the run has no "
+                  f"archive_dir to fall back to — leaving it for Tapis to reject.")
+            return
+        print(f"[job_spec] archiveSystemDir {original!r} was empty/unresolved — falling back to {fallback!r}")
+        value = str(fallback)
+
+    value = re.sub(r"/{2,}", "/", value)
+    if value != original:
+        print(f"[job_spec] archiveSystemDir: {original!r} -> {value!r}")
+    rendered["archiveSystemDir"] = value
+
+
+def _normalize_file_inputs(rendered: dict) -> None:
+    """Repair malformed sourceUrls (nested scheme, repeated slashes) in every
+    fileInput, in place.
+
+    Applied centrally here rather than fixed template-by-template because this
+    has now bitten two different steps (zero_shot_annotation, whose step.json
+    documents its own occurrence, and image_preprocess_studio), and a template
+    can only be verified against the wiring someone happened to try. Tapis
+    rejects the doubled form at the transfer stage with a path that reads like
+    the user typed it wrong, so failing quietly-but-late is the alternative.
+    """
+    file_inputs = rendered.get("fileInputs")
+    if not isinstance(file_inputs, list):
+        return
+    for item in file_inputs:
+        if not isinstance(item, dict):
+            continue
+        url = item.get("sourceUrl")
+        if not isinstance(url, str):
+            continue
+        fixed = _tidy_source_url(url)
+        if fixed != url:
+            # Worth logging: the rendered spec is now correct, but the step.json
+            # that produced it still has the redundant prefix/separator.
+            print(f"[job_spec] fileInput '{item.get('name')}': normalized sourceUrl {url!r} -> {fixed!r}")
+            item["sourceUrl"] = fixed
+
+
 def render(template, context: dict):
     """Render a Tapis job template: substitute placeholders, then set/drop fields
     that depend on the chosen exec system rather than the step's own template.
@@ -79,6 +257,10 @@ def render(template, context: dict):
       see _exec_system_dirs) — dropped entirely when absent, so Tapis applies
       the app's own default layout instead of a broken/empty path.
     - If execSystemLogicalQueue rendered empty, drop it (let the app default apply).
+    - archiveSystemDir is forced to a plain path, since Tapis names the system
+      separately in archiveSystemId (see _normalize_archive_dir).
+    - fileInput sourceUrls that ended up with a scheme inside a scheme are
+      collapsed to the inner URI (see _normalize_file_inputs).
     """
     rendered = _render_value(template, context)
 
@@ -91,6 +273,9 @@ def render(template, context: dict):
                 rendered.pop(field, None)
         if rendered.get("execSystemLogicalQueue", None) in ("", None):
             rendered.pop("execSystemLogicalQueue", None)
+        _normalize_archive_dir(rendered, context)
+        _normalize_file_inputs(rendered)
+        _warn_on_comma_env_values(rendered)
 
     return rendered
 

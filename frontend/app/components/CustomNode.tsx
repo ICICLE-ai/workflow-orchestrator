@@ -1,8 +1,7 @@
 import React, { useState } from 'react';
 import { Handle, Position, useReactFlow } from '@xyflow/react';
 import { ActionIcon, Group, Text, Box, Badge } from '@mantine/core';
-import { IconSettings, IconPlayerPlay, IconTrash, IconCpu } from '@tabler/icons-react';
-import { apiFetch } from '../lib/api';
+import { IconSettings, IconTrash, IconCpu } from '@tabler/icons-react';
 import StepSettingsModal from './StepSettingsModal';
 import RunConfigModal from './RunConfigModal';
 import type { StepMeta, ConnectedInput } from '../pages/types';
@@ -154,23 +153,13 @@ export default function CustomNode({ id, data }: any) {
     }
   }
 
-  const handleRun = async () => {
-    try {
-      const res = await apiFetch("/api/pipeline-runs/execute-node", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          template_version_id: data.template_version_id || 0,
-          node_id: id,
-          config_values: config
-        })
-      });
-      const result = await res.json();
-      alert(result.message || "Executed!");
-    } catch (e) {
-      alert("Failed to execute node.");
-    }
-  };
+  // The per-node "Run Step" button is gone from the design-time toolbar: its
+  // endpoint (POST /api/pipeline-runs/execute-node) is a stub that sleeps a
+  // second and returns a canned message without submitting anything, so the
+  // green play icon promised a single-step run the system can't do. Running a
+  // workflow goes through the canvas's Run action, which creates a real
+  // pipeline run. Restore this alongside a real implementation of that endpoint,
+  // not before.
 
   const maxPorts = Math.max(inputs.length, outputs.length, 1);
   const portRowHeight = 28;
@@ -247,9 +236,6 @@ export default function CustomNode({ id, data }: any) {
               </Group>
             ) : (
               <Group gap={4} wrap="nowrap">
-                <ActionIcon variant="light" color="green" size="sm" onClick={handleRun} title="Run Step">
-                  <IconPlayerPlay size={14} />
-                </ActionIcon>
                 <ActionIcon variant="light" color="blue" size="sm" onClick={() => setOpened(true)} title="Settings">
                   <IconSettings size={14} />
                 </ActionIcon>

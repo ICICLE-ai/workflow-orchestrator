@@ -1,5 +1,6 @@
 {
   "step_type_key": "image_crop",
+  "hidden": true,
   "resources": { "gpu": false },
   "display_name": "Image Crop",
   "description": "Crops a directory of images, applying perspective correction.",

@@ -2,7 +2,7 @@
   "step_type_key": "smart_labeler",
   "display_name": "🏷️ Smart Labeler",
   "description": "Interactively browse a source image directory and hand-label bounding boxes or segmentation masks, producing an annotations.json file. Design-time only — submits no Tapis job.",
-  "category": "Data Creation",
+  "category": "Inference",
   "icon": "tag",
   "inputs": [
     { "name": "images", "type": "image_dir" },

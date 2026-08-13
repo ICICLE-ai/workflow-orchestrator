@@ -1,5 +1,6 @@
 {
   "step_type_key": "inference",
+  "hidden": true,
   "resources": { "gpu": true },
   "display_name": "Model Inference",
   "description": "Runs a trained model on new data to generate predictions.",

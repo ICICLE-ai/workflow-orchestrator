@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { ReactFlow, ReactFlowProvider, addEdge, useNodesState, useEdgesState, Background, Controls } from '@xyflow/react';
-import { AppShell, Group, Button, Text, ActionIcon, Stack, Title, Drawer, TextInput, Textarea, Select, Notification, Loader, Alert, List, Accordion, Divider } from '@mantine/core';
+import { AppShell, Group, Button, Text, ActionIcon, Stack, Title, Drawer, TextInput, Textarea, Select, Notification, Loader, Alert, List, Accordion, Divider, Modal, Badge } from '@mantine/core';
 import { IconArrowLeft, IconDeviceFloppy, IconX, IconPlayerPlay, IconAlertTriangle } from '@tabler/icons-react';
 import { useNavigate, useParams, useLoaderData } from 'react-router';
 import CustomNode from '../components/CustomNode';
@@ -81,6 +81,25 @@ const STAGES = [
   'Post-processing',
 ];
 
+// Canonical string form of the graph, for detecting unsaved changes. Covers
+// exactly what a saved version persists — each node's type and config, and each
+// edge's endpoints and ports — and deliberately NOT node positions: nudging a
+// box on the canvas changes nothing about what would run, and treating it as a
+// modification would make the "unsaved changes" prompt fire constantly.
+//
+// Nodes and edges are sorted because React Flow reorders them freely (selecting
+// a node moves it to the end so it renders on top), which would otherwise read
+// as a change.
+function graphSnapshot(nodes: any[], edges: any[]): string {
+  const n = nodes
+    .map((x: any) => JSON.stringify([x.id, x.data?.nodeType, x.data?.config_values ?? {}]))
+    .sort();
+  const e = edges
+    .map((x: any) => JSON.stringify([x.source, x.sourceHandle, x.target, x.targetHandle]))
+    .sort();
+  return JSON.stringify({ n, e });
+}
+
 // A draggable palette card for a step type. `variant` switches the accent color:
 // data sources (green, dashed), pipeline steps (blue), data sinks (amber, dashed).
 function StepCard({ step, variant }: { step: any; variant: 'source' | 'processing' | 'sink' }) {
@@ -126,6 +145,16 @@ function StepCard({ step, variant }: { step: any; variant: 'source' | 'processin
 function Flow() {
   const { stepTypes, portDataTypes, templateData, id } = useLoaderData() as any;
   const navigate = useNavigate();
+
+  // Steps offered in the palette. `hidden` (step.json -> StepTypeRegistry.hidden)
+  // takes a step out of the drag-and-drop list without unregistering it, so a
+  // step that's registered but not ready to be offered stops appearing.
+  //
+  // Only the PALETTE filters. The full `stepTypes` list is still what saved
+  // templates resolve their nodes against below — filtering there would leave
+  // every existing template that uses a hidden step with port-less,
+  // unconfigurable nodes.
+  const paletteSteps = (stepTypes as any[]).filter((s: any) => !s.hidden);
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
 
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
@@ -141,6 +170,13 @@ function Flow() {
   // Workflow run kickoff (DBOS execution) — the run's live status is shown on
   // /runs/:runId, which we navigate to as soon as launch succeeds.
   const [running, setRunning] = useState(false);
+
+  // The graph as of the last load/save (see graphSnapshot). `null` until a
+  // template is loaded, and for a brand-new unsaved canvas.
+  const [savedSnapshot, setSavedSnapshot] = useState<string | null>(null);
+  // Prompt shown when Run is pressed with unsaved edits — see handleRun.
+  const [unsavedPromptOpen, setUnsavedPromptOpen] = useState(false);
+  const isDirty = savedSnapshot !== null && graphSnapshot(nodes, edges) !== savedSnapshot;
 
   // Run settings — where/how the workflow's Tapis jobs execute. Defaults target
   // OSC Pitzer (the working exec system); the user can edit before launching.
@@ -268,6 +304,9 @@ function Flow() {
       });
       setNodes(hydratedNodes);
       setEdges(templateData.edges || []);
+      // Baseline for the unsaved-changes check below: what the loaded version
+      // actually contains. Anything the user does from here diverges from it.
+      setSavedSnapshot(graphSnapshot(hydratedNodes, templateData.edges || []));
     }
   }, [templateData, stepTypes]);
 
@@ -463,24 +502,57 @@ function Flow() {
     }
   };
 
-  // Kick off durable execution of the saved template via the DBOS engine with
-  // the chosen run options (exec system / queue / paths), then jump straight
-  // to the run's live-status page — the execute endpoint creates the run
-  // synchronously so run_id is available immediately, no polling needed here.
-  const handleRun = async () => {
-    if (!templateData) return;
-    setRunSettingsOpened(false);
-    setRunning(true);
+  // Persist the current canvas as a new version and return its
+  // template_version_id. `draft` marks it as a "run without saving" snapshot —
+  // same rows, but hidden from the template list (see WorkflowTemplate.is_draft).
+  // Unlike handleSave this doesn't navigate away, because the run flow needs to
+  // keep going with the id it returns.
+  const persistVersion = async (draft: boolean): Promise<number> => {
+    const payload = {
+      ...formData,
+      nodes: nodes.map((n: any) => ({
+        id: n.id,
+        type: n.data.nodeType,
+        position: n.position,
+        data: { config_values: n.data.config_values },
+      })),
+      edges: edges.map((e: any) => ({
+        id: e.id, source: e.source, target: e.target,
+        sourceHandle: e.sourceHandle, targetHandle: e.targetHandle,
+      })),
+    };
+    const res = await apiFetch(
+      `/api/workflow-templates/${templateData.template_id}/versions${draft ? '?draft=true' : ''}`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || 'Could not save the workflow');
+    }
+    const data = await res.json();
+    return data.template_version_id;
+  };
 
+  // Kick off durable execution via the DBOS engine with the chosen run options
+  // (exec system / queue / paths), then jump straight to the run's live-status
+  // page — the execute endpoint creates the run synchronously so run_id is
+  // available immediately, no polling needed here.
+  //
+  // `versionId` is which version to execute. It is ALWAYS a version that
+  // reflects what's on screen: with unsaved edits, handleRun persists one first
+  // (as a real version or a draft, the user's choice) rather than running the
+  // last-saved graph. Running a stale version silently produced results for a
+  // workflow the user was no longer looking at.
+  const executeVersion = async (versionId: number) => {
+    setRunSettingsOpened(false);
+    setUnsavedPromptOpen(false);
+    setRunning(true);
     try {
-      const res = await apiFetch(
-        `/api/pipeline-runs/${templateData.template_version_id}/execute`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(runOptions),
-        }
-      );
+      const res = await apiFetch(`/api/pipeline-runs/${versionId}/execute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(runOptions),
+      });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.detail || 'Failed to start workflow');
@@ -491,6 +563,34 @@ function Flow() {
       setRunning(false);
       setConnectionError(e.message || 'Failed to start workflow');
       setTimeout(() => setConnectionError(null), 4000);
+    }
+  };
+
+  const handleRun = async () => {
+    if (!templateData) return;
+    if (isDirty) {
+      // Don't launch anything yet — ask how the changes should be handled.
+      setRunSettingsOpened(false);
+      setUnsavedPromptOpen(true);
+      return;
+    }
+    executeVersion(templateData.template_version_id);
+  };
+
+  // Both answers to that prompt: capture the canvas, then run what was captured.
+  const runWithUnsavedChanges = async (saveAsVersion: boolean) => {
+    setRunning(true);
+    try {
+      const versionId = await persistVersion(!saveAsVersion);
+      // The canvas now matches what's stored, so Run stops prompting until the
+      // next edit — whichever option was taken.
+      setSavedSnapshot(graphSnapshot(nodes, edges));
+      await executeVersion(versionId);
+    } catch (e: any) {
+      setRunning(false);
+      setUnsavedPromptOpen(false);
+      setConnectionError(e.message || 'Could not save the workflow');
+      setTimeout(() => setConnectionError(null), 6000);
     }
   };
 
@@ -517,6 +617,13 @@ function Flow() {
                 {running ? 'Running…' : 'Run Workflow'}
               </Button>
             )}
+            {/* Standing indicator, so the state that changes what Run does is
+                visible before Run is pressed rather than only in the prompt. */}
+            {isDirty && (
+              <Badge color="yellow" variant="light" title="The canvas differs from the last saved version">
+                Unsaved changes
+              </Badge>
+            )}
             <Button leftSection={<IconDeviceFloppy size={16} />} onClick={() => setDrawerOpened(true)}>
               {templateData ? 'Save New Version' : 'Save Template'}
             </Button>
@@ -542,7 +649,7 @@ function Flow() {
             <Accordion.Control><Text fw={600}>Data Sources</Text></Accordion.Control>
             <Accordion.Panel>
               <Stack gap="xs">
-                {stepTypes.filter((s: any) => s.category === 'source').map((step: any) => (
+                {paletteSteps.filter((s: any) => s.category === 'source').map((step: any) => (
                   <StepCard key={step.step_type_key} step={step} variant="source" />
                 ))}
               </Stack>
@@ -553,7 +660,7 @@ function Flow() {
               by the step's `category` (set in step.json). Empty stages still show
               so the structure is visible and ready for future steps. */}
           {STAGES.map((stage) => {
-            const stageSteps = stepTypes.filter((s: any) => s.category === stage);
+            const stageSteps = paletteSteps.filter((s: any) => s.category === stage);
             return (
               <Accordion.Item key={stage} value={stage}>
                 <Accordion.Control><Text fw={600}>{stage}</Text></Accordion.Control>
@@ -573,12 +680,12 @@ function Flow() {
           })}
 
           {/* Data Sinks — outputs, the write-side complement of Data Sources */}
-          {stepTypes.some((s: any) => s.category === 'sink') && (
+          {paletteSteps.some((s: any) => s.category === 'sink') && (
             <Accordion.Item value="__sinks__">
               <Accordion.Control><Text fw={600}>Data Sinks</Text></Accordion.Control>
               <Accordion.Panel>
                 <Stack gap="xs">
-                  {stepTypes.filter((s: any) => s.category === 'sink').map((step: any) => (
+                  {paletteSteps.filter((s: any) => s.category === 'sink').map((step: any) => (
                     <StepCard key={step.step_type_key} step={step} variant="sink" />
                   ))}
                 </Stack>
@@ -781,6 +888,47 @@ function Flow() {
           </Button>
         </Stack>
       </Drawer>
+
+      {/* Unsaved changes at launch time. The run has NOT started at this point —
+          whichever option is taken, what executes is the graph currently on the
+          canvas, never the last-saved one. */}
+      <Modal
+        opened={unsavedPromptOpen}
+        onClose={() => setUnsavedPromptOpen(false)}
+        title="This workflow has unsaved changes"
+        centered
+      >
+        <Stack gap="md">
+          <Text size="sm">
+            The canvas differs from the last saved version. Your changes will be what runs either way — choose
+            whether to keep them in this workflow's version history.
+          </Text>
+          <Button
+            fullWidth
+            loading={running}
+            leftSection={<IconDeviceFloppy size={16} />}
+            onClick={() => runWithUnsavedChanges(true)}
+          >
+            Save as a new version, then run
+          </Button>
+          <Button
+            fullWidth
+            variant="default"
+            loading={running}
+            leftSection={<IconPlayerPlay size={16} />}
+            onClick={() => runWithUnsavedChanges(false)}
+          >
+            Run these changes without saving a version
+          </Button>
+          <Text size="xs" c="dimmed">
+            "Without saving" still records the exact graph behind the scenes so the run stays reproducible — it
+            just won't appear as a version of this workflow, and won't change what opens next time.
+          </Text>
+          <Button variant="subtle" color="gray" onClick={() => setUnsavedPromptOpen(false)} disabled={running}>
+            Cancel
+          </Button>
+        </Stack>
+      </Modal>
     </AppShell>
   );
 }

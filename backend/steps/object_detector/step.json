@@ -1,5 +1,6 @@
 {
   "step_type_key": "object_detector",
+  "hidden": true,
   "resources": { "gpu": true },
   "display_name": "Object Detection",
   "description": "Detects objects in images (OWLv2), producing bounding-box results.",

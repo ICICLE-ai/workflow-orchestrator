@@ -1,4 +1,18 @@
-.react-router
-build
+# Host artifacts that must not enter the build context: node_modules is the
+# wrong platform (macOS/arm64 binaries for esbuild, opencv-js), and build/ and
+# .react-router/ are stale outputs the image regenerates.
 node_modules
+build
+.react-router
+
+# Local env files. Vite reads .env at build time, so one copied in would
+# silently override the VITE_BACKEND_URL build arg and bake the wrong backend
+# URL into the bundle.
+.env
+.env.*
+!.env.example
+
+.git
+.gitignore
 README.md
+.DS_Store

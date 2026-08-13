@@ -281,24 +281,38 @@ def execute_node_workflow(node_key: str, run_id: int, orchestrator_workflow_id: 
     # that names a config field after one of these by accident.
     ctx = {**archive_ctx, **resolved, **{k: archive_ctx[k] for k in _AUTHORITATIVE_CTX_KEYS if k in archive_ctx}}
     team_id = secrets_store.get_run_team_id(run_id)
-    # "secret"-typed config fields hold a KEY reference in ctx (and in whatever
-    # gets persisted above) — swap in the real value for rendering only, and
-    # keep the values around to redact from any logging of the rendered spec.
-    render_ctx, secret_values = _resolve_secrets(node_key, ctx, team_id)
-    rendered = job_spec.render(template, render_ctx)
-    # A step.json can also hardcode a specific secret directly in the template
-    # via ${secrets.KEY} (see job_spec.resolve_secret_refs) — no config_schema
-    # field or per-node UI involved. Resolved after render() since it doesn't
-    # depend on any resolved config value, just the literal ${secrets.KEY} text.
-    rendered, secret_ref_values = job_spec.resolve_secret_refs(rendered, team_id)
-    secret_values = secret_values + secret_ref_values
-    # Per-step compute resources (nodeCount, coresPerNode, memoryMB, maxMinutes,
-    # gpus), set via the canvas's Run Configuration panel and carried in the
-    # node's own config alongside its business params.
-    job_spec.apply_resource_overrides(rendered, resolved)
-    rendered.setdefault("name", f"run-{run_id}-{node_key}")
 
+    # Rendering is inside the try along with submission: a step whose spec can't
+    # be built (or whose inputs can't be materialized) has failed just as surely
+    # as one Tapis rejected, and needs the same "mark failed + signal the
+    # orchestrator" treatment — otherwise the DAG waits forever on a node that
+    # already raised.
     try:
+        # Some job steps need a file materialized on Tapis before the job can
+        # stage it — a pipeline the panel edits in the browser and keeps on the
+        # node config, say (see engine.inline_steps.PRE_SUBMIT_HANDLERS). Runs
+        # with the full context available so it can place the file relative to
+        # this run's archive dir, and its overrides land in ctx before render()
+        # so the template's placeholder resolves to what was actually written.
+        ctx.update(inline_steps.run_pre_submit(run_id, get_node_step_type(node_key), ctx))
+
+        # "secret"-typed config fields hold a KEY reference in ctx (and in whatever
+        # gets persisted above) — swap in the real value for rendering only, and
+        # keep the values around to redact from any logging of the rendered spec.
+        render_ctx, secret_values = _resolve_secrets(node_key, ctx, team_id)
+        rendered = job_spec.render(template, render_ctx)
+        # A step.json can also hardcode a specific secret directly in the template
+        # via ${secrets.KEY} (see job_spec.resolve_secret_refs) — no config_schema
+        # field or per-node UI involved. Resolved after render() since it doesn't
+        # depend on any resolved config value, just the literal ${secrets.KEY} text.
+        rendered, secret_ref_values = job_spec.resolve_secret_refs(rendered, team_id)
+        secret_values = secret_values + secret_ref_values
+        # Per-step compute resources (nodeCount, coresPerNode, memoryMB, maxMinutes,
+        # gpus), set via the canvas's Run Configuration panel and carried in the
+        # node's own config alongside its business params.
+        job_spec.apply_resource_overrides(rendered, resolved)
+        rendered.setdefault("name", f"run-{run_id}-{node_key}")
+
         # 3. Submit and poll.
         job_uuid = TapisV3.submit_job(rendered, run_id, redact=secret_values)
         update_run_step_status(

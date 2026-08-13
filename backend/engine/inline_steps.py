@@ -158,8 +158,82 @@ def _annotation_format_adapter(run_id: int, resolved: dict, token: str) -> dict:
     }
 
 
+def _image_preprocess_studio_presubmit(run_id: int, ctx: dict, token: str) -> dict:
+    """Write the node's OpenCV pipeline out as operations.json and point
+    `pipeline_path` at it, so the job's 'pipeline' fileInput stages a file that
+    exists.
+
+    The studio panel edits the pipeline live and stores it on the node config
+    under `operations` — but the job stages operations.json as a FILE. The only
+    bridge between the two was a manual "Save operations.json" button plus a
+    hand-typed pipeline_path, so three things could each silently break the run:
+    never clicking the button, never typing the path (pipeline_path has no
+    config_schema default, so the placeholder rendered LITERALLY as
+    "${pipeline_path}"), or editing the pipeline afterwards and not re-saving,
+    leaving a stale file on Tapis. Writing it here from the config the run
+    actually resolved makes all three impossible — the staged file always
+    matches the pipeline the node is carrying.
+
+    Returns ctx overrides for job_spec.render.
+    """
+    from annotation_adapter import _tapis_upload
+
+    operations = ctx.get("operations")
+    configured = str(ctx.get("pipeline_path") or "").strip()
+
+    # An explicitly configured path stays authoritative (it may be a curated
+    # operations.json the user maintains elsewhere); it just gets resolved to a
+    # full URI. Otherwise the file lands in this step's own per-node archive
+    # dir, which is already unique per run+node.
+    if configured:
+        system, path = split_tapis_uri(configured)
+        system = system or str(ctx.get("archive_system") or ctx.get("exec_system") or "")
+    else:
+        system = str(ctx.get("archive_system") or "")
+        path = f"{str(ctx.get('archive_dir') or '').rstrip('/')}/operations.json"
+
+    if not system or not path or path == "/operations.json":
+        raise RuntimeError(
+            "Image Preprocess Studio: couldn't determine where to write operations.json "
+            "(no pipeline path configured and no archive location for this run)."
+        )
+
+    if operations:
+        _tapis_upload(system, path, _json_bytes(operations), token, "application/json")
+        print(f"[presubmit] image-preprocess-studio (run {run_id}): wrote operations.json -> tapis://{system}{path}")
+    elif not configured:
+        # Nothing to write and nowhere pre-existing to point at — the job would
+        # stage a file that has never existed. Fail here, with the reason, rather
+        # than in Tapis' transfer stage minutes later.
+        raise RuntimeError(
+            "Image Preprocess Studio has no pipeline to run: build one in the step's panel "
+            "(or set a pipeline path pointing at an existing operations.json)."
+        )
+    else:
+        print(f"[presubmit] image-preprocess-studio (run {run_id}): no pipeline in config, "
+              f"staging the configured tapis://{system}{path} as-is")
+
+    # A full URI, not a bare path: the file lives on the ARCHIVE system, which
+    # needn't be the exec system this node runs on.
+    return {"pipeline_path": f"tapis://{system}/{path.lstrip('/')}"}
+
+
+def _json_bytes(obj) -> bytes:
+    import json
+
+    return json.dumps(obj, indent=2).encode("utf-8")
+
+
 HANDLERS = {
     "annotation_format_adapter": _annotation_format_adapter,
+}
+
+# Handlers for steps that DO submit a Tapis job but need something materialized
+# on Tapis first — typically turning a config value the panel edits in-browser
+# into the file the job expects to stage. Run after the render context is built
+# and before job_spec.render, and return ctx overrides.
+PRE_SUBMIT_HANDLERS = {
+    "image-preprocess-studio": _image_preprocess_studio_presubmit,
 }
 
 
@@ -167,6 +241,26 @@ def get_handler(step_type: str | None):
     """The inline handler for a step type, or None if it has none (in which case
     the engine keeps treating a template-less node as a source/sink)."""
     return HANDLERS.get(step_type or "")
+
+
+def run_pre_submit(run_id: int, step_type: str | None, ctx: dict) -> dict:
+    """Run a step type's pre-submit handler, returning ctx overrides ({} when it
+    has none). Raises on failure — the caller's normal step-failure path applies,
+    which is the point: a job whose input couldn't be materialized must not be
+    submitted."""
+    handler = PRE_SUBMIT_HANDLERS.get(step_type or "")
+    if handler is None:
+        return {}
+    if not use_real_tapis():
+        print(f"[presubmit] {step_type} (run {run_id}): MOCK mode — skipping materialization")
+        return {}
+    token = tapis_auth.get_token_for_run(run_id)
+    if not token:
+        raise TapisAuthError(
+            "Tapis authentication required — the run owner's session has expired. "
+            "Please log in again and re-run."
+        )
+    return handler(run_id, ctx, token)
 
 
 def run_inline_step(run_id: int, node_key: str, step_type: str, resolved: dict, output_ports: list) -> dict:

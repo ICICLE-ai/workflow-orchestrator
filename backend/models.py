@@ -89,6 +89,17 @@ class StepTypeRegistry(Base):
     # geospatial) in the SAME run land on different systems/queues without
     # either one hardcoding a site the way several step.json files used to.
     resources = Column(JSON, default=dict)
+    # Hide this step from the canvas PALETTE without removing it. Distinct from
+    # is_active, which the registry sync owns (a step.json that disappears is
+    # deactivated, one that reappears is reactivated) and so can't express a
+    # deliberate "keep it registered but don't offer it yet". Mirrored from
+    # step.json's "hidden" each sync.
+    #
+    # Hidden steps are still RETURNED by /api/step-types: a saved template
+    # resolves each of its nodes against that list (WorkflowCanvas.tsx), so
+    # dropping one would leave every existing template containing it with
+    # unconfigurable, port-less nodes. Only the palette filters on it.
+    hidden = Column(Boolean, default=False)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -148,6 +159,17 @@ class WorkflowTemplate(Base):
     # Allocation/charge account (e.g. 'uot260') set at template creation; used as
     # the default slurm_account when running this template.
     allocation_account = Column(String)
+    # A version created implicitly by "run these changes without saving" rather
+    # than by an explicit Save.
+    #
+    # The engine cannot run an unsaved canvas: it reads a node's job template,
+    # config schema, ports and — critically — its EDGES from wf_node/wf_edge
+    # rows keyed by template_version_id (see engine/transactions.py's
+    # get_incoming_edges), not from the run's frozen_config. So "don't save a
+    # version" still has to persist one; this flag is what keeps it out of the
+    # template list and out of the user's version numbering in spirit, while
+    # leaving the run fully reproducible and traceable.
+    is_draft = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

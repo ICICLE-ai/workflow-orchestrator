@@ -1,5 +1,6 @@
 {
   "step_type_key": "classifier",
+  "hidden": true,
   "resources": { "gpu": true },
   "display_name": "Image Classifier",
   "description": "Classifies images or detected regions (DINOv3) into labeled categories.",
