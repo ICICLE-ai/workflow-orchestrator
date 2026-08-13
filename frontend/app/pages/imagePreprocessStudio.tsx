@@ -3,7 +3,7 @@ import { Group, TextInput, Button, Loader, Stack, Popover, Select, Paper } from 
 import { IconDeviceFloppy, IconSettings } from "@tabler/icons-react";
 import { notifications } from "@mantine/notifications";
 import type { StepPanelProps } from "./types";
-import { BACKEND_URL } from "../lib/api";
+import { apiFetch } from "../lib/api";
 import { TAPIS_SYSTEMS, DEFAULT_TAPIS_SYSTEM, resolveWiredLocation } from "../lib/tapis";
 import TapisDirectoryBrowser, { parentOf } from "../components/TapisDirectoryBrowser";
 // Type-only imports — erased at build, so the heavy opencv-js package is NOT
@@ -18,8 +18,9 @@ const ImagePlayground = lazy(async () => {
   return { default: mod.ImagePlayground };
 });
 
-const studioFetch = (path: string, init?: RequestInit) =>
-  fetch(`${BACKEND_URL}${path}`, { ...init, credentials: "include" });
+// apiFetch, not a bare fetch: it carries whichever credential this deployment
+// uses — the session cookie standalone, the host's X-Tapis-Token when embedded.
+const studioFetch = (path: string, init?: RequestInit) => apiFetch(path, init);
 
 const qs = (system: string, path: string) =>
   `system=${encodeURIComponent(system)}&path=${encodeURIComponent(path)}`;

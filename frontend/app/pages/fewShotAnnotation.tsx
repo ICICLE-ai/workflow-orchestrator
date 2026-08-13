@@ -18,15 +18,16 @@ import {
 } from "@mantine/core";
 import { IconInfoCircle } from "@tabler/icons-react";
 import type { StepPanelProps } from "./types";
-import { BACKEND_URL, fetchCurrentUser } from "../lib/api";
+import { apiFetch, fetchCurrentUser } from "../lib/api";
 
 // Type-only import — erased at build, so this browser-only package (talks to
 // Patra + the Tapis vault directly from the client) never loads during SSR.
 // The runtime module is loaded lazily below, client-side only.
 import type { ModelSelector as ModelSelectorComponent } from "@icicle-ai/patra-model-selector";
 
-const studioFetch = (path: string, init?: RequestInit) =>
-  fetch(`${BACKEND_URL}${path}`, { ...init, credentials: "include" });
+// apiFetch, not a bare fetch: it carries whichever credential this deployment
+// uses — the session cookie standalone, the host's X-Tapis-Token when embedded.
+const studioFetch = (path: string, init?: RequestInit) => apiFetch(path, init);
 
 type ModelSelectorProps = ComponentProps<typeof ModelSelectorComponent>;
 

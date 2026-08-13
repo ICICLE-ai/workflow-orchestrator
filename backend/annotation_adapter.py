@@ -30,6 +30,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+import auth
 from db import get_db
 from models import AppUser
 from engine import tapis_auth
@@ -46,13 +47,8 @@ TO_FORMATS = FROM_FORMATS + ("sam3_exemplars",)
 
 
 def _current_user(request: Request, db: Session = Depends(get_db)) -> AppUser:
-    username = request.session.get("username")
-    if not username:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    user = db.query(AppUser).filter(AppUser.username == username).first()
-    if not user:
-        raise HTTPException(status_code=401, detail="Session user no longer exists")
-    return user
+    """X-Tapis-Token or session-cookie auth (see auth.resolve_current_user)."""
+    return auth.require_current_user(request, db)
 
 
 def _user_tapis_token(user: AppUser, db: Session) -> str:
