@@ -24,9 +24,25 @@ from engine.transactions import (
     update_run_status,
     update_run_step_status,
 )
-from engine.tapis import TapisV3, copy_tapis_path
+from engine.tapis import TapisV3, copy_tapis_path, resolve_latest_file
+from engine import inline_steps
 from engine import job_spec
 from engine import secrets as secrets_store
+
+
+# Context keys owned by get_run_archive_context and derived from each other —
+# a node's own config may not override them. See their use in
+# execute_node_workflow below.
+_AUTHORITATIVE_CTX_KEYS = (
+    "exec_system",
+    "exec_queue",
+    "archive_system",
+    "archive_dir",
+    "archive_uri",
+    "exec_system_exec_dir",
+    "exec_system_input_dir",
+    "exec_system_output_dir",
+)
 
 
 def _resolve_inputs(run_id: int, node_key: str, node_config: dict) -> dict:
@@ -171,7 +187,7 @@ def _resolve_secrets(node_key: str, ctx: dict, team_id: int | None) -> tuple[dic
     return resolved_ctx, values
 
 
-def _derive_outputs(run_id: str, node_key: str, ctx: dict, job_uuid: str) -> dict:
+def _derive_outputs(run_id: int, node_key: str, ctx: dict, job_uuid: str) -> dict:
     """Compute each output PORT's Tapis URI under this step's archive dir.
 
     The step archived its whole job output to ctx['archive_uri']
@@ -179,12 +195,29 @@ def _derive_outputs(run_id: str, node_key: str, ctx: dict, job_uuid: str) -> dic
     specific artifact via its output_path (e.g. predictions -> predictions.json),
     so a downstream node/sink connecting to that port gets exactly that path.
     Ports without an output_path fall back to the whole archive dir.
+
+    A port with a `file_glob` (see StepTypePort.file_glob) has an output_path
+    that's a DIRECTORY holding one dynamically-named file (e.g. a tool that
+    stamps its own output filename with a timestamp) rather than the artifact
+    itself — the directory's real content is only knowable now that the job
+    has actually run, so it's resolved here via engine.tapis.resolve_latest_file
+    (a real Tapis Files listing) rather than left as a static template
+    substitution like every other port. Falls back to the plain directory URI
+    if nothing matches (or in mock mode) — a downstream consumer then sees a
+    directory instead of a file, same as before this existed, rather than the
+    whole step failing over a listing hiccup.
     """
     archive_uri = (ctx.get("archive_uri") or "").rstrip("/")
     outputs = {"archive_uri": archive_uri, "job_uuid": job_uuid}
     for port in get_node_output_ports(node_key):
         sub = port.get("output_path")
-        outputs[port["name"]] = f"{archive_uri}/{sub}" if sub else archive_uri
+        dir_uri = f"{archive_uri}/{sub}" if sub else archive_uri
+        pattern = port.get("file_glob")
+        if pattern:
+            resolved = resolve_latest_file(dir_uri, run_id, pattern)
+            outputs[port["name"]] = resolved or dir_uri
+        else:
+            outputs[port["name"]] = dir_uri
     return outputs
 
 
@@ -201,22 +234,52 @@ def execute_node_workflow(node_key: str, run_id: int, orchestrator_workflow_id: 
 
     # 2. Fetch the step's Tapis job template. A step with NO template is a
     #    data-provider/consumer node handled specially:
-    #      - source node: exposes its configured `path` on its output port(s)
     #      - sink node:   copies its incoming artifact to its configured `path`
+    #      - inline step: does real work here in-process (engine.inline_steps)
+    #      - source node: exposes its configured `path` on its output port(s)
     template = get_node_tapis_template(node_key)
     if not template:
         step_type = get_node_step_type(node_key)
-        if step_type and step_type.startswith("sink"):
-            outputs = _run_sink_node(run_id, node_key, node_config)
-        else:
-            outputs = _source_node_outputs(run_id, node_key, node_config, resolved)
+        try:
+            if step_type and step_type.startswith("sink"):
+                outputs = _run_sink_node(run_id, node_key, node_config)
+            elif inline_steps.get_handler(step_type):
+                # A no-Tapis-job step whose work still has to happen DURING the
+                # run — e.g. annotation_format_adapter converting a file an
+                # upstream step only just produced. Running it here (rather than
+                # leaving it to a design-time button) is what makes its declared
+                # output actually exist by the time a downstream job stages it.
+                outputs = inline_steps.run_inline_step(
+                    run_id, node_key, step_type, resolved, get_node_output_ports(node_key)
+                )
+            else:
+                outputs = _source_node_outputs(run_id, node_key, node_config, resolved)
+        except Exception as e:
+            # This branch returns before reaching the job path's own handler
+            # below, and an inline step can genuinely fail (unreadable source,
+            # unset destination, expired token). Without the same "mark failed +
+            # signal the orchestrator" treatment, the DAG would wait forever on a
+            # step that already died.
+            update_run_step_status(run_id, node_key, "failed", error_message=str(e))
+            DBOS.send(destination_id=orchestrator_workflow_id, message=node_key, topic="step_complete")
+            raise
         complete_run_step(run_id, node_key, outputs)
         DBOS.send(destination_id=orchestrator_workflow_id, message=node_key, topic="step_complete")
         return outputs
 
     # 3. Build the substitution context. The step archives to its own per-node
     #    dir in the run workspace; per-port output paths are derived from that.
-    ctx = {**get_run_archive_context(run_id, node_key), **resolved}
+    archive_ctx = get_run_archive_context(run_id, node_key)
+    # `resolved` (config + edge inputs) spreads last so a step's own config
+    # keys win for its own ${...} placeholders — but the exec/archive keys
+    # below are authoritative and must NOT be shadowed. get_run_archive_context
+    # derives archive_dir, archive_uri and execSystem*Dir FROM the resolved
+    # exec system, so a stray config key of the same name would produce a job
+    # running on one system with directories computed for another. Per-node
+    # exec overrides are camelCase (execSystem/execQueue) precisely so they
+    # never collide here; this re-assert is the belt-and-braces for a step.json
+    # that names a config field after one of these by accident.
+    ctx = {**archive_ctx, **resolved, **{k: archive_ctx[k] for k in _AUTHORITATIVE_CTX_KEYS if k in archive_ctx}}
     team_id = secrets_store.get_run_team_id(run_id)
     # "secret"-typed config fields hold a KEY reference in ctx (and in whatever
     # gets persisted above) — swap in the real value for rendering only, and

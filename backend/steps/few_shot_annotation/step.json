@@ -1,5 +1,6 @@
 {
    "step_type_key": "few_shot_annotation",
+   "resources": { "gpu": true },
    "display_name": "🎯 Few-Shot Annotation",
    "description": "Bootstraps a few-shot object annotator from an initial annotation file and ground-truth examples, then proposes and embeds regions across the target dataset. Custom UI — Tapis app/job wiring to follow.",
    "category": "Inference",

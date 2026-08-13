@@ -19,6 +19,13 @@ import type { StepMeta, ConnectedInput } from '../pages/types';
 // input port names, trace back through that input's edge instead of
 // reading this node's config directly. Bounded by `depth` against a
 // pathological/cyclic graph.
+//
+// CAUTION when adding a new input port to a design-time node: giving it the
+// SAME NAME as one of that node's own output ports makes the output a
+// passthrough of the (possibly unwired) input by this same heuristic — even
+// unintentionally. smart_labeler's own 'annotations' output briefly broke
+// this way after an 'annotations' INPUT was added for resuming a prior
+// labeling session; renamed to 'resume_annotations' (see its step.json).
 function resolveOutputPath(
   nodeId: string,
   outputPortName: string,
@@ -386,6 +393,7 @@ export default function CustomNode({ id, data }: any) {
           onClose={() => setRunConfigOpened(false)}
           initialConfig={config}
           onSave={handleSaveRunConfig}
+          stepResources={fullConfig.resources}
         />
       )}
     </>

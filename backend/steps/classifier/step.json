@@ -1,5 +1,6 @@
 {
   "step_type_key": "classifier",
+  "resources": { "gpu": true },
   "display_name": "Image Classifier",
   "description": "Classifies images or detected regions (DINOv3) into labeled categories.",
   "category": "Inference",
@@ -29,8 +30,8 @@
     "appId": "harvest-Dino-Classifier-Parth-gupta.1543",
     "appVersion": "1.0.0",
     "description": "Classify images / detected regions",
-    "execSystemId": "expanse-tapis",
-    "execSystemLogicalQueue": "tapisGPUshared",
+    "execSystemId": "${exec_system}",
+    "execSystemLogicalQueue": "${exec_queue}",
     "archiveSystemId": "${archive_system}",
     "archiveSystemDir": "${archive_dir}",
     "nodeCount": 1,

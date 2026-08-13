@@ -81,6 +81,14 @@ class StepTypeRegistry(Base):
     # Configuration control for them. Defaults from step.json's `tapis_job` when
     # the step.json doesn't set it explicitly (see main.sync_step_registry).
     submits_job = Column(Boolean, default=True)
+    # What this step NEEDS from an exec system, not where it runs — currently
+    # just {"gpu": bool}. Mirrored from step.json's "resources" each sync. The
+    # run supplies a CPU target and a GPU target (RunOptions), and
+    # get_run_archive_context routes each node to the matching pair, so a
+    # GPU step (zero_shot_annotation, training) and a CPU step (flight_plan,
+    # geospatial) in the SAME run land on different systems/queues without
+    # either one hardcoding a site the way several step.json files used to.
+    resources = Column(JSON, default=dict)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -108,6 +116,16 @@ class StepTypePort(Base):
     # (e.g. 'predictions.json' or 'annotated'). Lets a step expose multiple
     # distinct outputs, each routable to its own downstream node / sink.
     output_path = Column(String, default=None)
+    # For OUTPUT ports whose output_path is a DIRECTORY containing a single
+    # dynamically-named file (e.g. a script that stamps its own output
+    # filename with a timestamp) rather than the file itself: an fnmatch
+    # pattern (matched against bare filenames, e.g. 'annotations_*.json') used
+    # to resolve the actual file inside that directory once the job completes
+    # — see engine.tapis.resolve_latest_file and _derive_outputs in
+    # engine/workflows.py. None for every other port (output_path already
+    # names the exact artifact, or the port IS meant to be a directory, e.g.
+    # an image_dir output).
+    file_glob = Column(String, default=None)
 
     __table_args__ = (
         UniqueConstraint('step_type_key', 'port_name', 'direction', name='uix_step_port'),

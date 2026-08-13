@@ -1,5 +1,6 @@
 {
   "step_type_key": "class_histogram",
+  "resources": { "gpu": false },
   "display_name": "Class Histogram",
   "description": "Bar chart of per-class detection counts (COCO 80) from YOLO predictions.",
   "category": "Visualization",

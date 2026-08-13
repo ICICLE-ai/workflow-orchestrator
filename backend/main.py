@@ -221,6 +221,8 @@ def sync_step_registry(db: Session):
         # (design-time-only steps like smart_labeler/geospatial_map do); otherwise
         # it's inferred from whether a tapis_job template is present.
         registry_entry.submits_job = data.get("submits_job", data.get("tapis_job") is not None)
+        # Compute requirement ({"gpu": bool}) — see StepTypeRegistry.resources.
+        registry_entry.resources = data.get("resources") or {}
         db.commit()
         print(f"  Synced registry: {step_key} (config_schema keys: {list(data.get('config_schema', {}).keys())})")
         
@@ -238,6 +240,7 @@ def sync_step_registry(db: Session):
                     "type": p["type"],
                     "required": p.get("required", True),
                     "output_path": p.get("output_path"),
+                    "file_glob": p.get("file_glob"),
                 }
 
         try:
@@ -259,6 +262,7 @@ def sync_step_registry(db: Session):
                         data_type=spec["type"], direction=direction,
                         is_required=spec["required"],
                         output_path=spec.get("output_path"),
+                        file_glob=spec.get("file_glob"),
                     ))
                 else:
                     if existing.data_type != spec["type"]:
@@ -267,6 +271,8 @@ def sync_step_registry(db: Session):
                         existing.is_required = spec["required"]
                     if existing.output_path != spec.get("output_path"):
                         existing.output_path = spec.get("output_path")
+                    if existing.file_glob != spec.get("file_glob"):
+                        existing.file_glob = spec.get("file_glob")
 
             db.commit()
         except Exception as e:
@@ -331,7 +337,12 @@ def on_startup():
             ))
             conn.execute(text(
                 "ALTER TABLE step_type_registry "
-                "ADD COLUMN IF NOT EXISTS submits_job BOOLEAN DEFAULT TRUE;"
+                "ADD COLUMN IF NOT EXISTS submits_job BOOLEAN DEFAULT TRUE, "
+                "ADD COLUMN IF NOT EXISTS resources JSON DEFAULT '{}'::json;"
+            ))
+            conn.execute(text(
+                "ALTER TABLE step_type_port "
+                "ADD COLUMN IF NOT EXISTS file_glob VARCHAR;"
             ))
         print("Database schema created.")
         
@@ -418,6 +429,10 @@ def get_step_types(db: Session = Depends(get_db), user: AppUser = Depends(get_cu
             "icon": step.icon,
             "config_schema": step.config_schema,
             "submits_job": step.submits_job,
+            # Drives the Run Configuration modal's default exec target (a
+            # gpu:true step defaults to the run's GPU pair) — see
+            # RunConfigModal.tsx.
+            "resources": step.resources or {},
             "inputs": inputs,
             "outputs": outputs
         })
@@ -495,8 +510,20 @@ def get_workflow_template(template_version_id: int, db: Session = Depends(get_db
     for e in edges:
         source_port = port_by_id.get(e.source_port_id)
         target_port = port_by_id.get(e.target_port_id)
+        # The id MUST include the ports, not just the node pair. Two nodes can be
+        # joined by several edges at once — smart_labeler -> zero_shot_annotation
+        # wires 'images'->'images' AND 'annotations'->'annotation_file', which is
+        # exactly what smart_labeler's passthrough 'images' output exists for.
+        # React Flow keys its edge store by id, so a node-pair-only id made every
+        # such edge collide: on reload only ONE of them survived, silently
+        # dropping the others from the canvas (and from CustomNode's
+        # connectedInputs, so the downstream panel showed no wired value). The DB
+        # rows were always correct — only this response collapsed them, which is
+        # why the wiring worked until the template was saved and reopened.
+        # Port IDs (not names) keep it unique even for a port pair that shares a
+        # name across directions.
         edge_list.append({
-            "id": f"e_{e.source_node_id}_{e.target_node_id}",
+            "id": f"e_{e.source_node_id}_{e.source_port_id}_{e.target_node_id}_{e.target_port_id}",
             "source": str(e.source_node_id),
             "target": str(e.target_node_id),
             "sourceHandle": source_port.port_name if source_port else None,
@@ -873,6 +900,13 @@ class RunOptions(BaseModel):
     # the base scratch/project path for OSC execSystem*Dir fields.
     exec_system: Optional[str] = None
     exec_queue: Optional[str] = None
+    # GPU target for this run. A step whose step.json declares
+    # "resources": {"gpu": true} (zero_shot_annotation, training, …) routes
+    # here instead of the CPU pair above, so one run can span both without any
+    # step hardcoding a site — see engine.transactions.resolve_node_exec_target.
+    # Falls back to the CPU pair when unset, matching pre-split behaviour.
+    gpu_exec_system: Optional[str] = None
+    gpu_exec_queue: Optional[str] = None
     work_dir: Optional[str] = None
     archive_system: Optional[str] = None
     # Base directory step outputs archive under (run_id/node_id is still
@@ -909,8 +943,12 @@ def execute_workflow(template_version_id: int, options: Optional[RunOptions] = N
     dag_config.setdefault("slurm_account", (template and template.allocation_account) or "uot260")
 
     # Record the launching user so the run is owned by them and the engine can
-    # resolve their Tapis token (get_token_for_run) when submitting jobs.
+    # resolve their Tapis token (get_token_for_run) when submitting jobs. The
+    # username is also needed to derive expanse-tapis's per-user scratch path
+    # when a run spans systems and can't inherit one work_dir (see
+    # engine.transactions._default_work_dir).
     dag_config["owner_id"] = user.user_id
+    dag_config.setdefault("tapis_username", user.username)
 
     # Pick the DBOS workflow id ourselves (instead of letting DBOS generate one)
     # so we can create the pipeline_run row referencing it before the workflow

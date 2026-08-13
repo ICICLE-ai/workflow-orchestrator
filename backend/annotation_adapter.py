@@ -1,5 +1,5 @@
-"""Backend endpoint for the 'annotation_format_adapter' step (design-time only,
-submits_job: false — see backend/steps/annotation_format_adapter/step.json).
+"""Backend endpoint for the 'annotation_format_adapter' step (submits_job:
+false — see backend/steps/annotation_format_adapter/step.json).
 
 Unlike the Tapis-job-submitting steps, format conversion is plain data
 reshaping (no GPU, no HPC queue), so it runs inline here at request time —
@@ -7,6 +7,15 @@ same reasoning as geospatial.py's on-demand GeoPackage->Shapefile/GeoJSON
 conversions. All the actual format logic lives in annotation_formats.py
 (pure, no Tapis); this module is just Tapis I/O around it: fetch the source,
 convert, upload the result.
+
+_do_convert below has TWO callers, and they must stay in sync because they are
+the same operation at different times:
+  * the /convert endpoint here — the panel's "Convert now" button, for a source
+    that already exists at design time;
+  * engine/inline_steps.py — the same conversion performed during a RUN, when
+    the node's turn comes in the DAG, for a source an upstream step just
+    produced. That path passes the run owner's token and turns HTTPException
+    into a step failure, since there's no response to return outside a request.
 
 Auth/URL helpers are duplicated from main.py rather than imported — same
 "avoid a circular import: main imports this module to mount its router" reason
@@ -28,7 +37,12 @@ import annotation_formats as fmt
 
 router = APIRouter(prefix="/api/annotation-adapter", tags=["annotation-adapter"])
 
-FORMATS = ("native", "coco", "yolo", "geopackage")
+# 'sam3_exemplars' is a destination only: it's the zero_shot_annotation job's
+# PROMPT file (SAM3 geometry prompts), not an annotation format, so it has no
+# parser and nothing round-trips back out of it. Everything else converts both
+# ways — hence two tuples rather than one FORMATS.
+FROM_FORMATS = ("native", "coco", "yolo", "geopackage")
+TO_FORMATS = FROM_FORMATS + ("sam3_exemplars",)
 
 
 def _current_user(request: Request, db: Session = Depends(get_db)) -> AppUser:
@@ -74,6 +88,48 @@ def _tapis_list(system: str, path: str, token: str) -> list:
     return resp.json().get("result", [])
 
 
+def _path_type(system: str, path: str, token: str) -> str | None:
+    """Whether `path` already exists on Tapis, and if so as a 'file' or 'dir' —
+    found by listing its PARENT and matching by name (listing `path` itself
+    would, for a directory, return its CONTENTS rather than a self-describing
+    entry, which doesn't tell you what `path` itself is). None if `path`
+    doesn't exist yet, or the parent can't be listed."""
+    path = path.rstrip("/")
+    parent, _, name = path.rpartition("/")
+    parent = parent or "/"
+    try:
+        resp = httpx.get(_tapis_url("ops", system, parent), headers={"X-Tapis-Token": token}, timeout=30)
+    except Exception:
+        return None
+    if resp.status_code != 200:
+        return None
+    for item in resp.json().get("result", []):
+        if item.get("name") == name:
+            return item.get("type")
+    return None
+
+
+def _reject_if_directory(system: str, path: str, token: str) -> None:
+    """Guard for a FILE-mode destination (to_format native/coco/geopackage):
+    fail clearly up front if `path` already exists as a directory on Tapis,
+    instead of silently colliding — the most likely real cause being a
+    zero_shot_annotation `--output_dir` (itself a directory, holding an
+    annotations/annotations_<model>_<timestamp>.json inside it) reused
+    verbatim as this adapter's destination. Not called for to_format=yolo,
+    where `path` IS meant to be a directory."""
+    if _path_type(system, path, token) == "dir":
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Destination '{path}' already exists as a DIRECTORY on Tapis, not a file. "
+                "This adapter writes the converted output directly AT the destination path for "
+                "native/coco/geopackage — no filename is appended, unlike a job's own --output_dir "
+                "convention. Point it at a distinct file path instead (e.g. "
+                ".../converted_annotations.json), not a directory a job already writes into."
+            ),
+        )
+
+
 def _tapis_upload(system: str, path: str, content: bytes, token: str, content_type: str) -> None:
     filename = path.rstrip("/").split("/")[-1] or "file"
     try:
@@ -103,8 +159,9 @@ class ConvertRequest(BaseModel):
     annotations: TapisLoc | None = None    # native/coco JSON file
     annotations_dir: TapisLoc | None = None  # yolo: flat directory of *.txt + classes.txt
     annotations_gpkg: TapisLoc | None = None  # geopackage source file
-    images: TapisLoc | None = None          # image directory (dims for coco/yolo)
-    dest: TapisLoc                          # destination: file (native/coco/geopackage) or directory (yolo)
+    images: TapisLoc | None = None          # image directory (dims for coco/yolo; key relativization for sam3_exemplars)
+    dest: TapisLoc                          # destination: file (native/coco/geopackage/sam3_exemplars) or directory (yolo)
+    text_prompts: list[str] | None = None   # sam3_exemplars only: top-level free-text concepts
 
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif"}
@@ -143,10 +200,34 @@ def _image_sizes(system: str, path: str, files: set, token: str) -> dict:
 
 @router.post("/convert")
 def convert(body: ConvertRequest, db: Session = Depends(get_db), user: AppUser = Depends(_current_user)):
-    if body.from_format not in FORMATS or body.to_format not in FORMATS:
-        raise HTTPException(status_code=422, detail=f"format must be one of {FORMATS}")
+    if body.from_format not in FROM_FORMATS:
+        raise HTTPException(status_code=422, detail=f"from_format must be one of {FROM_FORMATS}")
+    if body.to_format not in TO_FORMATS:
+        raise HTTPException(status_code=422, detail=f"to_format must be one of {TO_FORMATS}")
     token = _user_tapis_token(user, db)
 
+    # annotation_formats' parsers/builders assume well-formed input for their
+    # declared format and raise ValueError/KeyError/TypeError on anything
+    # else (e.g. from_format='coco' pointed at a JSON file that isn't
+    # actually COCO-shaped) — deliberately not caught inside them, since a
+    # step.json field like ${x} substitution has no way to pre-validate file
+    # *content*. Caught here instead, once, so a bad-shape source surfaces as
+    # a clear 422 naming the actual problem rather than an unhandled 500.
+    # HTTPExceptions raised deliberately below (missing inputs, auth, Tapis
+    # errors) pass through unchanged — only these three "the data wasn't
+    # shaped like we expected" exception types get reinterpreted.
+    try:
+        return _do_convert(body, token)
+    except HTTPException:
+        raise
+    except (ValueError, KeyError, TypeError) as e:
+        raise HTTPException(
+            status_code=422,
+            detail=f"'{body.from_format}' source doesn't look like a valid {body.from_format} file: {e}",
+        )
+
+
+def _do_convert(body: ConvertRequest, token: str) -> dict:
     # 1. Parse the source into the canonical per_file shape.
     if body.from_format in ("native", "coco"):
         if not body.annotations:
@@ -186,7 +267,12 @@ def convert(body: ConvertRequest, db: Session = Depends(get_db), user: AppUser =
 
     detection_count = sum(len(v) for v in per_file.values())
 
-    # 2. Serialize to to_format and upload.
+    # 2. Serialize to to_format and upload. native/coco/geopackage write ONE
+    # file directly at dest.path, so catch a directory already sitting there
+    # (e.g. a reused --output_dir) before uploading rather than after.
+    if body.to_format != "yolo":
+        _reject_if_directory(body.dest.system, body.dest.path, token)
+
     if body.to_format in ("native", "coco"):
         image_sizes = {}
         if body.to_format == "coco":
@@ -194,6 +280,25 @@ def convert(body: ConvertRequest, db: Session = Depends(get_db), user: AppUser =
                 raise HTTPException(status_code=422, detail="to_format='coco' needs 'images' (for width/height).")
             image_sizes = _image_sizes(body.images.system, body.images.path, set(per_file.keys()), token)
         out = fmt.build_native(per_file, annotation_type) if body.to_format == "native" else fmt.build_coco(per_file, image_sizes)
+        _tapis_upload(body.dest.system, body.dest.path, _dumps(out), token, "application/json")
+        written = [body.dest.path]
+    elif body.to_format == "sam3_exemplars":
+        # 'images' is OPTIONAL here, unlike coco/yolo: it only sharpens the
+        # exemplar KEY (a path relative to the image dir, preserving any
+        # subdirectory) — without it the basename is used, which the job also
+        # accepts. No image is downloaded, so this stays a cheap conversion
+        # even on large datasets.
+        out = fmt.build_sam3_exemplars(
+            per_file,
+            image_dir=body.images.path if body.images else None,
+            text_prompts=body.text_prompts,
+        )
+        if not out["exemplars"] and not out.get("text_prompts"):
+            raise HTTPException(
+                status_code=422,
+                detail="Nothing to write: the source has no boxes and no text prompts were given. "
+                       "The zero-shot job needs at least one of the two.",
+            )
         _tapis_upload(body.dest.system, body.dest.path, _dumps(out), token, "application/json")
         written = [body.dest.path]
     elif body.to_format == "geopackage":

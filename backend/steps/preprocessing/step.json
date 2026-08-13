@@ -1,5 +1,6 @@
 {
   "step_type_key": "preprocess",
+  "resources": { "gpu": false },
   "display_name": "Preprocessing",
   "description": "Process CSV and Shapefile data",
   "category": "Data Pre-processing",

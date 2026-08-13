@@ -1,5 +1,6 @@
 {
   "step_type_key": "geospatial",
+  "resources": { "gpu": false },
   "display_name": "🌐 Geospatial (GeoPackage)",
   "description": "Builds a GeoPackage (.gpkg) of weed/residue heatmap and farm-boundary layers from Harvest-style JSON results + image EXIF GPS, via the generate-geopackage Tapis app. Shapefile/GeoJSON/raw-GeoPackage exports are generated on demand via /api/pipeline-runs/{run_id}/geospatial/... (see backend/geospatial.py) — the GeoPackage itself is the only thing stored.",
   "category": "Post-processing",

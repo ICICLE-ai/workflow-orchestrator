@@ -1,5 +1,6 @@
 {
    "step_type_key": "image-preprocess-studio",
+   "resources": { "gpu": false },
    "display_name": "Image preprocessing studio",
    "description": "Visualize OpenCV operations & submit a batch job for pre-processing",
    "category": "Data Pre-processing",
@@ -31,7 +32,7 @@
       "description": "Recursive OpenCV pre-processing from the Image Playground",
       "execSystemId": "${exec_system}",
       "execSystemLogicalQueue": "${exec_queue}",
-      "archiveSystemId": "${exec_system}",
+      "archiveSystemId": "${archive_system}",
       "archiveSystemDir": "${output_path}",
       "archiveOnAppError": true,
       "nodeCount": 1,

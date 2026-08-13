@@ -1,5 +1,6 @@
 {
   "step_type_key": "object_detector",
+  "resources": { "gpu": true },
   "display_name": "Object Detection",
   "description": "Detects objects in images (OWLv2), producing bounding-box results.",
   "category": "Inference",
@@ -28,8 +29,8 @@
     "appId": "harvest-Classifier-gupta.1543",
     "appVersion": "1.0.0",
     "description": "Object detection over an image directory",
-    "execSystemId": "expanse-tapis",
-    "execSystemLogicalQueue": "tapisGPUshared",
+    "execSystemId": "${exec_system}",
+    "execSystemLogicalQueue": "${exec_queue}",
     "archiveSystemId": "${archive_system}",
     "archiveSystemDir": "${archive_dir}",
     "nodeCount": 1,

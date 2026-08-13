@@ -4,6 +4,7 @@ import { IconActivity, IconArrowLeft, IconRefresh, IconChevronDown, IconChevronR
 import { useNavigate } from "react-router";
 import { useState, useEffect, useCallback } from "react";
 import { apiFetch } from "../lib/api";
+import TopNav from "../components/TopNav";
 
 export async function clientLoader() {
   const res = await apiFetch("/api/pipeline-runs");
@@ -200,6 +201,7 @@ export default function Runs({ loaderData }: Route.ComponentProps) {
               <IconActivity size={16} />
             </ThemeIcon>
             <Text fw={700}>Harvest</Text>
+            <TopNav />
           </Group>
         </Group>
       </AppShell.Header>

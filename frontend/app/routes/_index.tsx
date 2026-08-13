@@ -3,6 +3,7 @@ import { AppShell, Container, Title, Text, Button, Group, Card, SimpleGrid, Them
 import { IconLayoutDashboard, IconActivity, IconFolder } from "@tabler/icons-react";
 import { useNavigate } from "react-router";
 import SecretsMenu from "../components/SecretsMenu";
+import TopNav from "../components/TopNav";
 
 export function meta({}: Route.MetaArgs) {
   return [
@@ -26,6 +27,7 @@ export default function Dashboard() {
               <IconActivity size={20} />
             </ThemeIcon>
             <Text fw={700} size="lg">Harvest</Text>
+            <TopNav />
           </Group>
           <SecretsMenu />
         </Group>

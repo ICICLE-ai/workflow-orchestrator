@@ -224,10 +224,14 @@ def get_node_config_schema(node_key: str) -> dict:
 
 @ds.transaction(isolation_level="READ COMMITTED")
 def get_node_output_ports(node_key: str) -> list:
-    """Return this node's output ports as {name, output_path} dicts.
+    """Return this node's output ports as {name, output_path, file_glob} dicts.
 
     output_path is the artifact's subpath within the step's job output dir
     (e.g. 'predictions.json'); None for source nodes / single-artifact steps.
+    file_glob, when set, means output_path names a DIRECTORY containing one
+    dynamically (e.g. timestamp-)named file rather than the artifact itself —
+    see engine.tapis.resolve_latest_file and _derive_outputs in
+    engine/workflows.py, which resolve it into the actual file's path.
     Used to expose each output port's specific path to downstream nodes/sinks.
     """
     session = ds.sql_session()
@@ -240,7 +244,7 @@ def get_node_output_ports(node_key: str) -> list:
             StepTypePort.direction == "output",
         )
     ).scalars().all()
-    return [{"name": p.port_name, "output_path": p.output_path} for p in ports]
+    return [{"name": p.port_name, "output_path": p.output_path, "file_glob": p.file_glob} for p in ports]
 
 
 @ds.transaction(isolation_level="READ COMMITTED")
@@ -359,13 +363,85 @@ def _exec_system_dirs(exec_system: str, slurm_account: str) -> tuple:
     return (None, None, None)
 
 
+def _default_work_dir(exec_system: str, slurm_account: str, username: str = "") -> str:
+    """Base scratch/project dir for `exec_system`. Python twin of
+    frontend/app/lib/tapis.ts's defaultWorkDir — needed here now that exec
+    system varies PER NODE: a single run-level work_dir can't serve a run whose
+    GPU steps are on Expanse and CPU steps on OSC, since the two sites have
+    entirely different scratch layouts. Returns "" for an unrecognized system,
+    which get_run_archive_context treats the same as an unset work_dir.
+    """
+    if exec_system in _OSC_EXEC_SYSTEMS:
+        return f"/fs/scratch/{slurm_account}/jobs/"
+    if exec_system == "expanse-tapis-static":
+        return "/jobs/"
+    if exec_system == "expanse-tapis":
+        return f"/expanse/lustre/scratch/{username}/temp_project/jobs/"
+    return ""
+
+
+# Per-node exec overrides live in the node's config_values under these
+# camelCase keys — deliberately NOT the snake_case names used for ${...}
+# substitution. workflows.py builds its context as
+# {**get_run_archive_context(...), **resolved}, spreading node config LAST, so
+# a node key literally named "exec_system" would shadow ${exec_system} while
+# archive_dir / archive_uri / execSystem*Dir stayed derived from the RUN-level
+# system — a job running on system A with exec dirs computed for system B.
+# Reading camelCase here (and resolving everything downstream from it) keeps
+# one source of truth, and matches the existing nodeCount/coresPerNode/gpus
+# reserved keys, which are camelCase for the same "not a placeholder" reason.
+_NODE_EXEC_SYSTEM_KEY = "execSystem"
+_NODE_EXEC_QUEUE_KEY = "execQueue"
+
+
+def resolve_node_exec_target(cfg: dict, node_config: dict, step_resources: dict) -> tuple:
+    """Pick (exec_system, exec_queue) for one node, most specific first:
+
+      1. the node's own execSystem/execQueue override (Run Configuration modal)
+      2. the run's GPU pair, when the step's step.json declares resources.gpu
+      3. the run's CPU pair (also the fallback when no GPU pair was given)
+
+    `cfg` is the run's frozen_config, `node_config` the node's config_values,
+    `step_resources` the step_type_registry.resources mirror of step.json.
+    """
+    cpu_system = cfg.get("exec_system") or "expanse-tapis"
+    cpu_queue = cfg.get("exec_queue") or ""
+    if (step_resources or {}).get("gpu"):
+        exec_system = cfg.get("gpu_exec_system") or cpu_system
+        exec_queue = cfg.get("gpu_exec_queue") or cpu_queue
+    else:
+        exec_system, exec_queue = cpu_system, cpu_queue
+
+    node_config = node_config or {}
+    # An explicit per-node choice always wins, including over the GPU routing.
+    if node_config.get(_NODE_EXEC_SYSTEM_KEY):
+        exec_system = node_config[_NODE_EXEC_SYSTEM_KEY]
+        # A queue name is only meaningful on the system it belongs to, so a
+        # node that overrode the system but not the queue must NOT keep the
+        # run-level queue (e.g. OSC's "gpu" doesn't exist on Expanse). Blank
+        # lets Tapis apply the system's own default queue instead of failing
+        # on a name that isn't there.
+        exec_queue = node_config.get(_NODE_EXEC_QUEUE_KEY) or ""
+    elif node_config.get(_NODE_EXEC_QUEUE_KEY):
+        exec_queue = node_config[_NODE_EXEC_QUEUE_KEY]
+    return exec_system, exec_queue
+
+
 @ds.transaction(isolation_level="READ COMMITTED")
 def get_run_archive_context(run_id: int, node_key: str = None) -> dict:
     """Return substitution values for a step's Tapis job spec.
 
-    Exec-system values come from frozen_config (RunOptions). For OUTPUT location
-    we use a per-run workspace so every step's artifacts are isolated and
-    downstream steps can find them deterministically:
+    Exec target is resolved PER NODE (see resolve_node_exec_target): a node's
+    own execSystem/execQueue override wins, else a step declaring
+    resources.gpu takes the run's GPU pair, else the run's CPU pair. So one run
+    can put zero_shot_annotation on a GPU queue and flight_plan on a CPU queue
+    without either step.json naming a site. execSystem{Exec,Input,Output}Dir
+    follow THIS node's exec system.
+
+    Archive location stays run-level, so every artifact lands on one system and
+    no DAG edge becomes a cross-site transfer. For OUTPUT location we use a
+    per-run workspace so every step's artifacts are isolated and downstream
+    steps can find them deterministically:
 
         workspace = <work_dir>/wf_runs/<run_id>                  (on the exec/archive system)
         this step archives to  <workspace>/<step_type_key>/<node_id>
@@ -383,8 +459,8 @@ def get_run_archive_context(run_id: int, node_key: str = None) -> dict:
 
     exec_system_exec_dir / exec_system_input_dir / exec_system_output_dir feed
     the Tapis job's execSystemExecDir/execSystemInputDir/execSystemOutputDir
-    fields (see _exec_system_dirs) — computed from exec_system alone, the same
-    for every step, so no step.json needs to declare them itself.
+    fields (see _exec_system_dirs) — computed from this node's resolved
+    exec_system, so no step.json needs to declare them itself.
     """
     session = ds.sql_session()
     run = session.execute(
@@ -392,12 +468,39 @@ def get_run_archive_context(run_id: int, node_key: str = None) -> dict:
     ).scalars().one()
     cfg = run.frozen_config or {}
 
-    exec_system = cfg.get("exec_system", "expanse-tapis")
-    exec_queue = cfg.get("exec_queue", "")
-    archive_system = cfg.get("archive_system", exec_system)
-    work_dir = cfg.get("work_dir", "")
     slurm_account = cfg.get("slurm_account", "")
+    username = cfg.get("tapis_username", "")
     archive_dir_override = cfg.get("archive_dir", "")
+
+    # The node being rendered, plus its step's declared compute requirement —
+    # both needed before exec_system can be picked, since exec target is now
+    # per-node (node override -> step's gpu hint -> the run's CPU/GPU pair).
+    node = None
+    if node_key is not None:
+        node = session.execute(
+            select(WfNode).where(WfNode.node_id == int(node_key))
+        ).scalars().one()
+    step_resources = {}
+    if node is not None:
+        registry = session.execute(
+            select(StepTypeRegistry).where(StepTypeRegistry.step_type_key == node.step_type_key)
+        ).scalars().first()
+        step_resources = (registry and registry.resources) or {}
+
+    exec_system, exec_queue = resolve_node_exec_target(
+        cfg, (node.default_config if node is not None else {}) or {}, step_resources
+    )
+
+    # Archive stays RUN-level (one home for every artifact) even though exec
+    # target varies per node: a downstream step's inputs are then always on the
+    # same system, so no edge in the DAG turns into a cross-site transfer of a
+    # full image directory. Only compute moves.
+    archive_system = cfg.get("archive_system") or cfg.get("exec_system") or exec_system
+    # work_dir therefore belongs to the ARCHIVE system, not this node's exec
+    # system — it's only ever used as the archive base below. Derived from
+    # archive_system when the run didn't set one, since a run spanning two
+    # sites has no single correct scratch path to inherit.
+    work_dir = cfg.get("work_dir", "") or _default_work_dir(archive_system, slurm_account, username)
 
     # Per-run workspace, then per-node archive dir within it — /run_id/node_id
     # is always appended (never taken from run options) so every step's output
@@ -412,11 +515,9 @@ def get_run_archive_context(run_id: int, node_key: str = None) -> dict:
         ws_base = "wf_runs"
     workspace = f"{ws_base}/{run_id}"
     # Per-node dir for a specific step, grouped by step type; the workspace
-    # root when no node is given (e.g. the run-level archive base).
-    if node_key is not None:
-        node = session.execute(
-            select(WfNode).where(WfNode.node_id == int(node_key))
-        ).scalars().one()
+    # root when no node is given (e.g. the run-level archive base). `node` was
+    # already loaded above — exec target resolution needs it before this point.
+    if node is not None:
         archive_dir = f"{workspace}/{node.step_type_key}/{node_key}"
     else:
         archive_dir = workspace

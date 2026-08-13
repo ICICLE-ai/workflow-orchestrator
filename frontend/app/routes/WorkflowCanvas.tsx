@@ -1,11 +1,12 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { ReactFlow, ReactFlowProvider, addEdge, useNodesState, useEdgesState, Background, Controls } from '@xyflow/react';
-import { AppShell, Group, Button, Text, ActionIcon, Stack, Title, Drawer, TextInput, Textarea, Select, Notification, Loader, Alert, List, Accordion } from '@mantine/core';
+import { AppShell, Group, Button, Text, ActionIcon, Stack, Title, Drawer, TextInput, Textarea, Select, Notification, Loader, Alert, List, Accordion, Divider } from '@mantine/core';
 import { IconArrowLeft, IconDeviceFloppy, IconX, IconPlayerPlay, IconAlertTriangle } from '@tabler/icons-react';
 import { useNavigate, useParams, useLoaderData } from 'react-router';
 import CustomNode from '../components/CustomNode';
 import { apiFetch, fetchCurrentUser } from '../lib/api';
 import { TAPIS_SYSTEMS, defaultWorkDir } from '../lib/tapis';
+import TopNav from '../components/TopNav';
 
 const nodeTypes = { customNode: CustomNode };
 
@@ -145,8 +146,19 @@ function Flow() {
   // OSC Pitzer (the working exec system); the user can edit before launching.
   const [runSettingsOpened, setRunSettingsOpened] = useState(false);
   const [runOptions, setRunOptions] = useState({
+    // The run declares TWO exec targets, not one: each step's step.json says
+    // whether it needs a GPU ("resources": {"gpu": true}), and the engine routes
+    // it to the matching pair (engine/transactions.py resolve_node_exec_target).
+    // That's what lets zero_shot_annotation land on a GPU queue while
+    // flight_plan/geospatial go to a CPU queue in the SAME run — previously
+    // impossible, since every step either followed one run-level pair or
+    // hardcoded its own site in step.json.
     exec_system: 'pitzer-tapis',
-    exec_queue: 'gpu',
+    exec_queue: 'cpu',
+    // Blank inherits the CPU pair above, preserving single-target behaviour for
+    // runs that don't care to split.
+    gpu_exec_system: 'pitzer-tapis',
+    gpu_exec_queue: 'gpu',
     work_dir: defaultWorkDir('pitzer-tapis', { slurmAccount: 'PAS2699' }),
     archive_system: 'pitzer-tapis',
     // Optional override for the base archive directory (run_id/step_type_key/
@@ -162,45 +174,61 @@ function Flow() {
     fetchCurrentUser().then((u) => setTapisUsername(u?.username || ''));
   }, []);
 
-  // The exec system fixes the run's working directory layout (each system has
-  // its own scratch/project path convention) — recompute it whenever the exec
-  // system, charge account, or Tapis username changes.
+  // work_dir is the base every step ARCHIVES under, and archiving stays
+  // run-level even now that exec target is per-node — so it follows the
+  // ARCHIVE system's scratch/project layout, not any one step's exec system.
+  // (A run whose GPU steps are on Expanse and CPU steps on OSC has no single
+  // exec system to inherit a path from; its artifacts still have one home.)
   useEffect(() => {
     setRunOptions((prev) => ({
       ...prev,
-      work_dir: defaultWorkDir(prev.exec_system, { slurmAccount: prev.slurm_account, username: tapisUsername }),
+      work_dir: defaultWorkDir(prev.archive_system, { slurmAccount: prev.slurm_account, username: tapisUsername }),
     }));
-  }, [runOptions.exec_system, runOptions.slurm_account, tapisUsername]);
+  }, [runOptions.archive_system, runOptions.slurm_account, tapisUsername]);
 
   // Queue choices come from the exec system itself (Tapis' batchLogicalQueues),
-  // not a hardcoded list — refetch whenever the exec system changes.
-  const [queues, setQueues] = useState<any[]>([]);
-  const [queuesLoading, setQueuesLoading] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    setQueuesLoading(true);
-    apiFetch(`/api/tapis-systems/${runOptions.exec_system}/queues`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => {
-        if (cancelled || !d) return;
-        setQueues(d.queues || []);
-        // Keep the current queue if it's still offered by this system;
-        // otherwise fall back to the system's default (or the first queue).
-        setRunOptions((prev) => {
-          const names = (d.queues || []).map((q: any) => q.name);
-          if (names.includes(prev.exec_queue)) return prev;
-          return { ...prev, exec_queue: d.default_queue || names[0] || prev.exec_queue };
-        });
-      })
-      .catch(() => { if (!cancelled) setQueues([]); })
-      .finally(() => { if (!cancelled) setQueuesLoading(false); });
-    return () => { cancelled = true; };
-  }, [runOptions.exec_system]);
+  // not a hardcoded list. Fetched once per system, for each of the two targets.
+  const cpuQueues = useSystemQueues(runOptions.exec_system);
+  const gpuQueues = useSystemQueues(runOptions.gpu_exec_system);
 
-  // Human-readable limits for the currently selected queue, shown as the
-  // Select's description once queues have loaded.
-  const selectedQueueDetail = (() => {
-    const q = queues.find((qq: any) => qq.name === runOptions.exec_queue);
+  // Keep each queue valid for its own system: when a system changes, a queue
+  // name it doesn't offer is replaced by that system's default.
+  useEffect(() => {
+    const names = cpuQueues.queues.map((q: any) => q.name);
+    if (!names.length) return;
+    setRunOptions((prev) =>
+      names.includes(prev.exec_queue)
+        ? prev
+        : { ...prev, exec_queue: cpuQueues.defaultQueue || names[0] || prev.exec_queue }
+    );
+  }, [cpuQueues.queues, cpuQueues.defaultQueue]);
+  useEffect(() => {
+    const names = gpuQueues.queues.map((q: any) => q.name);
+    if (!names.length) return;
+    setRunOptions((prev) =>
+      names.includes(prev.gpu_exec_queue)
+        ? prev
+        : { ...prev, gpu_exec_queue: gpuQueues.defaultQueue || names[0] || prev.gpu_exec_queue }
+    );
+  }, [gpuQueues.queues, gpuQueues.defaultQueue]);
+
+  const queues = cpuQueues.queues;
+  const queuesLoading = cpuQueues.loading;
+
+  // Which steps actually on this canvas will follow the GPU target — makes the
+  // routing concrete instead of asking the user to remember which step types
+  // declare "resources": {"gpu": true}.
+  const gpuStepNames = Array.from(new Set(
+    nodes
+      .filter((n: any) => n.data?.fullStepConfig?.resources?.gpu)
+      .map((n: any) => n.data?.fullStepConfig?.display_name || n.data?.nodeType)
+      .filter(Boolean)
+  )) as string[];
+
+  // Human-readable limits for a selected queue, shown as the Select's
+  // description once queues have loaded.
+  const queueDetail = (qs: any[], name: string) => {
+    const q = qs.find((qq: any) => qq.name === name);
     if (!q) return null;
     const parts = [
       q.maxNodeCount != null && `max ${q.maxNodeCount} node(s)`,
@@ -208,7 +236,9 @@ function Flow() {
       q.maxMinutes != null && `${q.maxMinutes} min max`,
     ].filter(Boolean);
     return parts.length ? parts.join(" · ") : null;
-  })();
+  };
+  const selectedQueueDetail = queueDetail(queues, runOptions.exec_queue);
+  const gpuQueueDetail = queueDetail(gpuQueues.queues, runOptions.gpu_exec_queue);
 
   // Build the type checker once
   const isTypeCompatible = useCallback(
@@ -473,6 +503,7 @@ function Flow() {
               <IconArrowLeft size={20} />
             </ActionIcon>
             <Title order={4}>{templateData ? `${templateData.name} v${templateData.version}` : 'New Template'}</Title>
+            <TopNav />
           </Group>
           <Group gap="sm">
             {templateData && (
@@ -657,11 +688,16 @@ function Flow() {
       <Drawer opened={runSettingsOpened} onClose={() => setRunSettingsOpened(false)} title="Run Settings" position="right">
         <Stack>
           <Text size="sm" c="dimmed">
-            Where this workflow's jobs run on Tapis. Defaults target OSC Pitzer.
+            Where this workflow's jobs run on Tapis. Each step declares whether it needs a GPU, and is routed
+            to the matching target below — so GPU steps (zero-shot, training) and CPU steps (flight plan,
+            geospatial) can run on different systems and queues within one run. A step can still pin its own
+            system via its Run Configuration.
           </Text>
+
+          <Divider label="CPU target" labelPosition="left" />
           <Select
             label="Exec system"
-            description="Tapis compute system this run's jobs execute on"
+            description="Where steps with no GPU requirement run"
             data={TAPIS_SYSTEMS}
             value={runOptions.exec_system}
             allowDeselect={false}
@@ -687,6 +723,32 @@ function Flow() {
             placeholder={queuesLoading ? "Loading…" : "Select a queue"}
             allowDeselect={false}
           />
+
+          <Divider label="GPU target" labelPosition="left" />
+          <Select
+            label="Exec system"
+            description={`Where steps declaring a GPU requirement run${gpuStepNames.length ? ` — ${gpuStepNames.join(', ')} on this canvas` : ' (none on this canvas yet)'}`}
+            data={TAPIS_SYSTEMS}
+            value={runOptions.gpu_exec_system}
+            allowDeselect={false}
+            onChange={(v) => setRunOptions((prev) => ({ ...prev, gpu_exec_system: v ?? prev.gpu_exec_system }))}
+          />
+          <Select
+            label="Queue"
+            description={
+              gpuQueues.loading
+                ? "Loading queues from the GPU exec system…"
+                : gpuQueueDetail || "Scheduler queue offered by the GPU exec system"
+            }
+            data={gpuQueues.queues.map((q: any) => q.name).filter(Boolean)}
+            value={runOptions.gpu_exec_queue}
+            onChange={(v) => setRunOptions((prev) => ({ ...prev, gpu_exec_queue: v ?? prev.gpu_exec_queue }))}
+            disabled={gpuQueues.loading}
+            placeholder={gpuQueues.loading ? "Loading…" : "Select a queue"}
+            allowDeselect={false}
+          />
+
+          <Divider label="Shared" labelPosition="left" />
           <TextInput
             label="Slurm account"
             description="Allocation to charge (e.g. PAS2699)"
@@ -721,6 +783,36 @@ function Flow() {
       </Drawer>
     </AppShell>
   );
+}
+
+// Fetch a Tapis exec system's batch logical queues. Used once per exec target
+// (the run declares a CPU one and a GPU one), so it's a hook rather than an
+// inline effect — two copies of the fetch/cancel/failure handling would
+// otherwise sit side by side in Flow.
+function useSystemQueues(system: string) {
+  const [queues, setQueues] = useState<any[]>([]);
+  const [defaultQueue, setDefaultQueue] = useState<string>('');
+  const [loading, setLoading] = useState(false);
+  useEffect(() => {
+    if (!system) {
+      setQueues([]);
+      setDefaultQueue('');
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    apiFetch(`/api/tapis-systems/${system}/queues`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (cancelled || !d) return;
+        setQueues(d.queues || []);
+        setDefaultQueue(d.default_queue || '');
+      })
+      .catch(() => { if (!cancelled) setQueues([]); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [system]);
+  return { queues, defaultQueue, loading };
 }
 
 export default function WorkflowCanvasWrapper() {

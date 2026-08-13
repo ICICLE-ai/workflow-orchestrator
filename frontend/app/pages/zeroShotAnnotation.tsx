@@ -1,10 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Stack, Group, Text, Title, NumberInput, TextInput, TagsInput, Select, Switch,
-  SegmentedControl, ScrollArea, Divider, Badge,
+  SegmentedControl, ScrollArea, Divider, Badge, Button, Tooltip,
 } from "@mantine/core";
+import { IconLink } from "@tabler/icons-react";
 import type { StepPanelProps } from "./types";
 import { apiFetch } from "../lib/api";
+import { resolveWiredLocation, splitTapisUri } from "../lib/tapis";
 import ParamSection from "../components/ParamSection";
 import TapisPathField from "../components/TapisPathField";
 
@@ -21,7 +23,7 @@ import TapisPathField from "../components/TapisPathField";
 //
 // prompt_mode is UI-only (see step.json): it decides which prompt section is
 // shown, but doesn't gate what's sent to the job — text_prompts and
-// prompt_file are each included whenever set, so switching modes never
+// annotation_file are each included whenever set, so switching modes never
 // silently discards the other one's value.
 //
 // Registered in registry.ts under the key "zero_shot_annotation".
@@ -36,14 +38,90 @@ export default function ZeroShotAnnotationPanel({ config, onChange, step, connec
 
   const promptMode = String(field("prompt_mode") ?? "text");
   const textPrompts = String(field("text_prompts") ?? "");
-  const promptFile = String(field("prompt_file") ?? "");
   const isSahi = Boolean(field("is_sahi"));
-  const hasExemplars = promptFile.trim().length > 0;
+
+  // annotation_file is stored as a FULL tapis://system/path URI, not a bare
+  // path alongside a separate `system` field. It has to be: the key doubles as
+  // an input port name, so once that port is wired the backend's
+  // _resolve_inputs overwrites this config value with the upstream output's
+  // URI at run time (see step.json). A bare path here would then have meant
+  // step.json's fileInput needed a "tapis://${system}" prefix that the wired
+  // URI doesn't want — doubling the scheme. Split it back apart only for
+  // TapisPathField's two-widget display, falling back to the legacy
+  // bare-path + config.system shape so nodes saved before this still open.
+  const promptFileUri = String(field("annotation_file") ?? "");
+  const promptFileParts = splitTapisUri(promptFileUri);
+  const promptFileSystem = promptFileParts?.system ?? String(config.system ?? "");
+  const promptFile = promptFileParts?.path ?? promptFileUri;
+  const hasExemplars = promptFileUri.trim().length > 0;
+
+  const setPromptFile = (nextSystem: string, nextPath: string) =>
+    onChange({
+      ...config,
+      // `system` is kept in sync purely so a node saved by this panel still
+      // reads correctly if anything falls back to the legacy shape above.
+      system: nextSystem,
+      annotation_file:
+        nextSystem && nextPath ? `tapis://${nextSystem}/${nextPath.replace(/^\/+/, "")}` : nextPath,
+    });
 
   const setTextPromptTags = (tags: string[]) => {
     const cleaned = tags.map((t) => t.trim()).filter(Boolean);
     set("text_prompts", cleaned.map((t) => (t.includes(" ") ? `"${t}"` : t)).join(" "));
   };
+
+  // Optional 'annotation_file' input — wiring an existing annotations/
+  // exemplar-prompt JSON in populates annotation_file (+ its system) instead of
+  // browsing/typing it by hand. resolveWiredLocation pulls both off the wire
+  // (CustomNode's resolveOutputPath returns a full tapis://system/path URI
+  // for a wired source-like node); only resolves for a directly-wired
+  // DESIGN-TIME node, same caveat as every other connectedInputs read (see
+  // StepPanelProps.ConnectedInput) — an upstream JOB step's output isn't
+  // available here until it's actually run.
+  const annotationFileInputPort = step.inputs.find((p) => p.port_name === "annotation_file")?.port_name;
+  const annotationFileWire = annotationFileInputPort ? connectedInputs[annotationFileInputPort] : undefined;
+  const wiredAnnotationFile = resolveWiredLocation(annotationFileWire);
+  // The edge exists but carries no usable location. The common cause is an
+  // upstream node holding a `path` with no `system` — resolveWiredLocation
+  // returns null rather than guess a system, and resolveOutputPath only emits
+  // a tapis://system/path URI when both are set. Most often that's a
+  // smart_labeler whose annotations.json was saved while its system Select
+  // showed a DERIVED default the user never explicitly picked. Worth saying
+  // out loud: otherwise a correctly-drawn edge looks identical to no edge.
+  const wiredButUnresolved = !!annotationFileWire && !wiredAnnotationFile;
+
+  // Also flips prompt_mode to "exemplar": the Prompt file field only EXISTS in
+  // that mode (see the SegmentedControl below), and prompt_mode defaults to
+  // "text" — so filling annotation_file while still in text mode wrote the
+  // value somewhere with no on-screen representation at all, which reads
+  // exactly like "I wired the input and nothing turned up." Wiring an
+  // exemplar file is an unambiguous statement of intent to use exemplars, so
+  // switch to the view that shows it. Nothing is discarded either way:
+  // prompt_mode is UI-only and text_prompts is still sent when set.
+  const applyWiredAnnotationFile = () => {
+    if (!wiredAnnotationFile) return;
+    const { system, path } = wiredAnnotationFile;
+    onChange({
+      ...config,
+      system,
+      annotation_file: system && path ? `tapis://${system}/${path.replace(/^\/+/, "")}` : path,
+      prompt_mode: "exemplar",
+    });
+  };
+
+  // Auto-populate once per connection, and only when the user hasn't already
+  // set a annotation_file — an explicit edit (including clearing it back out)
+  // always takes precedence, matching every other wired-vs-manual field in
+  // this app (e.g. smartLabeler.tsx's Run Configuration system default).
+  const autoPopulatedRef = useRef(false);
+  useEffect(() => {
+    if (autoPopulatedRef.current) return;
+    if (!wiredAnnotationFile) return;
+    if (promptFileUri) return;
+    autoPopulatedRef.current = true;
+    applyWiredAnnotationFile();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wiredAnnotationFile?.system, wiredAnnotationFile?.path, promptFileUri]);
 
   // SAM3 (facebook/sam3) is a gated HuggingFace checkpoint — the job needs an
   // HF_TOKEN with access to it (see step.json's hf_token field). "secret"
@@ -103,24 +181,82 @@ export default function ZeroShotAnnotationPanel({ config, onChange, step, connec
             />
 
             {promptMode === "text" ? (
-              <TagsInput
-                label="Text prompts"
-                description={tip("text_prompts")}
-                placeholder="Type a concept and press Enter (e.g. tree, parked car)"
-                value={parsePromptTags(textPrompts)}
-                onChange={setTextPromptTags}
-              />
+              <Stack gap="xs">
+                <TagsInput
+                  label="Text prompts"
+                  description={tip("text_prompts")}
+                  placeholder="Type a concept and press Enter (e.g. tree, parked car)"
+                  value={parsePromptTags(textPrompts)}
+                  onChange={setTextPromptTags}
+                />
+                {/* The Prompt file field lives only in the other mode, so a
+                    wired annotation_file (or one already set and then switched
+                    away from) is invisible here — say so rather than leaving
+                    the wire looking like it did nothing. */}
+                {(wiredAnnotationFile || hasExemplars || wiredButUnresolved) && (
+                  <Group gap="xs" align="center">
+                    <Badge size="xs" variant="light" color={wiredButUnresolved && !hasExemplars ? "yellow" : "blue"}>
+                      {hasExemplars
+                        ? "A prompt file is set — switch to Exemplar prompts to see it"
+                        : wiredButUnresolved
+                          ? "An annotation_file input is wired but has no resolvable location — switch to Exemplar prompts for details"
+                          : "An annotation_file input is wired — switch to Exemplar prompts to use it"}
+                    </Badge>
+                    <Button
+                      size="compact-xs"
+                      variant="subtle"
+                      leftSection={<IconLink size={12} />}
+                      onClick={() => set("prompt_mode", "exemplar")}
+                    >
+                      Switch
+                    </Button>
+                  </Group>
+                )}
+              </Stack>
             ) : (
               <Stack gap="xs">
-                <TapisPathField
-                  label="Prompt file"
-                  description={tip("prompt_file")}
-                  system={String(config.system ?? "")}
-                  path={promptFile}
-                  selectType="file"
-                  onSystemChange={(v) => set("system", v)}
-                  onPathChange={(v) => set("prompt_file", v)}
-                />
+                <Group align="flex-end" gap="xs" wrap="nowrap">
+                  <div style={{ flex: 1 }}>
+                    <TapisPathField
+                      label="Prompt file"
+                      description={tip("annotation_file")}
+                      system={promptFileSystem}
+                      path={promptFile}
+                      selectType="file"
+                      onSystemChange={(v) => setPromptFile(v, promptFile)}
+                      onPathChange={(v) => setPromptFile(promptFileSystem, v)}
+                    />
+                  </div>
+                  {wiredAnnotationFile && (
+                    <Tooltip label={`Use the wired annotation_file input (${wiredAnnotationFile.system}:${wiredAnnotationFile.path}) as the prompt file`}>
+                      <Button
+                        size="sm"
+                        variant="default"
+                        leftSection={<IconLink size={14} />}
+                        onClick={applyWiredAnnotationFile}
+                      >
+                        Use wired
+                      </Button>
+                    </Tooltip>
+                  )}
+                </Group>
+                {wiredButUnresolved && (
+                  <Badge size="xs" variant="light" color="yellow" style={{ height: "auto", whiteSpace: "normal", textTransform: "none", lineHeight: 1.4, padding: "4px 8px" }}>
+                    An annotation_file input is connected
+                    {annotationFileWire?.sourceType ? ` (from ${annotationFileWire.sourceType})` : ""}, but it
+                    resolves to no location — the upstream node has a path with no Tapis system saved
+                    alongside it, so its output port can't produce a tapis://system/path URI. Open that node,
+                    pick its system explicitly and re-save it, then reopen this panel. Meanwhile you can
+                    browse for the file by hand below.
+                  </Badge>
+                )}
+                {wiredAnnotationFile &&
+                  promptFile === wiredAnnotationFile.path &&
+                  promptFileSystem === wiredAnnotationFile.system && (
+                  <Badge size="xs" variant="light" color="blue">
+                    prompt file from wired annotation_file input
+                  </Badge>
+                )}
                 <TagsInput
                   label="Additional text prompts (optional)"
                   description="Text concepts to run alongside the exemplars — not a substitute for text paired with an exemplar in the prompt file itself."

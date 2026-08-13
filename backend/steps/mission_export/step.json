@@ -1,5 +1,6 @@
 {
   "step_type_key": "mission_export",
+  "resources": { "gpu": false },
   "display_name": "📤 Mission Export Adapter",
   "description": "Converts a platform-agnostic flight_plan.json (from the 'flight_plan' step) into drone/GCS-specific mission files, one file per battery/tank-limited charge cycle, via the export-flight-mission Tapis app. Sprayer control is emitted as MAV_CMD_DO_SET_SERVO toggling a configurable servo/relay channel — portable across ArduPilot and PX4. The DJI (.kmz) output's spray-action tag and drone/payload enum values are unverified placeholders (DJI's public docs cover camera/gimbal actions, not Agras spray control) — see the drone_enum_value/payload_enum_value/spray_action_tag/spray_param_tag fields below; swap in real values once confirmed against an actual DJI Pilot 2 / Agras export.",
   "category": "Post-processing",
