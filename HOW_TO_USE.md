@@ -43,7 +43,8 @@ The dashboard is the entry point: **Manage Templates** and **Past Runs**, with a
 persistent *Templates* / *Runs* nav in the header and a ⚙ **Secrets** menu on
 the right.
 
-![Dashboard](./docs/images/dashboard.png)
+![Dashboard](<img width="1916" height="1021" alt="image" src="https://github.com/user-attachments/assets/d73faf86-72d8-4611-b96c-d1fd5cdd0494" />
+)
 
 Sign in first — the widget in the bottom-left corner shows your Tapis username,
 or a **Login with Tapis** button if you aren't signed in yet. Nothing that
@@ -53,7 +54,8 @@ touches files or submits jobs works until you are (see
 1. **Create a template** — go to **Templates → Create New Template**. You land on
    an empty canvas with the step palette down the right-hand side.
 
-   ![Templates list](./docs/images/templates.png)
+   ![Templates list](<img width="1918" height="1021" alt="image" src="https://github.com/user-attachments/assets/8b031ab0-1335-4fdd-bf1f-5d05f468f685" />
+)
 
 2. **Add steps** — the palette groups every registered step into collapsible
    sections: **Data Sources** (green, dashed), the eight pipeline stages —
@@ -61,7 +63,9 @@ touches files or submits jobs works until you are (see
    Training, Inference, Visualization, Post-processing* (blue), and **Data
    Sinks** (amber, dashed). Drag a card onto the canvas to add it as a node.
 
-   ![Step palette](./docs/images/palette.png)
+   ![Step palette](<img width="1918" height="1027" alt="image" src="https://github.com/user-attachments/assets/7a58f3a9-7f77-4e01-87fb-e0d557fe57c1" />
+
+)
 
 3. **Understand a node** — each node shows its display name, its **inputs** on
    the left (teal handles) and **outputs** on the right (violet handles), with a
@@ -73,7 +77,8 @@ touches files or submits jobs works until you are (see
    | 🖥 (purple) | **Run Configuration** — the compute this step requests. Hidden for design-time-only steps. |
    | 🗑 (red) | **Delete** the node and every edge attached to it. |
 
-   ![Node anatomy](./docs/images/node.png)
+   ![Node anatomy](<img width="1918" height="1027" alt="image" src="https://github.com/user-attachments/assets/e8acdd03-297b-4edf-8a5b-c7ddbc802733" />
+)
 
 4. **Connect steps** — drag from an output handle to an input handle. Connections
    are **type-checked**: a link is only allowed when the source port's data type
@@ -81,7 +86,7 @@ touches files or submits jobs works until you are (see
    from it. An incompatible drop is refused with a red *Invalid Connection*
    toast naming both ports and their types.
 
-   ![Connecting nodes](./docs/images/connect.png)
+   ![Connecting nodes](<img width="1918" height="1017" alt="image" src="https://github.com/user-attachments/assets/31e0e6d6-99cd-4426-a89b-33c578b69c73" />)
 
 5. **Configure each step** — click ⚙ on a node. Most steps get a form generated
    straight from their schema (numbers, switches, dropdowns, text, a Tapis path
@@ -91,7 +96,8 @@ touches files or submits jobs works until you are (see
    panel instead, some of them full-screen. Press **Save Configuration** (or
    **Save & Close**) to write the values back onto the node.
 
-   ![Step settings](./docs/images/step-settings.png)
+   ![Step settings](<img width="1919" height="1022" alt="image" src="https://github.com/user-attachments/assets/9d95fc00-b0f6-40bd-b816-65ba8d6b1a3e" />
+)
 
 6. **Set the compute (optional)** — click 🖥 on any step that submits a job to set
    node count, cores per node, memory, max runtime and GPUs. Leave *Execution
@@ -100,7 +106,8 @@ touches files or submits jobs works until you are (see
    pin a system, the queue dropdown loads that system's real queues and warns
    when a request exceeds the queue's limits.
 
-   ![Run configuration](./docs/images/run-config.png)
+   ![Run configuration](<img width="1902" height="1021" alt="image" src="https://github.com/user-attachments/assets/95f21326-1730-4d5a-97cc-30e0c03928b9" />
+)
 
 7. **Save the template** — click **Save Template**, give it a name, description
    and allocation account, then **Confirm Save**.
