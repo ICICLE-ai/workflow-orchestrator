@@ -58,13 +58,23 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-# Baked into the client bundle — see the note above. The defaults match
-# app/lib/api.ts's own fallbacks, so a build with no args still produces a
-# working local-dev image rather than a blank string.
+# Baked into the client bundle — see the note above. The defaults match the
+# code's own fallbacks, so a build with no args still produces a working
+# local-dev image rather than blank strings.
+#
+# EVERY import.meta.env.VITE_* the app reads must be listed here. A var that is
+# only in frontend/.env and not an ARG is not "inherited" by a Docker build —
+# .env isn't copied into the image, so the code silently falls back to its
+# hardcoded default and the mismatch shows up as the app talking to the wrong
+# Tapis tenant rather than as a build error.
 ARG VITE_BACKEND_URL=http://localhost:8002
 ARG VITE_SAM3_ENDPOINT=
+ARG VITE_TAPIS_BASE_URL=https://icicleai.tapis.io
+ARG VITE_DEFAULT_TAPIS_SYSTEM=expanse-tapis-static
 ENV VITE_BACKEND_URL=$VITE_BACKEND_URL \
-    VITE_SAM3_ENDPOINT=$VITE_SAM3_ENDPOINT
+    VITE_SAM3_ENDPOINT=$VITE_SAM3_ENDPOINT \
+    VITE_TAPIS_BASE_URL=$VITE_TAPIS_BASE_URL \
+    VITE_DEFAULT_TAPIS_SYSTEM=$VITE_DEFAULT_TAPIS_SYSTEM
 
 RUN npm run build
 

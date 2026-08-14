@@ -70,7 +70,8 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8002"]
 # --- environment --------------------------------------------------------------
 # Required at RUN time (see .env.example for the full contract):
 #   DB_HOST / DB_PORT / DB_NAME / DB_USER / DB_PASSWORD
-#       Postgres+PostGIS connection. Defaults in db.py target localhost:5433,
+#       Postgres connection (stock Postgres — no PostGIS extension needed).
+#       Defaults in db.py target localhost:5433,
 #       which inside a container is the container itself — always set DB_HOST.
 #       The compose DB publishes 5433, so from Docker Desktop that's
 #       DB_HOST=host.docker.internal DB_PORT=5433; on the same compose network

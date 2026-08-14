@@ -18,7 +18,7 @@ The backend uses Python 3 and FastAPI, and connects to a PostgreSQL database.
    ```bash
    cd backend
    ```
-2. Start the PostgreSQL/PostGIS database using Docker:
+2. Start the PostgreSQL database using Docker:
    ```bash
    docker compose up -d
    ```

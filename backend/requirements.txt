@@ -2,7 +2,6 @@ fastapi
 uvicorn[standard]
 sqlalchemy
 psycopg2-binary
-geoalchemy2
 python-jose[cryptography]
 itsdangerous
 httpx

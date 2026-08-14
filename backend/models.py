@@ -1,7 +1,6 @@
 from sqlalchemy import Column, Integer, String, Boolean, Float, ForeignKey, DateTime, JSON, UniqueConstraint
 from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.sql import func
-from geoalchemy2 import Geometry
 
 Base = declarative_base()
 
@@ -270,9 +269,16 @@ class RunEdge(Base):
     artifact_ref = Column(String)
 
 
+# Nothing reads or writes this table yet — a step's outputs are tracked on
+# run_step. It previously carried a PostGIS `geom` column, which forced the
+# whole database to have the postgis extension for a column no code ever
+# selected; on a stock Postgres that made schema creation fail outright. The
+# geospatial features read geometry from GeoPackage/shapefiles pulled off Tapis
+# (see geospatial.py), never from the database, so the column is gone and
+# postgis is no longer a deployment requirement.
 class RunArtifact(Base):
     __tablename__ = 'run_artifact'
-    
+
     artifact_id = Column(Integer, primary_key=True, index=True)
     run_step_id = Column(Integer, ForeignKey('run_step.run_step_id', ondelete='CASCADE'), nullable=False)
     port_id = Column(Integer, ForeignKey('step_type_port.port_id'), nullable=False)
@@ -281,5 +287,4 @@ class RunArtifact(Base):
     tapis_file_uri = Column(String)
     tapis_system_id = Column(String)
     metadata_json = Column('metadata', JSON, default={})
-    geom = Column(Geometry(geometry_type='GEOMETRY', srid=4326))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
