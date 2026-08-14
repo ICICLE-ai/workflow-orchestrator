@@ -2,7 +2,11 @@ version: '3.8'
 
 services:
   db:
-    image: postgis/postgis:14-3.3
+    # Stock Postgres — the app no longer needs the postgis extension (the one
+    # PostGIS column, run_artifact.geom, was unused and has been removed). Kept
+    # on 14 so an existing harvest_db volume, created by postgis/postgis:14-3.3,
+    # still starts against it; a major-version bump would need a dump/restore.
+    image: postgres:14
     container_name: harvest_db
     environment:
       POSTGRES_USER: wo

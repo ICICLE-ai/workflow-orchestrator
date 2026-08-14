@@ -8,7 +8,7 @@ import os
 import uuid
 import uvicorn
 
-from db import engine, SessionLocal, get_db, DATABASE_URL
+from db import engine, SessionLocal, get_db, DATABASE_URL, DB_HOST, DB_PORT, DB_NAME, DB_USER
 from models import Base, StepTypeRegistry, StepTypePort, WorkflowTemplate, PipelineRun, RunStep, AppUser, WfNode, WfEdge, RunEdge, PortDataType, Secret
 import auth
 import geospatial
@@ -315,13 +315,23 @@ def sync_step_registry(db: Session):
 
 @app.on_event("startup")
 def on_startup():
+    """Create/patch the schema and sync the step registry from steps/*/step.json.
+
+    A failure here is FATAL on purpose. This used to swallow every exception
+    with a warning, which meant a backend that couldn't reach its database — or
+    whose schema was never created — still booted and served happily. Requests
+    with no credential don't touch the database at all (see auth.py's
+    resolve_current_user_with_mode), so they kept returning clean 401s, and the
+    first query behind a real credential blew up as a 500. Because Starlette's
+    error handler sits outside CORSMiddleware, that 500 carries no
+    Access-Control-Allow-Origin and the browser reports it as a CORS failure —
+    an error message pointing nowhere near the actual cause. Crashing at boot
+    with the real exception in the logs is far easier to diagnose.
+    """
+    from sqlalchemy import text
+
     print("Creating database schema...")
     try:
-        # Enable PostGIS extension before creating tables with Geometry
-        from sqlalchemy import text
-        with engine.begin() as conn:
-            conn.execute(text("CREATE EXTENSION IF NOT EXISTS postgis;"))
-        
         # NOTE: In production, you would use Alembic migrations instead of create_all
         Base.metadata.create_all(bind=engine)
         # create_all only adds *missing tables*, not new columns on existing ones.
@@ -349,16 +359,21 @@ def on_startup():
                 "ALTER TABLE step_type_port "
                 "ADD COLUMN IF NOT EXISTS file_glob VARCHAR;"
             ))
-        print("Database schema created.")
-        
-        # Sync Dynamic Steps
-        db = SessionLocal()
-        sync_step_registry(db)
-        db.close()
-        
     except Exception as e:
-        print(f"Warning: Could not initialize database schema locally: {e}")
-        print("This is expected if PostGIS is not installed natively. Please use Docker for DB.")
+        raise RuntimeError(
+            f"Database schema initialization failed against "
+            f"{DB_USER}@{DB_HOST}:{DB_PORT}/{DB_NAME}: {type(e).__name__}: {e}. "
+            "Check that the database is reachable and that DB_HOST / DB_PORT / "
+            "DB_NAME / DB_USER / DB_PASSWORD are set for this deployment."
+        ) from e
+    print("Database schema created.")
+
+    # Sync Dynamic Steps
+    db = SessionLocal()
+    try:
+        sync_step_registry(db)
+    finally:
+        db.close()
 
     # Launch the DBOS durable-execution engine. The fastapi=app integration is
     # meant to launch DBOS on the ASGI lifespan startup event, but that hook does
