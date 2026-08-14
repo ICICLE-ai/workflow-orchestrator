@@ -13,7 +13,8 @@ import "@mantine/core/styles.css";
 import "@xyflow/react/dist/style.css";
 import { MantineProvider, ColorSchemeScript, Button, Group, Text, Paper } from "@mantine/core";
 import { useEffect, useState } from "react";
-import { fetchCurrentUser, loginUrl, logout } from "./lib/api";
+import { fetchCurrentUser, loginUrl, logout, type CurrentUser } from "./lib/api";
+import { hostOwnsAuth } from "./lib/embed";
 import { Notifications } from "@mantine/notifications";
 
 export const links: Route.LinksFunction = () => [
@@ -50,18 +51,32 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
 // Small fixed control showing the signed-in Tapis user, with login/logout.
 // Sits above the per-route AppShell headers so it's visible everywhere.
+//
+// Embedded in TapisUI the host owns the session: the widget shows who you are
+// but offers no login or logout, since both would act on this app's session
+// while the host's X-Tapis-Token cookie keeps deciding who you actually are.
 function AuthWidget() {
-  const [user, setUser] = useState<{ username: string } | null>(null);
+  const [user, setUser] = useState<CurrentUser | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [embedded, setEmbedded] = useState(false);
 
   useEffect(() => {
+    // hostOwnsAuth() reads document.cookie / window.top, so it can only run
+    // after hydration — not during the SSR render.
+    setEmbedded(hostOwnsAuth());
     fetchCurrentUser().then((u) => {
       setUser(u);
+      if (u?.auth_mode === "tapis-token") setEmbedded(true);
       setLoaded(true);
     });
   }, []);
 
   if (!loaded) return null;
+
+  // Embedded and unauthenticated means the host's token was missing or rejected.
+  // Nothing this app can do about it, and a "Login with Tapis" button here would
+  // lead into a frame Tapis won't render — so stay out of the way.
+  if (embedded && !user) return null;
 
   return (
     <Paper
@@ -74,9 +89,11 @@ function AuthWidget() {
       {user ? (
         <Group gap="xs">
           <Text size="sm" fw={500}>{user.username}</Text>
-          <Button size="compact-xs" variant="light" color="gray" onClick={() => logout()}>
-            Logout
-          </Button>
+          {!embedded && (
+            <Button size="compact-xs" variant="light" color="gray" onClick={() => logout()}>
+              Logout
+            </Button>
+          )}
         </Group>
       ) : (
         <Button size="compact-xs" variant="light" component="a" href={loginUrl()}>

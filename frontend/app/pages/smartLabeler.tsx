@@ -4,7 +4,7 @@ import { Group, TextInput, Button, Loader, Select, Paper, SegmentedControl, Text
 import { IconDeviceFloppy, IconLayoutSidebarLeftExpand, IconLayoutSidebarRightExpand, IconFileDownload } from "@tabler/icons-react";
 import { notifications } from "@mantine/notifications";
 import type { StepPanelProps } from "./types";
-import { BACKEND_URL, SAM3_ENDPOINT } from "../lib/api";
+import { BACKEND_URL, SAM3_ENDPOINT, apiFetch } from "../lib/api";
 import { TAPIS_SYSTEMS, DEFAULT_TAPIS_SYSTEM, resolveWiredLocation } from "../lib/tapis";
 import { uploadTapisFile } from "../lib/tapisFiles";
 
@@ -15,8 +15,9 @@ import type { FileExplorerProps } from "@icicle-ai/tapis-file-explorer";
 import type { AnnotationDetails as AnnotationDetailsComponent } from "@icicle-ai/annotation-details";
 import type { ImageCanvasProps, CanvasEngine, BaseAnnotation } from "@icicle-ai/image-annotation-canvas";
 
-const studioFetch = (path: string, init?: RequestInit) =>
-  fetch(`${BACKEND_URL}${path}`, { ...init, credentials: "include" });
+// apiFetch, not a bare fetch: it carries whichever credential this deployment
+// uses — the session cookie standalone, the host's X-Tapis-Token when embedded.
+const studioFetch = (path: string, init?: RequestInit) => apiFetch(path, init);
 
 type Anno = BaseAnnotation & Record<string, any>;
 type AnnotationDetailsProps = ComponentProps<typeof AnnotationDetailsComponent>;

@@ -40,6 +40,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
+import auth
 from db import get_db
 from models import AppUser, PipelineRun, RunStep, StepTypeRegistry, StepTypePort, WfNode
 from engine import tapis_auth
@@ -51,16 +52,10 @@ GEOPACKAGE_DATA_TYPE = "geopackage"
 
 
 def _current_user(request: Request, db: Session = Depends(get_db)) -> AppUser:
-    """Session-cookie auth — same body as main.get_current_user, duplicated here
-    (rather than imported) to avoid a circular import: main imports this module
-    to mount its routers."""
-    username = request.session.get("username")
-    if not username:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    user = db.query(AppUser).filter(AppUser.username == username).first()
-    if not user:
-        raise HTTPException(status_code=401, detail="Session user no longer exists")
-    return user
+    """X-Tapis-Token or session-cookie auth. Delegates to the auth module rather
+    than main.get_current_user to avoid a circular import: main imports this
+    module to mount its routers."""
+    return auth.require_current_user(request, db)
 
 
 def _user_tapis_token(user: AppUser, db: Session) -> str:

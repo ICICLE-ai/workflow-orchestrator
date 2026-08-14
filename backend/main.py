@@ -62,15 +62,14 @@ app.add_middleware(
 
 
 def get_current_user(request: Request, db: Session = Depends(get_db)) -> AppUser:
-    """FastAPI dependency: resolve the signed-in AppUser from the session cookie,
-    or reject the request with 401. Attach to any route that requires auth."""
-    username = request.session.get("username")
-    if not username:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    user = db.query(AppUser).filter(AppUser.username == username).first()
-    if not user:
-        raise HTTPException(status_code=401, detail="Session user no longer exists")
-    return user
+    """FastAPI dependency: resolve the signed-in AppUser, or reject with 401.
+    Attach to any route that requires auth.
+
+    Accepts either credential (see auth.resolve_current_user): the host-supplied
+    X-Tapis-Token when this app is embedded in TapisUI, otherwise this app's own
+    session cookie from the Tapis OAuth login.
+    """
+    return auth.require_current_user(request, db)
 
 # --- DBOS durable-execution engine ---
 # Shares the harvest Postgres but keeps its internal bookkeeping in a dedicated

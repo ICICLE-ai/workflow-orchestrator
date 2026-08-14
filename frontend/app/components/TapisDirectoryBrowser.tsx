@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Modal, Stack, Group, Button, Loader, Text, ScrollArea, UnstyledButton, Alert } from "@mantine/core";
 import { IconFolder, IconPhoto, IconArrowUp } from "@tabler/icons-react";
-import { BACKEND_URL } from "../lib/api";
+import { apiFetch } from "../lib/api";
 import type { RemoteFile } from "@icicle-ai/opencv-image-playground";
 
 // Reusable modal that browses a Tapis storage directory (via the backend's
@@ -23,8 +23,9 @@ const norm = (p: string) => "/" + (p || "").replace(/^\/+|\/+$/g, "");
 export const parentOf = (p: string) =>
   p.replace(/\/+$/, "").split("/").slice(0, -1).join("/") || "/";
 
-const studioFetch = (path: string, init?: RequestInit) =>
-  fetch(`${BACKEND_URL}${path}`, { ...init, credentials: "include" });
+// apiFetch, not a bare fetch: it carries whichever credential this deployment
+// uses — the session cookie standalone, the host's X-Tapis-Token when embedded.
+const studioFetch = (path: string, init?: RequestInit) => apiFetch(path, init);
 
 export default function TapisDirectoryBrowser({ opened, system, rootPath, onPick, onCancel }: {
   opened: boolean;

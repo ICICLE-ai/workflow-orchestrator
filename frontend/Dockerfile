@@ -5,13 +5,21 @@
 #     --secret id=npmrc,src=$HOME/.npmrc \
 #     --build-arg VITE_BACKEND_URL=https://api.example.org frontend/
 #
-# The --secret is REQUIRED. The @icicle-ai/* UI packages are published to GitHub
-# Packages, not the public npm registry, so `npm ci` needs both the scope->
-# registry mapping and a token — and those live in the developer's ~/.npmrc, not
-# in the repo. It's mounted as a BuildKit secret rather than COPYed so the token
-# is readable during that RUN only and never lands in an image layer or in
-# `docker history`. In CI, write a temporary .npmrc from a repo secret and point
-# src= at it.
+# The --secret is REQUIRED, and not because the @icicle-ai/* packages are
+# private. GitHub Packages' npm registry rejects ANONYMOUS reads with 401
+# regardless of package visibility — unlike ghcr.io, which serves public
+# container images without credentials. Verified: an unauthenticated GET of
+# @icicle-ai/tapis-file-explorer returns 401, and none of these packages exist
+# on registry.npmjs.org (404), so there is no unauthenticated fallback.
+# package-lock.json also pins each `resolved` URL to npm.pkg.github.com, so
+# `npm ci` goes there whatever the registry config says.
+#
+# So the token is an IDENTITY check, not an authorization one: a PAT with
+# `read:packages` and nothing else is sufficient, and GitHub Actions' built-in
+# GITHUB_TOKEN works for org packages. It's still a user credential, hence the
+# secret mount rather than a COPY: it's readable during that RUN only, and never
+# lands in an image layer or in `docker history`. In CI, write a temporary
+# .npmrc from a repo secret and point src= at it.
 #
 # Run:
 #   docker run --rm -p 3000:3000 harvest-frontend
@@ -31,7 +39,19 @@ WORKDIR /app
 # which npm ci fails on ERESOLVE — the @icicle-ai/* UI packages declare react
 # ^18 peers while this app runs react 19 (see the comment in .npmrc itself).
 COPY package.json package-lock.json .npmrc ./
-RUN --mount=type=secret,id=npmrc,target=/root/.npmrc npm ci
+# `required=true` makes BuildKit fail immediately, and by name, when --secret is
+# missing from the build command. Without it BuildKit mounts an EMPTY file, npm
+# runs unauthenticated, and the build spends a minute downloading public
+# packages before dying on a 401 that says "authentication token not provided"
+# — which reads like a bad token rather than a missing build flag.
+RUN --mount=type=secret,id=npmrc,target=/root/.npmrc,required=true \
+    sh -c 'grep -q "npm.pkg.github.com/:_authToken" /root/.npmrc \
+      || { echo "ERROR: the mounted .npmrc has no npm.pkg.github.com token." >&2; \
+           echo "  The @icicle-ai/* packages come from GitHub Packages. Your ~/.npmrc needs:" >&2; \
+           echo "    @icicle-ai:registry=https://npm.pkg.github.com/" >&2; \
+           echo "    //npm.pkg.github.com/:_authToken=<a PAT with read:packages>" >&2; \
+           exit 1; }; \
+    npm ci'
 
 FROM node:22-alpine AS build
 WORKDIR /app
@@ -53,7 +73,7 @@ RUN npm run build
 FROM node:22-alpine AS prod-deps
 WORKDIR /app
 COPY package.json package-lock.json .npmrc ./
-RUN --mount=type=secret,id=npmrc,target=/root/.npmrc \
+RUN --mount=type=secret,id=npmrc,target=/root/.npmrc,required=true \
     npm ci --omit=dev && npm cache clean --force
 
 FROM node:22-alpine AS runtime

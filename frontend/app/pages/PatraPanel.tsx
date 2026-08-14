@@ -18,6 +18,7 @@ import {
 } from "@mantine/core";
 import { IconDatabase, IconKey, IconInfoCircle, IconCheck, IconX, IconDownload } from "@tabler/icons-react";
 import type { StepPanelProps } from "./types";
+import { apiFetch } from "../lib/api";
 
 const PATRA_BACKEND = "https://patrabackend.pods.icicleai.tapis.io";
 
@@ -242,9 +243,8 @@ export default function PatraPanel({ config, onChange, step }: StepPanelProps) {
               onClick={async () => {
                 try {
                   const metricsPath = String(config.metrics);
-                  const res = await fetch(
-                    `http://localhost:8002/api/tapis-files/content?system=pitzer-tapis&path=${encodeURIComponent(metricsPath + "/metrics.json")}`,
-                    { credentials: "include" }
+                  const res = await apiFetch(
+                    `/api/tapis-files/content?system=pitzer-tapis&path=${encodeURIComponent(metricsPath + "/metrics.json")}`
                   );
                   const data = await res.json();
                   if (data.metrics?.eval_accuracy) {

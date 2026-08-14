@@ -242,6 +242,92 @@ def get_token_for_run(run_id: int) -> str | None:
         db.close()
 
 
+# --- Inbound token verification (X-Tapis-Token cookie from an embedding host) ---
+#
+# When this app runs inside TapisUI, the browser already holds a Tapis token and
+# there is no OAuth exchange to anchor trust on — the token arrives straight from
+# the client, so it MUST be verified before its claims are believed. Tapis signs
+# access tokens with the tenant's RSA key, published at /v3/tenants/{tenant}, so
+# verification is a local signature check after one fetch. The key is cached for
+# the process' lifetime (tenant signing keys rotate on the order of years, and a
+# rotation surfaces as a verification failure, not a silent accept).
+_tenant_public_key: str | None = None
+
+
+def _pem(key: str) -> str:
+    """Wrap a bare base64 key body in PEM armor if Tapis didn't include it."""
+    key = key.strip()
+    return key if "BEGIN" in key else f"-----BEGIN PUBLIC KEY-----\n{key}\n-----END PUBLIC KEY-----"
+
+
+def tenant_public_key() -> str | None:
+    """The tenant's RSA public key (PEM) used to verify Tapis-issued JWTs, or
+    None if it can't be fetched. Cached after the first successful fetch."""
+    global _tenant_public_key
+    if _tenant_public_key:
+        return _tenant_public_key
+    try:
+        resp = httpx.get(f"{TAPIS_BASE_URL}/v3/tenants/{TAPIS_TENANT}", timeout=15)
+        resp.raise_for_status()
+        key = resp.json().get("result", {}).get("public_key")
+        if key:
+            _tenant_public_key = _pem(key)
+        return _tenant_public_key
+    except Exception as e:
+        print(f"[tapis_auth] Could not fetch tenant public key: {type(e).__name__}")
+        return None
+
+
+def verify_access_token(token: str) -> dict | None:
+    """Verify an inbound Tapis access token and return its claims, or None.
+
+    Signature + expiry are checked against the tenant public key. If the key is
+    unavailable (network/tenant-API trouble) we fall back to asking Tapis to
+    validate the token via /userinfo rather than trusting it unverified — slower,
+    but never accepts a token Tapis itself would reject.
+    """
+    if not token:
+        return None
+    key = tenant_public_key()
+    if key:
+        try:
+            claims = jwt.decode(
+                token,
+                key,
+                algorithms=["RS256"],
+                # Tapis tokens carry no `aud` claim, and the issuer host varies by
+                # deployment; tenant + token type are checked explicitly below.
+                options={"verify_aud": False, "verify_iss": False},
+            )
+        except Exception as e:
+            print(f"[tapis_auth] Inbound token rejected: {type(e).__name__}")
+            return None
+        if claims.get("tapis/tenant_id") and claims["tapis/tenant_id"] != TAPIS_TENANT:
+            print("[tapis_auth] Inbound token rejected: wrong tenant")
+            return None
+        if claims.get("tapis/token_type") not in (None, "access"):
+            print("[tapis_auth] Inbound token rejected: not an access token")
+            return None
+        return claims
+
+    # No public key — let Tapis adjudicate.
+    check = validate_token(token)
+    if not check["valid"] or not check["username"]:
+        return None
+    try:
+        claims = jwt.get_unverified_claims(token)
+    except Exception:
+        claims = {}
+    claims["tapis/username"] = check["username"]
+    return claims
+
+
+def token_expiry(token: str) -> datetime | None:
+    """The `exp` of a JWT as a timezone-aware datetime, or None if unreadable."""
+    left = _jwt_seconds_left(token)
+    return None if left is None else datetime.now(timezone.utc) + timedelta(seconds=left)
+
+
 def username_from_jwt(token: str) -> str | None:
     """Extract the Tapis username from a JWT without verifying its signature
     (the token was just issued to us by Tapis over TLS). Falls back to the
