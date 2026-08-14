@@ -1,0 +1,16 @@
+- id: NoCodeWorkflow:0.1.0
+  name: No-Code Workflow Studio
+  owner: Hari Subramoni
+  primaryThrust: core/AI4CI
+  targetIcicleRelease: 2026-08
+  hasDependentComponents:
+    - related_to: icicleai-tapisui-extension:0.1.0
+      relationship_type: DependsOn
+  componentVersion: 0.1.0
+  publicAccess: true
+  usageDocumentationAvailable: true
+  usageDocumentationUrl: https://icicle-ai.github.io/training-catalog/docs/category/no-code-workflow-studio
+  developerDocumentationAvailable: false
+  trainingTutorialsAvailable: true 
+  trainingTutorialsUrl: https://icicle-ai.github.io/training-catalog/docs/category/no-code-workflow-studio
+  status: AlphaRelease
