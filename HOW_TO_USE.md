@@ -55,8 +55,8 @@ touches files or submits jobs works until you are (see
 1. **Create a template** — go to **Templates → Create New Template**. You land on
    an empty canvas with the step palette down the right-hand side.
 
-   ![Templates list](<img width="1919" height="1017" alt="Screenshot 2026-08-14 175330" src="https://github.com/user-attachments/assets/901b332b-0242-415a-a5a2-f1b81aeafddd" />
-<img width="1919" height="1021" alt="Screenshot 2026-08-14 175115" src="https://github.com/user-attachments/assets/ea1479ae-051e-442a-bc27-c37ea50bd292" />
+   ![Templates list](<img width="1919" height="1022" alt="Screenshot 2026-08-14 175050" src="https://github.com/user-attachments/assets/ca623631-9345-4e66-87d0-da70112da25d" />
+
 
 
 )
