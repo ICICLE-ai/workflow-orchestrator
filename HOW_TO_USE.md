@@ -43,7 +43,9 @@ The dashboard is the entry point: **Manage Templates** and **Past Runs**, with a
 persistent *Templates* / *Runs* nav in the header and a ⚙ **Secrets** menu on
 the right.
 
-![Dashboard](./docs/images/dashboard.png)
+![Dashboard](<img width="1917" height="1024" alt="Screenshot 2026-08-14 201354" src="https://github.com/user-attachments/assets/9ad74ca7-89ba-48ba-9886-e400dfc4d01e" />
+
+)
 
 Sign in first — the widget in the bottom-left corner shows your Tapis username,
 or a **Login with Tapis** button if you aren't signed in yet. Nothing that
@@ -53,7 +55,11 @@ touches files or submits jobs works until you are (see
 1. **Create a template** — go to **Templates → Create New Template**. You land on
    an empty canvas with the step palette down the right-hand side.
 
-   ![Templates list](./docs/images/templates.png)
+   ![Templates list](<img width="1919" height="1022" alt="Screenshot 2026-08-14 175050" src="https://github.com/user-attachments/assets/ca623631-9345-4e66-87d0-da70112da25d" />
+
+
+
+)
 
 2. **Add steps** — the palette groups every registered step into collapsible
    sections: **Data Sources** (green, dashed), the eight pipeline stages —
@@ -61,7 +67,11 @@ touches files or submits jobs works until you are (see
    Training, Inference, Visualization, Post-processing* (blue), and **Data
    Sinks** (amber, dashed). Drag a card onto the canvas to add it as a node.
 
-   ![Step palette](./docs/images/palette.png)
+   ![Step palette](<img width="1919" height="1027" alt="Screenshot 2026-08-14 175711" src="https://github.com/user-attachments/assets/36b93d04-ebeb-4c9a-a738-a9720892a4ed" />
+
+
+
+)
 
 3. **Understand a node** — each node shows its display name, its **inputs** on
    the left (teal handles) and **outputs** on the right (violet handles), with a
@@ -73,7 +83,9 @@ touches files or submits jobs works until you are (see
    | 🖥 (purple) | **Run Configuration** — the compute this step requests. Hidden for design-time-only steps. |
    | 🗑 (red) | **Delete** the node and every edge attached to it. |
 
-   ![Node anatomy](./docs/images/node.png)
+   ![Node anatomy](<img width="1919" height="1028" alt="Screenshot 2026-08-14 175537" src="https://github.com/user-attachments/assets/ebea11ba-d984-4866-b054-aa6a8763f534" />
+
+)
 
 4. **Connect steps** — drag from an output handle to an input handle. Connections
    are **type-checked**: a link is only allowed when the source port's data type
@@ -81,9 +93,12 @@ touches files or submits jobs works until you are (see
    from it. An incompatible drop is refused with a red *Invalid Connection*
    toast naming both ports and their types.
 
-   ![Connecting nodes](./docs/images/connect.png)
+   ![Connecting nodes]( <img width="1919" height="1017" alt="Screenshot 2026-08-14 175330" src="https://github.com/user-attachments/assets/866cc965-77b0-438a-8a46-e59f658dc41f" />
 
-5. **Configure each step** — click ⚙ on a node. Most steps get a form generated
+
+   )
+
+6. **Configure each step** — click ⚙ on a node. Most steps get a form generated
    straight from their schema (numbers, switches, dropdowns, text, a Tapis path
    picker, a secret selector). Steps with a richer UI — Smart Labeler, Zero-Shot
    Annotation, the Geospatial Map viewer, Flight Plan, Training, Visualization,
@@ -91,18 +106,22 @@ touches files or submits jobs works until you are (see
    panel instead, some of them full-screen. Press **Save Configuration** (or
    **Save & Close**) to write the values back onto the node.
 
-   ![Step settings](./docs/images/step-settings.png)
+   ![Step settings](<img width="1919" height="1022" alt="Screenshot 2026-08-14 175807" src="https://github.com/user-attachments/assets/44895f1e-24f7-414c-a669-036aa73fef3b" />
 
-6. **Set the compute (optional)** — click 🖥 on any step that submits a job to set
+)
+
+7. **Set the compute (optional)** — click 🖥 on any step that submits a job to set
    node count, cores per node, memory, max runtime and GPUs. Leave *Execution
    system* empty to inherit the run's target; the badge in the corner tells you
    whether the step declares itself a **GPU step** or a **CPU step**. If you do
    pin a system, the queue dropdown loads that system's real queues and warns
    when a request exceeds the queue's limits.
 
-   ![Run configuration](./docs/images/run-config.png)
+   ![Run configuration](<img width="1903" height="1021" alt="Screenshot 2026-08-14 175952" src="https://github.com/user-attachments/assets/a40ef753-e9f9-426c-b2bc-16e84a8f879e" />
 
-7. **Save the template** — click **Save Template**, give it a name, description
+)
+
+8. **Save the template** — click **Save Template**, give it a name, description
    and allocation account, then **Confirm Save**.
 
    - Saving is **blocked** while any required input port has no incoming edge;
@@ -110,7 +129,9 @@ touches files or submits jobs works until you are (see
    - Saving **warns** (but lets you proceed with *Save Anyway*) when a node's
      output isn't wired to a sink — those results won't be written anywhere.
 
-   ![Saving a template](./docs/images/save-template.png)
+   ![Saving a template](<img width="1918" height="1026" alt="Screenshot 2026-08-14 200222" src="https://github.com/user-attachments/assets/ac2a3415-4d87-4b43-93e1-0f76409648cf" />
+   )
+
 
 Reopening a template from **Templates → Edit Template** puts you back on the
 canvas with its title showing `name vN`. Saving again creates a **new version**
@@ -131,7 +152,9 @@ automatically and the widget shows your username with no login/logout controls.
 With a saved template open, click **Run Workflow** (green, top right). The **Run
 Settings** drawer is where the run's Tapis targets are chosen.
 
-![Run settings](./docs/images/run-settings.png)
+![Run settings](<img width="1907" height="1020" alt="Screenshot 2026-08-14 200409" src="https://github.com/user-attachments/assets/abba229d-68ff-4533-bb39-db70dbd9b496" />
+
+)
 
 The run declares **two** execution targets, not one. Each step's definition says
 whether it needs a GPU, and the engine routes it to the matching pair — so
@@ -150,7 +173,9 @@ way **what runs is what's on screen**, never a stale saved graph.
 Launching takes you straight to `/runs/{id}`: the same graph, read-only, with
 each node tinted by its live status.
 
-![Live run](./docs/images/run-live.png)
+![Live run](<img width="1919" height="1015" alt="Screenshot 2026-08-14 200544" src="https://github.com/user-attachments/assets/ba14988f-5699-41c8-9733-169e40e17f42" />
+
+)
 
 | Node state | Meaning |
 | --- | --- |
@@ -172,7 +197,9 @@ container's `tapisjob.out`. Nodes that never submit a job (Smart Labeler, the
 map viewer, …) open their own panel read-only against the run's resolved values
 instead, so you can inspect what they produced.
 
-![Step logs](./docs/images/step-logs.png)
+![Step logs](<img width="1919" height="1025" alt="Screenshot 2026-08-14 200742" src="https://github.com/user-attachments/assets/e74402c1-d15e-43d7-82e7-694df2a15d1e" />
+
+)
 
 The ⚙ in the header shows the run's frozen launch configuration; **Edit Template**
 jumps back to the canvas; a `FAILED` or `CANCELLED` run gets a **Re-run** button
@@ -182,7 +209,9 @@ that relaunches it with the same settings.
 for its per-step breakdown and logs, hit **View Live Graph** on an active one, or
 **Stop** it — which cancels the workflow and any in-flight Tapis job.
 
-![Past runs](./docs/images/runs.png)
+![Past runs](<img width="1919" height="1019" alt="Screenshot 2026-08-14 200941" src="https://github.com/user-attachments/assets/faf7c864-693f-4d05-9289-4fadf44886f8" />
+
+)
 
 ---
 
@@ -220,7 +249,9 @@ into a config field — put it in the vault instead:
 2. Enter a **key** (e.g. `WANDB_API_KEY`), the **value**, and an optional
    description, then **Add secret**.
 
-![Secrets menu](./docs/images/secrets.png)
+![Secrets menu](<img width="1919" height="1025" alt="Screenshot 2026-08-14 201113" src="https://github.com/user-attachments/assets/5652e8d3-ee19-4e1d-8d9b-88988258d85a" />
+
+)
 
 Secrets are shared across your team and **write-only** — the list never returns a
 value again. A step field of type `secret` then offers a dropdown of keys, and
