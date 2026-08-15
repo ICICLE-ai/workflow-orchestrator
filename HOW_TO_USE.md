@@ -67,7 +67,8 @@ touches files or submits jobs works until you are (see
    Training, Inference, Visualization, Post-processing* (blue), and **Data
    Sinks** (amber, dashed). Drag a card onto the canvas to add it as a node.
 
-   ![Step palette](<img width="1919" height="1027" alt="Screenshot 2026-08-14 175711" src="https://github.com/user-attachments/assets/bf2abb3a-43f8-45dc-b91c-d5b201b5da6d" />
+   ![Step palette](<img width="1919" height="1027" alt="Screenshot 2026-08-14 175711" src="https://github.com/user-attachments/assets/36b93d04-ebeb-4c9a-a738-a9720892a4ed" />
+
 
 
 )
@@ -92,7 +93,8 @@ touches files or submits jobs works until you are (see
    from it. An incompatible drop is refused with a red *Invalid Connection*
    toast naming both ports and their types.
 
-   ![Connecting nodes]( <img width="1919" height="1027" alt="Screenshot 2026-08-14 175711" src="https://github.com/user-attachments/assets/2e26d346-fb13-4d59-b51d-6efed5dc4abe" />
+   ![Connecting nodes]( <img width="1919" height="1017" alt="Screenshot 2026-08-14 175330" src="https://github.com/user-attachments/assets/866cc965-77b0-438a-8a46-e59f658dc41f" />
+
 
    )
 
