@@ -43,7 +43,8 @@ The dashboard is the entry point: **Manage Templates** and **Past Runs**, with a
 persistent *Templates* / *Runs* nav in the header and a ⚙ **Secrets** menu on
 the right.
 
-![Dashboard](<img width="1917" height="1023" alt="image" src="https://github.com/user-attachments/assets/181fa2f3-0e38-4286-a354-aada7e053a30" />
+![Dashboard](<img width="1917" height="1024" alt="Screenshot 2026-08-14 201354" src="https://github.com/user-attachments/assets/9ad74ca7-89ba-48ba-9886-e400dfc4d01e" />
+
 )
 
 Sign in first — the widget in the bottom-left corner shows your Tapis username,
@@ -54,7 +55,10 @@ touches files or submits jobs works until you are (see
 1. **Create a template** — go to **Templates → Create New Template**. You land on
    an empty canvas with the step palette down the right-hand side.
 
-   ![Templates list](<img width="1918" height="1021" alt="image" src="https://github.com/user-attachments/assets/8b031ab0-1335-4fdd-bf1f-5d05f468f685" />
+   ![Templates list](<img width="1919" height="1017" alt="Screenshot 2026-08-14 175330" src="https://github.com/user-attachments/assets/901b332b-0242-415a-a5a2-f1b81aeafddd" />
+<img width="1919" height="1021" alt="Screenshot 2026-08-14 175115" src="https://github.com/user-attachments/assets/ea1479ae-051e-442a-bc27-c37ea50bd292" />
+
+
 )
 
 2. **Add steps** — the palette groups every registered step into collapsible
@@ -63,7 +67,7 @@ touches files or submits jobs works until you are (see
    Training, Inference, Visualization, Post-processing* (blue), and **Data
    Sinks** (amber, dashed). Drag a card onto the canvas to add it as a node.
 
-   ![Step palette](<img width="1918" height="1027" alt="image" src="https://github.com/user-attachments/assets/7a58f3a9-7f77-4e01-87fb-e0d557fe57c1" />
+   ![Step palette](<img width="1919" height="1017" alt="Screenshot 2026-08-14 175330" src="https://github.com/user-attachments/assets/b1f8ddbb-dae9-4e4e-858b-3d2866050559" />
 
 )
 
@@ -77,7 +81,8 @@ touches files or submits jobs works until you are (see
    | 🖥 (purple) | **Run Configuration** — the compute this step requests. Hidden for design-time-only steps. |
    | 🗑 (red) | **Delete** the node and every edge attached to it. |
 
-   ![Node anatomy](<img width="1918" height="1027" alt="image" src="https://github.com/user-attachments/assets/e8acdd03-297b-4edf-8a5b-c7ddbc802733" />
+   ![Node anatomy](<img width="1919" height="1028" alt="Screenshot 2026-08-14 175537" src="https://github.com/user-attachments/assets/ebea11ba-d984-4866-b054-aa6a8763f534" />
+
 )
 
 4. **Connect steps** — drag from an output handle to an input handle. Connections
@@ -86,9 +91,11 @@ touches files or submits jobs works until you are (see
    from it. An incompatible drop is refused with a red *Invalid Connection*
    toast naming both ports and their types.
 
-   ![Connecting nodes](<img width="1918" height="1017" alt="image" src="https://github.com/user-attachments/assets/31e0e6d6-99cd-4426-a89b-33c578b69c73" />)
+   ![Connecting nodes]( <img width="1919" height="1027" alt="Screenshot 2026-08-14 175711" src="https://github.com/user-attachments/assets/2e26d346-fb13-4d59-b51d-6efed5dc4abe" />
 
-5. **Configure each step** — click ⚙ on a node. Most steps get a form generated
+   )
+
+6. **Configure each step** — click ⚙ on a node. Most steps get a form generated
    straight from their schema (numbers, switches, dropdowns, text, a Tapis path
    picker, a secret selector). Steps with a richer UI — Smart Labeler, Zero-Shot
    Annotation, the Geospatial Map viewer, Flight Plan, Training, Visualization,
@@ -96,20 +103,22 @@ touches files or submits jobs works until you are (see
    panel instead, some of them full-screen. Press **Save Configuration** (or
    **Save & Close**) to write the values back onto the node.
 
-   ![Step settings](<img width="1919" height="1022" alt="image" src="https://github.com/user-attachments/assets/9d95fc00-b0f6-40bd-b816-65ba8d6b1a3e" />
+   ![Step settings](<img width="1919" height="1022" alt="Screenshot 2026-08-14 175807" src="https://github.com/user-attachments/assets/44895f1e-24f7-414c-a669-036aa73fef3b" />
+
 )
 
-6. **Set the compute (optional)** — click 🖥 on any step that submits a job to set
+7. **Set the compute (optional)** — click 🖥 on any step that submits a job to set
    node count, cores per node, memory, max runtime and GPUs. Leave *Execution
    system* empty to inherit the run's target; the badge in the corner tells you
    whether the step declares itself a **GPU step** or a **CPU step**. If you do
    pin a system, the queue dropdown loads that system's real queues and warns
    when a request exceeds the queue's limits.
 
-   ![Run configuration](<img width="1902" height="1021" alt="image" src="https://github.com/user-attachments/assets/95f21326-1730-4d5a-97cc-30e0c03928b9" />
+   ![Run configuration](<img width="1903" height="1021" alt="Screenshot 2026-08-14 175952" src="https://github.com/user-attachments/assets/a40ef753-e9f9-426c-b2bc-16e84a8f879e" />
+
 )
 
-7. **Save the template** — click **Save Template**, give it a name, description
+8. **Save the template** — click **Save Template**, give it a name, description
    and allocation account, then **Confirm Save**.
 
    - Saving is **blocked** while any required input port has no incoming edge;
@@ -117,8 +126,9 @@ touches files or submits jobs works until you are (see
    - Saving **warns** (but lets you proceed with *Save Anyway*) when a node's
      output isn't wired to a sink — those results won't be written anywhere.
 
-   ![Saving a template](<img width="1917" height="1026" alt="image" src="https://github.com/user-attachments/assets/780d3135-ee8f-4fb9-bdf7-b2960807f976" />
-)
+   ![Saving a template](<img width="1918" height="1026" alt="Screenshot 2026-08-14 200222" src="https://github.com/user-attachments/assets/ac2a3415-4d87-4b43-93e1-0f76409648cf" />
+   )
+
 
 Reopening a template from **Templates → Edit Template** puts you back on the
 canvas with its title showing `name vN`. Saving again creates a **new version**
@@ -139,7 +149,8 @@ automatically and the widget shows your username with no login/logout controls.
 With a saved template open, click **Run Workflow** (green, top right). The **Run
 Settings** drawer is where the run's Tapis targets are chosen.
 
-![Run settings](<img width="1907" height="1020" alt="image" src="https://github.com/user-attachments/assets/4178dde3-4247-40bf-be87-287bf4f9534a" />
+![Run settings](<img width="1907" height="1020" alt="Screenshot 2026-08-14 200409" src="https://github.com/user-attachments/assets/abba229d-68ff-4533-bb39-db70dbd9b496" />
+
 )
 
 The run declares **two** execution targets, not one. Each step's definition says
@@ -159,7 +170,8 @@ way **what runs is what's on screen**, never a stale saved graph.
 Launching takes you straight to `/runs/{id}`: the same graph, read-only, with
 each node tinted by its live status.
 
-![Live run](<img width="1918" height="1015" alt="image" src="https://github.com/user-attachments/assets/5694e456-6113-49d3-8d05-dbdfc5e49844" />
+![Live run](<img width="1919" height="1015" alt="Screenshot 2026-08-14 200544" src="https://github.com/user-attachments/assets/ba14988f-5699-41c8-9733-169e40e17f42" />
+
 )
 
 | Node state | Meaning |
@@ -182,7 +194,8 @@ container's `tapisjob.out`. Nodes that never submit a job (Smart Labeler, the
 map viewer, …) open their own panel read-only against the run's resolved values
 instead, so you can inspect what they produced.
 
-![Step logs](<img width="1918" height="1025" alt="image" src="https://github.com/user-attachments/assets/9151f75a-4d5e-4f85-b3a3-a460485ed26d" />
+![Step logs](<img width="1919" height="1025" alt="Screenshot 2026-08-14 200742" src="https://github.com/user-attachments/assets/e74402c1-d15e-43d7-82e7-694df2a15d1e" />
+
 )
 
 The ⚙ in the header shows the run's frozen launch configuration; **Edit Template**
@@ -193,7 +206,8 @@ that relaunches it with the same settings.
 for its per-step breakdown and logs, hit **View Live Graph** on an active one, or
 **Stop** it — which cancels the workflow and any in-flight Tapis job.
 
-![Past runs](<img width="1918" height="1018" alt="image" src="https://github.com/user-attachments/assets/e421595f-70fd-4e87-a6b4-95d0cab9216d" />
+![Past runs](<img width="1919" height="1019" alt="Screenshot 2026-08-14 200941" src="https://github.com/user-attachments/assets/faf7c864-693f-4d05-9289-4fadf44886f8" />
+
 )
 
 ---
@@ -232,7 +246,8 @@ into a config field — put it in the vault instead:
 2. Enter a **key** (e.g. `WANDB_API_KEY`), the **value**, and an optional
    description, then **Add secret**.
 
-![Secrets menu](<img width="1918" height="1025" alt="image" src="https://github.com/user-attachments/assets/21bc043d-1243-4ac5-8df7-2efb8a4d06d2" />
+![Secrets menu](<img width="1919" height="1025" alt="Screenshot 2026-08-14 201113" src="https://github.com/user-attachments/assets/5652e8d3-ee19-4e1d-8d9b-88988258d85a" />
+
 )
 
 Secrets are shared across your team and **write-only** — the list never returns a
