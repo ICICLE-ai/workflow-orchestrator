@@ -117,7 +117,8 @@ touches files or submits jobs works until you are (see
    - Saving **warns** (but lets you proceed with *Save Anyway*) when a node's
      output isn't wired to a sink — those results won't be written anywhere.
 
-   ![Saving a template](./docs/images/save-template.png)
+   ![Saving a template](<img width="1917" height="1026" alt="image" src="https://github.com/user-attachments/assets/780d3135-ee8f-4fb9-bdf7-b2960807f976" />
+)
 
 Reopening a template from **Templates → Edit Template** puts you back on the
 canvas with its title showing `name vN`. Saving again creates a **new version**
@@ -138,7 +139,8 @@ automatically and the widget shows your username with no login/logout controls.
 With a saved template open, click **Run Workflow** (green, top right). The **Run
 Settings** drawer is where the run's Tapis targets are chosen.
 
-![Run settings](./docs/images/run-settings.png)
+![Run settings](<img width="1907" height="1020" alt="image" src="https://github.com/user-attachments/assets/4178dde3-4247-40bf-be87-287bf4f9534a" />
+)
 
 The run declares **two** execution targets, not one. Each step's definition says
 whether it needs a GPU, and the engine routes it to the matching pair — so
@@ -157,7 +159,8 @@ way **what runs is what's on screen**, never a stale saved graph.
 Launching takes you straight to `/runs/{id}`: the same graph, read-only, with
 each node tinted by its live status.
 
-![Live run](./docs/images/run-live.png)
+![Live run](<img width="1918" height="1015" alt="image" src="https://github.com/user-attachments/assets/5694e456-6113-49d3-8d05-dbdfc5e49844" />
+)
 
 | Node state | Meaning |
 | --- | --- |
@@ -179,7 +182,8 @@ container's `tapisjob.out`. Nodes that never submit a job (Smart Labeler, the
 map viewer, …) open their own panel read-only against the run's resolved values
 instead, so you can inspect what they produced.
 
-![Step logs](./docs/images/step-logs.png)
+![Step logs](<img width="1918" height="1025" alt="image" src="https://github.com/user-attachments/assets/9151f75a-4d5e-4f85-b3a3-a460485ed26d" />
+)
 
 The ⚙ in the header shows the run's frozen launch configuration; **Edit Template**
 jumps back to the canvas; a `FAILED` or `CANCELLED` run gets a **Re-run** button
@@ -189,7 +193,8 @@ that relaunches it with the same settings.
 for its per-step breakdown and logs, hit **View Live Graph** on an active one, or
 **Stop** it — which cancels the workflow and any in-flight Tapis job.
 
-![Past runs](./docs/images/runs.png)
+![Past runs](<img width="1918" height="1018" alt="image" src="https://github.com/user-attachments/assets/e421595f-70fd-4e87-a6b4-95d0cab9216d" />
+)
 
 ---
 
@@ -227,7 +232,8 @@ into a config field — put it in the vault instead:
 2. Enter a **key** (e.g. `WANDB_API_KEY`), the **value**, and an optional
    description, then **Add secret**.
 
-![Secrets menu](./docs/images/secrets.png)
+![Secrets menu](<img width="1918" height="1025" alt="image" src="https://github.com/user-attachments/assets/21bc043d-1243-4ac5-8df7-2efb8a4d06d2" />
+)
 
 Secrets are shared across your team and **write-only** — the list never returns a
 value again. A step field of type `secret` then offers a dropdown of keys, and
