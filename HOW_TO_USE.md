@@ -67,7 +67,8 @@ touches files or submits jobs works until you are (see
    Training, Inference, Visualization, Post-processing* (blue), and **Data
    Sinks** (amber, dashed). Drag a card onto the canvas to add it as a node.
 
-   ![Step palette](<img width="1919" height="1017" alt="Screenshot 2026-08-14 175330" src="https://github.com/user-attachments/assets/b1f8ddbb-dae9-4e4e-858b-3d2866050559" />
+   ![Step palette](<img width="1919" height="1027" alt="Screenshot 2026-08-14 175711" src="https://github.com/user-attachments/assets/bf2abb3a-43f8-45dc-b91c-d5b201b5da6d" />
+
 
 )
 
