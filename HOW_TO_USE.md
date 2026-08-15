@@ -43,7 +43,7 @@ The dashboard is the entry point: **Manage Templates** and **Past Runs**, with a
 persistent *Templates* / *Runs* nav in the header and a ⚙ **Secrets** menu on
 the right.
 
-![Dashboard](<img width="1916" height="1021" alt="image" src="https://github.com/user-attachments/assets/d73faf86-72d8-4611-b96c-d1fd5cdd0494" />
+![Dashboard](<img width="1917" height="1023" alt="image" src="https://github.com/user-attachments/assets/181fa2f3-0e38-4286-a354-aada7e053a30" />
 )
 
 Sign in first — the widget in the bottom-left corner shows your Tapis username,
