@@ -10,6 +10,10 @@ on:
 
 permissions:
   contents: read
+  # The frontend depends on five @icicle-ai/* packages published to GitHub
+  # Packages. That registry returns 401 without a token even for public
+  # packages, so the build cannot install dependencies without this.
+  packages: read
 
 # A new push to the same PR supersedes the previous run; let it cancel.
 # Never cancel a main build — those are the record for that commit.
@@ -27,16 +31,37 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # registry-url + scope make setup-node write an .npmrc that points the
+      # @icicle-ai scope at GitHub Packages and reads the token from
+      # NODE_AUTH_TOKEN. It lands in the RUNNER's user config, so frontend/.npmrc
+      # (legacy-peer-deps) still applies — project config outranks user config.
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
+          registry-url: "https://npm.pkg.github.com"
+          scope: "@icicle-ai"
 
       # `ci` rather than `install`: installs exactly what package-lock.json
       # pins and fails if the lockfile and package.json disagree, so a
       # dependency change that was never locked cannot pass here.
+      #
+      # GITHUB_TOKEN works when the @icicle-ai packages grant this repository
+      # access (Package settings -> Manage Actions access), which is the norm
+      # for packages published inside the same org. If the frontend job still
+      # 401s, that access has not been granted — either grant it, or create a
+      # PAT with read:packages, store it as a repo secret, and swap the line
+      # below for:
+      #
+      #   NODE_AUTH_TOKEN: ${{ secrets.ICICLE_PACKAGES_TOKEN }}
+      #
+      # Note: pull requests opened from FORKS do not receive org package access
+      # or repository secrets, so this step cannot succeed for them. Branches
+      # pushed to this repository (the pattern used here so far) are unaffected.
       - name: Install dependencies
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm ci
 
       - name: Build
