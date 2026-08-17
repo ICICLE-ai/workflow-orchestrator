@@ -57,11 +57,21 @@ The frontend uses Node.js and React Router v7.
    ```bash
    cd frontend
    ```
-2. Install the Node modules:
+2. **Authenticate to GitHub Packages** (one-time). The UI depends on five
+   `@icicle-ai/*` packages published there, and that registry returns `401` without
+   a token *even for public packages*. Create a
+   [personal access token](https://github.com/settings/tokens) with the
+   **`read:packages`** scope and add it to your `~/.npmrc`:
+   ```bash
+   echo "//npm.pkg.github.com/:_authToken=YOUR_TOKEN" >> ~/.npmrc
+   ```
+   *The registry mapping itself is already in `frontend/.npmrc` — only the token is
+   personal. Never commit it.*
+3. Install the Node modules:
    ```bash
    npm install
    ```
-3. Start the Vite development server:
+4. Start the Vite development server:
    ```bash
    npm run dev
    ```

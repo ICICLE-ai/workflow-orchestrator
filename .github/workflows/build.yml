@@ -1,0 +1,147 @@
+name: Build
+
+# Runs on every pull request, and on pushes to main so the base branch's own
+# status stays visible (a PR that merges green can still break main when two
+# PRs land close together).
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  # The frontend depends on five @icicle-ai/* packages published to GitHub
+  # Packages. That registry returns 401 without a token even for public
+  # packages, so the build cannot install dependencies without this.
+  packages: read
+
+# A new push to the same PR supersedes the previous run; let it cancel.
+# Never cancel a main build — those are the record for that commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  frontend:
+    name: Frontend build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      # registry-url + scope make setup-node write an .npmrc that points the
+      # @icicle-ai scope at GitHub Packages and reads the token from
+      # NODE_AUTH_TOKEN. It lands in the RUNNER's user config, so frontend/.npmrc
+      # (legacy-peer-deps) still applies — project config outranks user config.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+          registry-url: "https://npm.pkg.github.com"
+          scope: "@icicle-ai"
+
+      # `ci` rather than `install`: installs exactly what package-lock.json
+      # pins and fails if the lockfile and package.json disagree, so a
+      # dependency change that was never locked cannot pass here.
+      #
+      # GITHUB_TOKEN works when the @icicle-ai packages grant this repository
+      # access (Package settings -> Manage Actions access), which is the norm
+      # for packages published inside the same org. If the frontend job still
+      # 401s, that access has not been granted — either grant it, or create a
+      # PAT with read:packages, store it as a repo secret, and swap the line
+      # below for:
+      #
+      #   NODE_AUTH_TOKEN: ${{ secrets.ICICLE_PACKAGES_TOKEN }}
+      #
+      # Note: pull requests opened from FORKS do not receive org package access
+      # or repository secrets, so this step cannot succeed for them. Branches
+      # pushed to this repository (the pattern used here so far) are unaffected.
+      - name: Install dependencies
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      # Non-blocking on purpose. `npm run typecheck` currently reports 37
+      # pre-existing errors on main (35 of them in app/routes/WorkflowCanvas.tsx),
+      # so gating on it would fail every PR regardless of its contents. It runs
+      # for visibility, and to keep the count from growing unnoticed.
+      #
+      # Once those are cleared, drop continue-on-error to make this a real gate.
+      - name: Typecheck (non-blocking — see comment)
+        continue-on-error: true
+        run: npm run typecheck
+
+  backend:
+    name: Backend build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    # main.py initializes DBOS at import time, which connects and runs its
+    # migrations — so importing the app at all requires a reachable database.
+    # Mirrors backend/docker-compose.yml: postgres 14, user wo, db harvest,
+    # published on 5433 to match the DB_PORT default in backend/db.py.
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_USER: wo
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: harvest
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U wo -d harvest"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      # Installs the path the README documents for contributors. Keep this in
+      # step with pyproject.toml — the two drifting apart is what previously
+      # left `dbos` out of requirements.txt entirely, so an environment built
+      # this way could not import main.py.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Catches syntax errors in files the import below never reaches
+      # (individual steps' handlers, scripts, seldom-imported modules).
+      - name: Compile all sources
+        run: python -m compileall -q . -x '\.venv|__pycache__'
+
+      # The real check: import the app exactly as `python main.py` would.
+      # This exercises DBOS init, the SQLAlchemy datasource, the step registry
+      # imports, and every @DBOS.workflow/@DBOS.step registration in engine/.
+      - name: Import app (smoke test)
+        env:
+          DB_HOST: localhost
+          DB_PORT: "5433"
+          DB_NAME: harvest
+          DB_USER: wo
+          DB_PASSWORD: password
+          # No Tapis credentials in CI — mock mode keeps the import free of
+          # any outbound call to the tenant.
+          TAPIS_USE_MOCK: "true"
+          SESSION_SECRET: ci-not-a-real-secret
+        run: |
+          python -c "
+          import main
+          print('OK: main.py imported; app =', type(main.app).__name__)
+          "
