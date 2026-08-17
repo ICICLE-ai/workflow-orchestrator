@@ -3,7 +3,7 @@ import type { ComponentType } from "react";
 import { Group, Select, TextInput, Button, Text, Stack } from "@mantine/core";
 import { IconFolderOpen } from "@tabler/icons-react";
 import { TAPIS_SYSTEMS } from "../lib/tapis";
-import { apiFetch } from "../lib/api";
+import { getTapisToken } from "../lib/api";
 
 // Type-only import — erased at build, so this MUI-based package never loads
 // during SSR (same reasoning as smartLabeler.tsx's use of the same package).
@@ -49,19 +49,19 @@ export default function TapisPathField({
     setError(null);
     setOpening(true);
     try {
-      const [tfeMod, tokenRes] = await Promise.all([
+      // Resolved on every open, not cached on this component: the explorer
+      // calls Tapis directly, so a token held from a previous open could be one
+      // the Tapis session has since replaced. getTapisToken serves from a shared
+      // cache while it's demonstrably still valid, so this is normally free.
+      const [tfeMod, freshToken] = await Promise.all([
         Modal ? Promise.resolve(null) : import("@icicle-ai/tapis-file-explorer"),
-        token ? Promise.resolve(null) : apiFetch("/api/tapis/token"),
+        getTapisToken(),
       ]);
       if (tfeMod) setModal(() => tfeMod.FileSelectModalWrapper);
-      if (tokenRes) {
-        if (!tokenRes.ok) {
-          const e = await tokenRes.json().catch(() => ({}));
-          throw new Error(e.detail || `HTTP ${tokenRes.status}`);
-        }
-        const d = await tokenRes.json();
-        setToken(d.token);
+      if (!freshToken) {
+        throw new Error("No valid Tapis token — log in with a real Tapis account.");
       }
+      setToken(freshToken);
       setBrowserOpen(true);
     } catch (err: any) {
       setError(err?.message || "Could not open the Tapis file browser");

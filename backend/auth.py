@@ -158,18 +158,76 @@ def extract_jwt(raw: str | None) -> str | None:
     return token if isinstance(token, str) and token.count(".") == 2 else None
 
 
-def tapis_token_from_request(request: Request) -> str | None:
-    """The inbound Tapis token for this request, from whichever of the accepted
-    cookies/headers carries one (see the constants above)."""
-    for raw in (
+def _all_cookie_values(request: Request, name: str) -> list[str]:
+    """Every value the request carries for cookie `name`, in the order the
+    browser sent them.
+
+    request.cookies is a dict, so it collapses duplicates and keeps only the
+    LAST — but a browser legitimately sends the same cookie name more than once
+    when copies exist on different domains/paths (e.g. a leftover on `.tapis.io`
+    plus a fresh one on the tenant host, which is what a logout/re-login
+    produces when the new cookie doesn't exactly replace the old). RFC 6265 has
+    the browser send the more-specific one FIRST, so the dict parse discards the
+    newer value and keeps the stale one — precisely backwards. We re-read the
+    raw header to see them all and let verification pick.
+    """
+    header = request.headers.get("cookie")
+    if not header:
+        return []
+    values = []
+    for pair in header.split(";"):
+        key, sep, value = pair.strip().partition("=")  # JWTs/base64 contain '='
+        if sep and key.strip() == name:
+            values.append(value.strip())
+    return values
+
+
+def tapis_token_candidates(request: Request) -> list[str]:
+    """Every distinct inbound Tapis token this request carries, in precedence
+    order (see the constants above).
+
+    Deliberately a list, not a single value. A long-lived browser profile
+    accumulates cookies: an `X-Tapis-Token` left behind by an earlier session
+    can sit alongside the `tapis-token` TapisUI just wrote, and BOTH parse as
+    JWTs — extract_jwt only checks shape, never signature or expiry. Returning
+    just the highest-precedence one would let the stale cookie mask the live
+    one, which is why embedded auth fails in a normal profile but works in a
+    fresh/incognito one where no leftovers exist.
+
+    Callers try these in order and take the first that VERIFIES, so precedence
+    still decides between two equally-valid tokens while a dead cookie can no
+    longer shadow a good one. Precedence is unchanged from before: the
+    production `X-Tapis-Token` cookie, then the same name as a header, then
+    localhost TapisUI's `tapis-token`.
+
+    Duplicates of a single cookie name are included too (see _all_cookie_values)
+    — a re-login can leave two `X-Tapis-Token`s in flight, and the stale one is
+    not necessarily the one request.cookies surfaces.
+    """
+    raw_values: list[str | None] = [
+        *_all_cookie_values(request, TAPIS_TOKEN_COOKIE),
         request.cookies.get(TAPIS_TOKEN_COOKIE),
         request.headers.get(TAPIS_TOKEN_COOKIE),
+        *_all_cookie_values(request, TAPISUI_TOKEN_COOKIE),
         request.cookies.get(TAPISUI_TOKEN_COOKIE),
-    ):
+    ]
+    tokens: list[str] = []
+    for raw in raw_values:
         token = extract_jwt(raw)
-        if token:
+        if token and token not in tokens:
+            tokens.append(token)
+    return tokens
+
+
+def tapis_token_from_request(request: Request) -> str | None:
+    """The inbound Tapis token to act on: the first candidate that verifies,
+    else the first that merely parses (so diagnostics can still report on a
+    token that arrived but was rejected), else None."""
+    tokens = tapis_token_candidates(request)
+    for token in tokens:
+        if _verified_username(token):
             return token
-    return None
+    return tokens[0] if tokens else None
 
 
 def _sync_inbound_token(user: AppUser, token: str, db: Session) -> None:
@@ -192,20 +250,24 @@ def resolve_current_user_with_mode(request: Request, db: Session) -> tuple[AppUs
     acts as the user the host says is there rather than whoever last logged in
     standalone in this browser.
 
-    A token that FAILS verification falls through to the session instead of
-    hard-failing: it asserted no identity we can act on, and rejecting outright
-    would strand anyone whose browser holds a lapsed TapisUI cookie from a shared
-    parent domain — every request 401s, and logging in can't help because the
-    dead cookie keeps winning.
+    EVERY inbound token is tried, not just the highest-precedence one: a stale
+    leftover cookie must not shadow the live token sitting behind it (see
+    tapis_token_candidates).
+
+    A token that FAILS verification falls through to the next candidate, and
+    finally to the session, instead of hard-failing: it asserted no identity we
+    can act on, and rejecting outright would strand anyone whose browser holds a
+    lapsed TapisUI cookie from a shared parent domain — every request 401s, and
+    logging in can't help because the dead cookie keeps winning.
     """
-    token = tapis_token_from_request(request)
-    if token:
+    for token in tapis_token_candidates(request):
         username = _verified_username(token)
         if username:
             user = _upsert_user(db, username)
             _sync_inbound_token(user, token, db)
             return user, "tapis-token"
-        print("[auth] X-Tapis-Token failed verification; falling back to session auth")
+        print("[auth] an inbound Tapis token failed verification; "
+              "trying the next credential")
 
     username = request.session.get("username")
     if not username:
@@ -327,6 +389,14 @@ def auth_debug(request: Request):
         # we can't parse shows up as present-but-unusable rather than absent.
         "sources_present": [name for name, raw in sources.items() if raw],
         "sources_yielding_a_jwt": [name for name, raw in sources.items() if extract_jwt(raw)],
+        # The one that matters when more than one source carries a JWT: a source
+        # that parses but does NOT verify is a stale leftover. If a non-verifying
+        # source is listed above a verifying one, that leftover used to win and
+        # 401 the request — the exact "works in incognito, fails normally" bug.
+        "sources_with_a_verifying_jwt": [
+            name for name, raw in sources.items()
+            if (tok := extract_jwt(raw)) and _verified_username(tok)
+        ],
         "other_cookies_seen": sorted(k for k in request.cookies if k not in known),
         "session_username": request.session.get("username"),
         "backend_expects_tenant": tapis_auth.TAPIS_TENANT,

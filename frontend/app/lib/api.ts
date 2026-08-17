@@ -92,3 +92,88 @@ export async function fetchCurrentUser(): Promise<CurrentUser | null> {
     return null;
   }
 }
+
+// --- Raw Tapis token, for panels that call Tapis DIRECTLY from the browser ---
+//
+// Most Tapis access goes through the backend (/api/tapis-files/*), where every
+// request re-reads the token cookie and the server resolves/refreshes the
+// stored token per call — nothing can go stale. But tapis-file-explorer and
+// ModelSelector talk to Tapis from client JS, so they need the raw JWT, and
+// that copy is the app's ONLY long-lived one.
+//
+// It used to be held in each consumer's component state, fetched once on mount
+// and never revisited. An open page therefore kept presenting whatever token it
+// happened to load with — and a Tapis session re-authenticated behind that page
+// (the user leaves, comes back, TapisUI has minted a new token) left the panel
+// handing a dead JWT straight to Tapis, with no 401 for our own apiFetch to
+// notice because the request never touched our backend.
+//
+// So: ONE cache for the whole app, keyed on the server-reported expiry, and
+// invalidated whenever the tab is re-focused (below) — the exact moment a
+// re-auth may have happened while we weren't looking.
+let cachedTapisToken: { token: string; expiresAt: number } | null = null;
+
+// Re-fetch this far before the expiry rather than at it, so a token that is
+// about to lapse isn't handed to a caller who's about to use it. Mirrors the
+// backend's own _EXPIRY_SKEW_SECONDS.
+const TOKEN_EXPIRY_SKEW_MS = 60_000;
+
+/** Drop the cached token so the next getTapisToken() goes back to the server. */
+export function invalidateTapisToken(): void {
+  cachedTapisToken = null;
+}
+
+/**
+ * The current user's raw Tapis access token, or null when there isn't a usable
+ * Tapis session (logged into the app but no Tapis credential — callers surface
+ * that inline rather than bouncing the whole app to login).
+ *
+ * Served from cache only while the server-reported expiry is comfortably away;
+ * otherwise re-fetched. Pass `force` to bypass the cache outright.
+ */
+export async function getTapisToken(force = false): Promise<string | null> {
+  if (
+    !force &&
+    cachedTapisToken &&
+    cachedTapisToken.expiresAt - Date.now() > TOKEN_EXPIRY_SKEW_MS
+  ) {
+    return cachedTapisToken.token;
+  }
+
+  const res = await apiFetch("/api/tapis/token");
+  if (!res.ok) {
+    cachedTapisToken = null;
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `Could not fetch Tapis token (HTTP ${res.status}).`);
+  }
+
+  const { token, expires_at } = await res.json();
+  if (!token) {
+    cachedTapisToken = null;
+    return null;
+  }
+  // A token with no readable `exp` is cached for one skew window rather than
+  // indefinitely: unknown expiry should mean "check back soon", not "trust
+  // forever" — the failure mode this whole accessor exists to prevent.
+  const expiresAt = expires_at ? new Date(expires_at).getTime() : Date.now() + TOKEN_EXPIRY_SKEW_MS;
+  cachedTapisToken = { token, expiresAt: Number.isNaN(expiresAt) ? 0 : expiresAt };
+  return token;
+}
+
+// Returning to the tab is when a Tapis re-auth is most likely to have happened
+// out from under us, so treat it as a cache barrier. Cheap: it costs one
+// request, and only on the next actual use of the token.
+//
+// Registered at module scope, guarded for the SSR pass where there's no window.
+// visibilitychange is listened for on `document` (its spec'd target) rather than
+// on window: it does reach window by bubbling, but a listener there fires AFTER
+// any document-level listener, so a consumer re-reading the token on the same
+// event would have raced ahead of this invalidation and been served the stale
+// cache. Consumers that re-resolve on visibility pass force anyway, but there's
+// no reason to leave the ordering trap in place.
+if (typeof window !== "undefined") {
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") invalidateTapisToken();
+  });
+  window.addEventListener("focus", invalidateTapisToken);
+}

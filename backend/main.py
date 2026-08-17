@@ -1363,8 +1363,24 @@ def tapis_token(db: Session = Depends(get_db), user: AppUser = Depends(get_curre
     """Hand the current user's raw Tapis access token to the browser, for step
     panels (e.g. smart_labeler) that embed a third-party component making Tapis
     calls directly from client JS instead of through our /api/tapis-files proxy.
-    Requires the Tapis tenant to allow CORS from this frontend's origin."""
-    return {"token": _user_tapis_token(user, db)}
+    Requires the Tapis tenant to allow CORS from this frontend's origin.
+
+    `expires_at` is returned alongside so the caller can tell when its copy has
+    gone stale. Without it the browser's only options were to hold the token
+    forever (which broke whenever the Tapis session was re-authenticated behind
+    an open page — the panel kept presenting a dead JWT straight to Tapis) or to
+    decode the JWT client-side, which means shipping a JWT library to answer a
+    question the server already knows. Null when the token carries no readable
+    `exp`; treat that as "unknown, re-fetch on use".
+
+    The token itself is resolved through get_token_for_user, so it reflects any
+    refresh that happened server-side, and _sync_inbound_token has already
+    written this request's own (newer) inbound token to the user before we get
+    here — meaning a re-fetch after a Tapis re-auth returns the NEW token.
+    """
+    from engine import tapis_auth
+    token = _user_tapis_token(user, db)
+    return {"token": token, "expires_at": tapis_auth.token_expiry(token)}
 
 
 @app.get("/api/tapis/whoami")
