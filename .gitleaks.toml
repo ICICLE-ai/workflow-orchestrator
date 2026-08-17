@@ -1,0 +1,74 @@
+# Gitleaks configuration for workflow-orchestrator.
+#
+# Picked up automatically by `gitleaks git .` in .github/workflows/secret-scan.yml.
+# Keep every suppression narrow and explained — a broad path/rule exclusion here
+# silently disables scanning for whole areas of the repo.
+
+title = "workflow-orchestrator secret scanning"
+
+[extend]
+# Keep all of gitleaks' built-in provider rules; this file only adds to them.
+useDefault = true
+
+
+# ---------------------------------------------------------------------------
+# Custom rule: Tapis post-it redeem URLs
+# ---------------------------------------------------------------------------
+# A Tapis "post-it" is a pre-authenticated capability URL: anyone holding the
+# link can download the file with no credentials at all. Gitleaks' default rule
+# set knows nothing about Tapis, so these are invisible to a stock scan even
+# though they function as bearer credentials.
+#
+# Steps use them to fetch their container image (.sif) at job submission time.
+[[rules]]
+id = "tapis-postit-redeem-url"
+description = "Tapis post-it redeem URL (pre-authenticated download link)"
+regex = '''https://[a-zA-Z0-9.-]+\.tapis\.io/v3/files/postits/redeem/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}-[0-9]+'''
+tags = ["tapis", "capability-url", "pre-authenticated"]
+
+  # The four post-its already committed and in active use by step definitions.
+  # Suppressed so the rule can catch NEW ones without failing CI on day one.
+  #
+  # TODO: these are live capability URLs in `main`. Decide per post-it whether
+  # to revoke and re-issue it as a run-time lookup, or accept it as a public
+  # artifact link. Remove each entry from this list once resolved.
+  [rules.allowlist]
+  description = "Known post-its pending review — see TODO above"
+  regexes = [
+    '''17772bec-0a2d-476e-a212-b65adabfacdb-010''',  # backend/steps/extract_frames
+    '''c4db6fc3-67fb-4bd0-aaab-0d97b0b2fd50-010''',  # backend/steps/inference
+    '''86abf9eb-2978-423e-a636-a952bd3837ce-010''',  # backend/steps/preprocessing
+    '''48caa51f-8cbb-49e7-a7c7-349d9ce6f4ab-010''',  # backend/steps/training
+  ]
+
+
+# ---------------------------------------------------------------------------
+# Allowlist: the hardcoded Tapis access token in the initial commit
+# ---------------------------------------------------------------------------
+# One secret, reported twice (the `jwt` rule, plus a `github-oauth` false
+# positive matching an alphanumeric run inside the same JWT).
+#
+#   secret      a Tapis access token for arunachalam.31@osu.edu (tenant icicleai)
+#   introduced  166eb71 "feat: first commit for BE/FE monorepo" (2026-06-10)
+#   removed     b43ce43 "Custom UI components" (2026-07-17) — absent from HEAD
+#   expiry      2026-05-27, i.e. the token was ALREADY EXPIRED when committed
+#
+# Pinned with matchCondition = "AND" so BOTH must hold: the finding is in that
+# one historical commit, AND the matched text is this exact token. The regex is
+# the token's payload prefix, which encodes its unique jti claim
+# (841b0f86-c4d3-41d5-9373-c3b4d0380c37) — deliberately not the JWT header,
+# since every token issued by this tenant's signing key shares that.
+#
+# The effect is that a NEW jwt committed to backend/auth.py — or this same token
+# reintroduced in any later commit — still fails the scan.
+#
+# This suppresses the REPORT, not the secret: the token remains in git history
+# and in every existing clone. It is suppressed rather than purged because it
+# is expired and history rewriting would invalidate every open branch and fork.
+# If it were live, the correct action would be to revoke it first and rewrite
+# history second — never to allowlist it.
+[[allowlists]]
+description = "Expired Tapis access token in the initial commit (see notes above)"
+matchCondition = "AND"
+commits = ["166eb71226a2bd232ed52546fee2e5c63fac0f9c"]
+regexes = ['''eyJqdGkiOiI4NDFiMGY4Ni1jNGQzLTQxZDUtOTM3My1jM2I0ZDAzODBjMzci''']

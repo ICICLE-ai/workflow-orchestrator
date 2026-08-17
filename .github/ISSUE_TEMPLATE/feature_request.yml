@@ -3,6 +3,13 @@ description: Propose a bounded, maintainable improvement before opening a substa
 title: "[Proposal]: "
 labels: ["proposal"]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        Proposing a **new workflow step**? Read the step-authoring guides first — they cover ports, run configuration, and the runtime execution model, and will shape the answers below:
+
+        - [docs/adding-a-step-form.md](https://github.com/ICICLE-ai/workflow-orchestrator/blob/main/docs/adding-a-step-form.md) — a step defined entirely in the backend with a `step.json`.
+        - [docs/adding-a-step-custom-ui.md](https://github.com/ICICLE-ai/workflow-orchestrator/blob/main/docs/adding-a-step-custom-ui.md) — a step with a custom interactive panel.
   - type: textarea
     id: problem
     attributes:
