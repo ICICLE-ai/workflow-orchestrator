@@ -18,16 +18,12 @@ import {
 } from "@mantine/core";
 import { IconInfoCircle } from "@tabler/icons-react";
 import type { StepPanelProps } from "./types";
-import { apiFetch, fetchCurrentUser } from "../lib/api";
+import { fetchCurrentUser, getTapisToken } from "../lib/api";
 
 // Type-only import — erased at build, so this browser-only package (talks to
 // Patra + the Tapis vault directly from the client) never loads during SSR.
 // The runtime module is loaded lazily below, client-side only.
 import type { ModelSelector as ModelSelectorComponent } from "@icicle-ai/patra-model-selector";
-
-// apiFetch, not a bare fetch: it carries whichever credential this deployment
-// uses — the session cookie standalone, the host's X-Tapis-Token when embedded.
-const studioFetch = (path: string, init?: RequestInit) => apiFetch(path, init);
 
 type ModelSelectorProps = ComponentProps<typeof ModelSelectorComponent>;
 
@@ -136,14 +132,34 @@ export default function FewShotAnnotationPanel({ config, onChange, step, connect
   // ModelSelector needs a raw Tapis token + username (gated-model / HF-token
   // vault flow) — same "logged in but no Tapis session shouldn't bounce the
   // whole app to login" reasoning as smartLabeler.tsx's tapis-file-explorer use.
+  // Held in state because ModelSelector takes it as a prop, so it's re-resolved
+  // when the tab becomes visible again — a panel left open across a Tapis
+  // re-authentication would otherwise keep handing the selector a dead token.
   const [tapisToken, setTapisToken] = useState<string | undefined>(undefined);
   const [tapisUsername, setTapisUsername] = useState<string | undefined>(undefined);
   useEffect(() => {
-    studioFetch("/api/tapis/token")
-      .then((res) => (res.ok ? res.json() : null))
-      .then((d) => d && setTapisToken(d.token))
-      .catch(() => {});
-    fetchCurrentUser().then((u) => setTapisUsername(u?.username));
+    let cancelled = false;
+    // force: fires on the same event api.ts drops its cache on, so don't depend
+    // on which listener runs first.
+    const load = (force = false) => {
+      getTapisToken(force)
+        .then((token) => {
+          if (!cancelled) setTapisToken(token ?? undefined);
+        })
+        .catch(() => {});
+    };
+    load();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") load(true);
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    fetchCurrentUser().then((u) => {
+      if (!cancelled) setTapisUsername(u?.username);
+    });
+    return () => {
+      cancelled = true;
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, []);
 
   // The Patra card list, purely so a selected UUID can be resolved to its

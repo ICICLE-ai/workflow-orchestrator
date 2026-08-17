@@ -4,7 +4,7 @@ import { Group, TextInput, Button, Loader, Select, Paper, SegmentedControl, Text
 import { IconDeviceFloppy, IconLayoutSidebarLeftExpand, IconLayoutSidebarRightExpand, IconFileDownload } from "@tabler/icons-react";
 import { notifications } from "@mantine/notifications";
 import type { StepPanelProps } from "./types";
-import { BACKEND_URL, SAM3_ENDPOINT, apiFetch } from "../lib/api";
+import { BACKEND_URL, SAM3_ENDPOINT, apiFetch, getTapisToken } from "../lib/api";
 import { TAPIS_SYSTEMS, DEFAULT_TAPIS_SYSTEM, resolveWiredLocation } from "../lib/tapis";
 import { uploadTapisFile } from "../lib/tapisFiles";
 
@@ -189,19 +189,39 @@ export default function SmartLabelerPanel({ config, onChange, step, nodeId, conn
   // fetches images directly from Tapis client-side, so it needs the real token.
   // A missing token means "logged into the app but no Tapis session" — surfaced
   // inline rather than bouncing the whole app to login.
+  //
+  // The token has to live in state here (the explorer takes it as a prop and
+  // keeps reading images for the whole session), so unlike a fetch-on-use call
+  // site this one is re-resolved when the tab becomes visible again: a labeling
+  // session stays open for a long time, and a Tapis re-authentication in the
+  // meantime would otherwise leave this panel holding a dead token with no
+  // request of ours failing to reveal it.
   const [tapisToken, setTapisToken] = useState<string | null>(null);
   const [tokenError, setTokenError] = useState<string | null>(null);
   useEffect(() => {
-    studioFetch("/api/tapis/token")
-      .then(async (res) => {
-        if (!res.ok) {
-          const e = await res.json().catch(() => ({}));
-          throw new Error(e.detail || `HTTP ${res.status}`);
-        }
-        return res.json();
-      })
-      .then((d) => setTapisToken(d.token))
-      .catch((err) => setTokenError(err?.message || "Could not fetch Tapis token"));
+    let cancelled = false;
+    const load = (force = false) => {
+      getTapisToken(force)
+        .then((token) => {
+          if (cancelled) return;
+          setTapisToken(token);
+          setTokenError(token ? null : "No valid Tapis token — log in with a real Tapis account.");
+        })
+        .catch((err) => {
+          if (!cancelled) setTokenError(err?.message || "Could not fetch Tapis token");
+        });
+    };
+    load();
+    // force: this fires on the same event api.ts uses to drop its cache, so
+    // don't depend on which listener runs first.
+    const onVisible = () => {
+      if (document.visibilityState === "visible") load(true);
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      cancelled = true;
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, []);
 
   const [imageFiles, setImageFiles] = useState<string[]>([]);

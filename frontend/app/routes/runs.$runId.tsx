@@ -2,6 +2,7 @@ import type { Route } from "./+types/runs.$runId";
 import { AppShell, Container, Text, Group, ThemeIcon, ActionIcon, Badge, Loader, Tooltip, Button, Drawer, Stack, Code, Divider } from "@mantine/core";
 import { IconActivity, IconArrowLeft, IconRefresh, IconSettings, IconEdit, IconRepeat } from "@tabler/icons-react";
 import { useNavigate } from "react-router";
+import { notifications } from "@mantine/notifications";
 import { useState, useEffect, useCallback } from "react";
 import { ReactFlow, ReactFlowProvider, Background, Controls } from "@xyflow/react";
 import CustomNode from "../components/CustomNode";
@@ -39,17 +40,37 @@ const runColor = (s: string) => {
   return "gray";
 };
 
-// Run-level Tapis options worth surfacing in the Configuration drawer, in the
-// order they should appear. frozen_config also carries the full nodes/edges
-// snapshot, which we deliberately don't dump here — the canvas already shows
-// the DAG shape.
+// Every field of the backend's RunOptions (main.py), in the order they should
+// appear. This list is the SINGLE source of truth for both jobs it does: what
+// the Configuration drawer shows, and what a re-run carries over — so a field
+// added to RunOptions only has to be added here.
+//
+// Enumerating a subset by hand is exactly what broke re-runs: gpu_exec_system,
+// gpu_exec_queue and archive_dir were added to RunOptions after the Re-run
+// button was written and never added to the copy, so every re-run silently
+// dropped them. Losing archive_dir is fatal rather than cosmetic — the archive
+// base reverts to {work_dir}/wf_runs (see transactions.get_run_archive_context),
+// and image-preprocess-studio's PRE-SUBMIT operations.json upload 403s against
+// a directory the user can't write, failing the run within seconds and before
+// any Tapis job exists to inspect. The drawer hid it too, since it was reading
+// the same short list.
 const RUN_OPTION_FIELDS: { key: string; label: string }[] = [
-  { key: "name", label: "Template" },
   { key: "slurm_account", label: "Slurm account" },
   { key: "exec_system", label: "Exec system" },
   { key: "exec_queue", label: "Exec queue" },
+  { key: "gpu_exec_system", label: "GPU exec system" },
+  { key: "gpu_exec_queue", label: "GPU exec queue" },
   { key: "work_dir", label: "Work dir" },
   { key: "archive_system", label: "Archive system" },
+  { key: "archive_dir", label: "Archive dir" },
+];
+
+// Shown above those in the drawer, but NOT part of the re-run payload: the
+// template is identified by template_version_id, and RunOptions has no `name`.
+// frozen_config also carries the full nodes/edges snapshot, which we
+// deliberately don't dump here — the canvas already shows the DAG shape.
+const RUN_INFO_FIELDS: { key: string; label: string }[] = [
+  { key: "name", label: "Template" },
 ];
 
 function Flow({ runId, detail, stepTypes, template }: any) {
@@ -249,17 +270,21 @@ export default function RunView({ loaderData }: Route.ComponentProps) {
 
   // Re-run this template with the same run-level Tapis options, for
   // recovering from a failed/cancelled run without re-entering settings.
+  //
+  // Every option the original run carried is passed through (RUN_OPTION_FIELDS
+  // — see the note there). Values are copied verbatim, and only absent ones are
+  // omitted, so the backend applies a default only where the original had none
+  // either: a re-run must reproduce the original's configuration, not re-derive
+  // it.
   const handleRerun = useCallback(async () => {
     setRerunning(true);
     try {
       const fc = detail.frozen_config || {};
-      const options = {
-        slurm_account: fc.slurm_account,
-        exec_system: fc.exec_system,
-        exec_queue: fc.exec_queue,
-        work_dir: fc.work_dir,
-        archive_system: fc.archive_system,
-      };
+      const options = Object.fromEntries(
+        RUN_OPTION_FIELDS
+          .map(({ key }) => [key, fc[key]])
+          .filter(([, value]) => value !== undefined && value !== null)
+      );
       const res = await apiFetch(`/api/pipeline-runs/${detail.template_version_id}/execute`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -270,7 +295,17 @@ export default function RunView({ loaderData }: Route.ComponentProps) {
         navigate(`/runs/${run_id}`);
         return;
       }
-    } catch { /* ignore */ }
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Could not start the run (HTTP ${res.status}).`);
+    } catch (e: any) {
+      // Previously swallowed: the button just stopped spinning and the failure
+      // was indistinguishable from nothing having happened.
+      notifications.show({
+        color: "red",
+        title: "Could not re-run",
+        message: e?.message || "Unknown error",
+      });
+    }
     setRerunning(false);
   }, [detail, navigate]);
 
@@ -322,7 +357,7 @@ export default function RunView({ loaderData }: Route.ComponentProps) {
 
       <Drawer opened={configOpened} onClose={() => setConfigOpened(false)} title="Run configuration" position="right">
         <Stack gap="sm">
-          {RUN_OPTION_FIELDS.map(({ key, label }) => {
+          {[...RUN_INFO_FIELDS, ...RUN_OPTION_FIELDS].map(({ key, label }) => {
             const value = detail.frozen_config?.[key];
             if (!value) return null;
             return (
