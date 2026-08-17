@@ -10,7 +10,8 @@
   publicAccess: true
   usageDocumentationAvailable: true
   usageDocumentationUrl: https://icicle-ai.github.io/training-catalog/docs/category/no-code-workflow-studio
-  developerDocumentationAvailable: false
+  developerDocumentationAvailable: true
+  developerDocumentationUrl: https://github.com/ICICLE-ai/workflow-orchestrator/tree/main/docs
   trainingTutorialsAvailable: true 
   trainingTutorialsUrl: https://icicle-ai.github.io/training-catalog/docs/category/no-code-workflow-studio
   status: AlphaRelease
