@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability or sensitive exposure
+    url: "https://github.com/ICICLE-ai/workflow-orchestrator/blob/main/SECURITY.md"
+    about: "Report privately using the contact in SECURITY.md. Do not disclose vulnerabilities, credentials, restricted data, or sensitive information in public issues."
+  - name: Usage and documentation question
+    url: "https://icicle-ai.github.io/training-catalog/docs/category/no-code-workflow-studio"
+    about: "Use this channel for questions that are not reproducible bugs or contribution proposals."

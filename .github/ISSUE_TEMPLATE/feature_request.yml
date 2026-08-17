@@ -1,0 +1,40 @@
+name: Contribution or feature proposal
+description: Propose a bounded, maintainable improvement before opening a substantial pull request.
+title: "[Proposal]: "
+labels: ["proposal"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or user need
+      description: "Describe the need and who is affected."
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed contribution
+      description: "Describe expected inputs, outputs, interfaces, and boundaries."
+    validations:
+      required: true
+  - type: textarea
+    id: reuse
+    attributes:
+      label: Reuse and maintenance
+      description: "Explain who may reuse this contribution and who could maintain it."
+    validations:
+      required: true
+  - type: textarea
+    id: risk
+    attributes:
+      label: Data, licensing, dependency, and security considerations
+      description: "State restrictions, permissions, new dependencies, credentials, or risks."
+    validations:
+      required: true
+  - type: checkboxes
+    id: rights
+    attributes:
+      label: Contribution rights
+      options:
+        - label: "I have the right to propose or contribute the described material under this repository's license."
+          required: true

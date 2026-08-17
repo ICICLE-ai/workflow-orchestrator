@@ -1,0 +1,48 @@
+name: Bug report
+description: Report a reproducible problem in the released software.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include credentials, private keys, proprietary data, restricted data, sensitive locations, or personally identifiable information.
+  - type: input
+    id: version
+    attributes:
+      label: Release version or commit
+      placeholder: "e.g., v0.1.0 or commit SHA"
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: "OS, browser, container/runtime, compute environment, and relevant dependency versions"
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and safe logs/screenshots
+    validations:
+      required: true
+  - type: checkboxes
+    id: data
+    attributes:
+      label: Data and security confirmation
+      options:
+        - label: "I removed credentials, private data, proprietary information, and sensitive information."
+          required: true
