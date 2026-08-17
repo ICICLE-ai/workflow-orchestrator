@@ -1,12 +1,22 @@
-fastapi
-uvicorn[standard]
-sqlalchemy
-psycopg2-binary
-python-jose[cryptography]
-itsdangerous
-httpx
-pydantic
-pydantic-settings
-geopandas
-shapely
-Pillow
+# Kept in step with [project].dependencies in pyproject.toml, which is the
+# authoritative list (uv.lock is built from it). This file exists for the
+# pip-based setup path documented in the README.
+fastapi[standard]>=0.136.3
+uvicorn[standard]>=0.49.0
+sqlalchemy>=2.0
+psycopg2-binary>=2.9.9
+python-jose[cryptography]>=3.3
+itsdangerous>=2.2.0
+httpx>=0.27
+pydantic>=2.0
+pydantic-settings>=2.0
+# The durable-execution engine (engine/workflows.py, engine/transactions.py).
+# Was missing here, so an environment built from this file could not import
+# main.py at all — it failed on `from dbos import DBOS`.
+dbos>=2.23.0
+geopandas>=1.1.4
+# geopandas' vector I/O engine; required to read/write the GeoPackage and
+# shapefile artifacts the geospatial steps produce.
+pyogrio>=0.13.0
+shapely>=2.0
+pillow>=11.0
