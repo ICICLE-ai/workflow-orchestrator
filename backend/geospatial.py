@@ -89,7 +89,7 @@ def _resolve_uri_param(uri: str):
     return system, path
 
 
-def _find_gpkg_producing_node(run_id: int, db: Session):
+def _find_gpkg_producing_node(run_id: int, db: Session, user: AppUser):
     """Locate this run's GeoPackage-producing node and return
     (RunStep, output_port_name, step_type_key).
 
@@ -97,8 +97,19 @@ def _find_gpkg_producing_node(run_id: int, db: Session):
     step_type_key, so it matches whichever step actually produced this run's
     GeoPackage — the 'geospatial' job step or a static 'source_geopackage' node
     (see module docstring). Assumes at most one such node per run.
+
+    The run is scoped to `user`, which is what keeps every run-scoped endpoint
+    in this module from serving another user's outputs. This is the single
+    choke point they all pass through: authentication alone is not enough,
+    since run_id comes straight from the URL. Mirrors main.run_or_404 (404, not
+    403, so the response doesn't confirm the run exists) but is written out
+    here rather than imported — main imports this module, so importing back
+    would be circular (see _current_user above).
     """
-    run = db.query(PipelineRun).filter(PipelineRun.run_id == run_id).first()
+    run = db.query(PipelineRun).filter(
+        PipelineRun.run_id == run_id,
+        PipelineRun.user_id == user.user_id,
+    ).first()
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
 
@@ -126,8 +137,8 @@ def _find_gpkg_producing_node(run_id: int, db: Session):
     return step, port_name_by_step_type[node.step_type_key], node.step_type_key
 
 
-def _gpkg_tapis_location(run_id: int, db: Session):
-    step, port_name, _step_type_key = _find_gpkg_producing_node(run_id, db)
+def _gpkg_tapis_location(run_id: int, db: Session, user: AppUser):
+    step, port_name, _step_type_key = _find_gpkg_producing_node(run_id, db, user)
     if (step.status or "").lower() != "completed":
         raise HTTPException(
             status_code=409,
@@ -320,7 +331,7 @@ def _raw_gpkg_response_at(system: str, path: str, user: AppUser, db: Session, fi
 @router.get("/labels")
 def list_labels(run_id: int, db: Session = Depends(get_db), user: AppUser = Depends(_current_user)):
     """Available layer names in the run's GeoPackage."""
-    system, path = _gpkg_tapis_location(run_id, db)
+    system, path = _gpkg_tapis_location(run_id, db, user)
     return _list_labels_at(system, path, user, db)
 
 
@@ -330,7 +341,7 @@ def get_config(run_id: int, db: Session = Depends(get_db), user: AppUser = Depen
     GeoPackage (generatorMode, sprayMode, levels, thresholds). A static
     'source_geopackage' node has no such fields — its config_schema has none of
     these keys, so every value here comes back null."""
-    step, _port_name, step_type_key = _find_gpkg_producing_node(run_id, db)
+    step, _port_name, step_type_key = _find_gpkg_producing_node(run_id, db, user)
     cfg = step.config or {}
     step_type = db.query(StepTypeRegistry).filter(
         StepTypeRegistry.step_type_key == step_type_key
@@ -358,7 +369,7 @@ def list_missing(run_id: int, db: Session = Depends(get_db), user: AppUser = Dep
     'missing' inside the GeoPackage. If no such layer exists, an empty list is
     returned rather than treated as an error.
     """
-    system, path = _gpkg_tapis_location(run_id, db)
+    system, path = _gpkg_tapis_location(run_id, db, user)
     return _list_missing_at(system, path, user, db)
 
 
@@ -366,14 +377,14 @@ def list_missing(run_id: int, db: Session = Depends(get_db), user: AppUser = Dep
 def get_geojson(run_id: int, label: str, db: Session = Depends(get_db), user: AppUser = Depends(_current_user)):
     """Read a GeoPackage layer and convert it to GeoJSON on demand — this is what
     the Leaflet map consumes; raw GeoPackage bytes are never returned here."""
-    system, path = _gpkg_tapis_location(run_id, db)
+    system, path = _gpkg_tapis_location(run_id, db, user)
     return _geojson_at(system, path, label, user, db)
 
 
 @router.get("/download/{label}")
 def download_shapefile(run_id: int, label: str, db: Session = Depends(get_db), user: AppUser = Depends(_current_user)):
     """Convert a GeoPackage layer to a zipped ESRI Shapefile bundle on demand."""
-    system, path = _gpkg_tapis_location(run_id, db)
+    system, path = _gpkg_tapis_location(run_id, db, user)
     return _export_shapefile_zip_at(system, path, label, user, db, f"{label}_shapefile")
 
 
@@ -387,7 +398,7 @@ def download_farm_boundary(run_id: int, label: str, db: Session = Depends(get_db
     independent of {label}, point this at that fixed name once the real
     GeoPackage schema (produced by the Tapis app outside this repo) is known.
     """
-    system, path = _gpkg_tapis_location(run_id, db)
+    system, path = _gpkg_tapis_location(run_id, db, user)
     return _export_shapefile_zip_at(system, path, label, user, db, f"{label}_farm_boundary")
 
 
@@ -399,7 +410,7 @@ def download_gpkg(run_id: int, label: str, db: Session = Depends(get_db), user: 
     it — the whole file is returned regardless of which label was requested;
     {label} only names the downloaded file.
     """
-    system, path = _gpkg_tapis_location(run_id, db)
+    system, path = _gpkg_tapis_location(run_id, db, user)
     return _raw_gpkg_response_at(system, path, user, db, f"{label}.gpkg")
 
 

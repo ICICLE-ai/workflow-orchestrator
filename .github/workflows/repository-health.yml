@@ -24,6 +24,8 @@ jobs:
             "CITATION.cff"
             "docs/RELEASE_CHECKLIST.md"
             "docs/MAINTAINER_ROLES.md"
+            "docs/TESTING.md"
+            "docs/user-tests/TEMPLATE.md"
           )
           missing=0
           for file in "${required_files[@]}"; do

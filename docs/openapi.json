@@ -1,0 +1,2994 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "No-Code Workflow Studio API",
+    "description": "Backend for the **No-Code Workflow Studio** \u2014 build ML workflows on a visual\ncanvas and execute them as a durable DAG against Tapis-managed HPC resources.\n\n### Authentication\n\nEvery endpoint except `GET /` requires an authenticated user. Two credentials\nare accepted, checked in this order:\n\n1. **`X-Tapis-Token`** header \u2014 a Tapis access token. Used when the Studio is\n   embedded in TapisUI, where the host supplies the token.\n2. **`session`** cookie \u2014 set by this app's own Tapis OAuth login\n   (`GET /login` \u2192 `GET /oauth2/callback`).\n\nA token that fails verification falls through to the session rather than\nhard-failing. `GET /auth-debug` reports which credential a request carried and\nwhy it was or wasn't accepted.\n\n### Ownership\n\nTemplates and runs are scoped to the calling user.\n\n* **Runs** are owner-only. Another user's run returns `404`.\n* **Templates** are owner-only until published (`POST\n  /api/workflow-templates/{template_id}/publish`), which grants every user\n  read, run and clone access \u2014 never write. Only the owner can add a version.\n\nResources you may not access return **`404`, not `403`**, so a response never\nconfirms that an id exists.\n",
+    "contact": {
+      "name": "ICICLE-ai / workflow-orchestrator",
+      "url": "https://github.com/ICICLE-ai/workflow-orchestrator"
+    },
+    "license": {
+      "name": "MIT"
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/login": {
+      "get": {
+        "summary": "Login",
+        "description": "Start the Tapis OAuth2 authorization-code flow.\n\nShort-circuits when the request already carries a valid X-Tapis-Token (the\nembedded/TapisUI case): there is nothing to authenticate, so bounce straight\nback to the frontend instead of redirecting to Tapis \u2014 which would break in\nan iframe regardless.\n\nIn mock mode, skip Tapis entirely: sign in a local mock user and bounce back\nto the frontend so the app is usable without a registered client.",
+        "operationId": "login_login_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "tags": [
+          "auth"
+        ],
+        "security": []
+      }
+    },
+    "/oauth2/callback": {
+      "get": {
+        "summary": "Callback",
+        "description": "Handle the redirect back from Tapis: verify state, exchange the code for\ntokens, upsert the user, persist tokens, and set the session cookie.",
+        "operationId": "callback_oauth2_callback_get",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Code"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "auth"
+        ],
+        "security": []
+      }
+    },
+    "/auth-debug": {
+      "get": {
+        "summary": "Auth Debug",
+        "description": "Report what credential this request actually carried, and why it was or\nwasn't accepted. Open it from inside the iframe (or curl it) when embedded\nauth 401s and you can't tell whether the token reached the server at all \u2014\n\"the cookie exists in the browser\" and \"the cookie reached this backend\" are\nvery different things once more than one domain is involved.\n\nLeaks nothing: no token, no secret, and the only identity it reports is the\none the caller themselves supplied.",
+        "operationId": "auth_debug_auth_debug_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "tags": [
+          "auth"
+        ],
+        "security": []
+      }
+    },
+    "/logout": {
+      "get": {
+        "summary": "Logout",
+        "description": "Clear the session and return to the frontend.\n\nOnly this app's own session is cleared. In embedded mode the identity comes\nfrom the host's X-Tapis-Token cookie, which belongs to TapisUI \u2014 signing out\nof the host is the host's business, not ours (and the frontend hides the\nlogout control there for exactly that reason).",
+        "operationId": "logout_logout_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "tags": [
+          "auth"
+        ],
+        "security": []
+      }
+    },
+    "/me": {
+      "get": {
+        "summary": "Me",
+        "description": "Report the currently signed-in user (used by the frontend to show login\nstate). 401 when the request carries no usable credential.\n\n`auth_mode` tells the frontend which world it's in: in \"tapis-token\" mode the\nhost owns the session, so the UI must not offer login/logout or bounce to the\nOAuth flow on a 401.",
+        "operationId": "me_me_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "tags": [
+          "auth"
+        ],
+        "security": []
+      }
+    },
+    "/api/pipeline-runs/{run_id}/geospatial/labels": {
+      "get": {
+        "tags": [
+          "geospatial"
+        ],
+        "summary": "List Labels",
+        "description": "Available layer names in the run's GeoPackage.",
+        "operationId": "list_labels_api_pipeline_runs__run_id__geospatial_labels_get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/pipeline-runs/{run_id}/geospatial/config": {
+      "get": {
+        "tags": [
+          "geospatial"
+        ],
+        "summary": "Get Config",
+        "description": "Generator/spray-mode config metadata for the step that produced this run's\nGeoPackage (generatorMode, sprayMode, levels, thresholds). A static\n'source_geopackage' node has no such fields \u2014 its config_schema has none of\nthese keys, so every value here comes back null.",
+        "operationId": "get_config_api_pipeline_runs__run_id__geospatial_config_get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/pipeline-runs/{run_id}/geospatial/missing": {
+      "get": {
+        "tags": [
+          "geospatial"
+        ],
+        "summary": "List Missing",
+        "description": "Expected entries with no corresponding source imagery/data.\n\nASSUMPTION (unconfirmed against the real Tapis app, which lives outside this\nrepo): entries are recorded as a non-spatial attribute layer literally named\n'missing' inside the GeoPackage. If no such layer exists, an empty list is\nreturned rather than treated as an error.",
+        "operationId": "list_missing_api_pipeline_runs__run_id__geospatial_missing_get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/pipeline-runs/{run_id}/geospatial/geojson/{label}": {
+      "get": {
+        "tags": [
+          "geospatial"
+        ],
+        "summary": "Get Geojson",
+        "description": "Read a GeoPackage layer and convert it to GeoJSON on demand \u2014 this is what\nthe Leaflet map consumes; raw GeoPackage bytes are never returned here.",
+        "operationId": "get_geojson_api_pipeline_runs__run_id__geospatial_geojson__label__get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "label",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Label"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/pipeline-runs/{run_id}/geospatial/download/{label}": {
+      "get": {
+        "tags": [
+          "geospatial"
+        ],
+        "summary": "Download Shapefile",
+        "description": "Convert a GeoPackage layer to a zipped ESRI Shapefile bundle on demand.",
+        "operationId": "download_shapefile_api_pipeline_runs__run_id__geospatial_download__label__get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "label",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Label"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/pipeline-runs/{run_id}/geospatial/download-farm/{label}": {
+      "get": {
+        "tags": [
+          "geospatial"
+        ],
+        "summary": "Download Farm Boundary",
+        "description": "Same conversion as /download, for the farm/field boundary layer.\n\nASSUMPTION (unconfirmed): {label} names the same GeoPackage layer as\n/download/{label} \u2014 this endpoint only changes the output filename\nconvention. If boundary geometry actually lives under one fixed layer name\nindependent of {label}, point this at that fixed name once the real\nGeoPackage schema (produced by the Tapis app outside this repo) is known.",
+        "operationId": "download_farm_boundary_api_pipeline_runs__run_id__geospatial_download_farm__label__get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "label",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Label"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/pipeline-runs/{run_id}/geospatial/download-gpkg/{label}": {
+      "get": {
+        "tags": [
+          "geospatial"
+        ],
+        "summary": "Download Gpkg",
+        "description": "Stream the run's raw GeoPackage file back unmodified, for QGIS/ArcGIS.\n\nA GeoPackage is one file holding every layer, so {label} does not subset\nit \u2014 the whole file is returned regardless of which label was requested;\n{label} only names the downloaded file.",
+        "operationId": "download_gpkg_api_pipeline_runs__run_id__geospatial_download_gpkg__label__get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "label",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Label"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/geospatial-preview/labels": {
+      "get": {
+        "tags": [
+          "geospatial-preview"
+        ],
+        "summary": "Preview Labels",
+        "operationId": "preview_labels_api_geospatial_preview_labels_get",
+        "parameters": [
+          {
+            "name": "uri",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Uri"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          }
+        },
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/geospatial-preview/missing": {
+      "get": {
+        "tags": [
+          "geospatial-preview"
+        ],
+        "summary": "Preview Missing",
+        "operationId": "preview_missing_api_geospatial_preview_missing_get",
+        "parameters": [
+          {
+            "name": "uri",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Uri"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          }
+        },
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/geospatial-preview/geojson/{label}": {
+      "get": {
+        "tags": [
+          "geospatial-preview"
+        ],
+        "summary": "Preview Geojson",
+        "operationId": "preview_geojson_api_geospatial_preview_geojson__label__get",
+        "parameters": [
+          {
+            "name": "label",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Label"
+            }
+          },
+          {
+            "name": "uri",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Uri"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/geospatial-preview/download/{label}": {
+      "get": {
+        "tags": [
+          "geospatial-preview"
+        ],
+        "summary": "Preview Download Shapefile",
+        "operationId": "preview_download_shapefile_api_geospatial_preview_download__label__get",
+        "parameters": [
+          {
+            "name": "label",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Label"
+            }
+          },
+          {
+            "name": "uri",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Uri"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/geospatial-preview/download-farm/{label}": {
+      "get": {
+        "tags": [
+          "geospatial-preview"
+        ],
+        "summary": "Preview Download Farm Boundary",
+        "operationId": "preview_download_farm_boundary_api_geospatial_preview_download_farm__label__get",
+        "parameters": [
+          {
+            "name": "label",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Label"
+            }
+          },
+          {
+            "name": "uri",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Uri"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/geospatial-preview/download-gpkg/{label}": {
+      "get": {
+        "tags": [
+          "geospatial-preview"
+        ],
+        "summary": "Preview Download Gpkg",
+        "operationId": "preview_download_gpkg_api_geospatial_preview_download_gpkg__label__get",
+        "parameters": [
+          {
+            "name": "label",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Label"
+            }
+          },
+          {
+            "name": "uri",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Uri"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/annotation-adapter/convert": {
+      "post": {
+        "tags": [
+          "annotation-adapter"
+        ],
+        "summary": "Convert",
+        "operationId": "convert_api_annotation_adapter_convert_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConvertRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          }
+        },
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/": {
+      "get": {
+        "summary": "Read Root",
+        "operationId": "read_root__get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "tags": [
+          "meta"
+        ],
+        "security": []
+      }
+    },
+    "/api/step-types": {
+      "get": {
+        "summary": "Get Step Types",
+        "operationId": "get_step_types_api_step_types_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          }
+        },
+        "tags": [
+          "step-registry"
+        ],
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/port-data-types": {
+      "get": {
+        "summary": "Get Port Data Types",
+        "operationId": "get_port_data_types_api_port_data_types_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          }
+        },
+        "tags": [
+          "step-registry"
+        ],
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/workflow-templates": {
+      "get": {
+        "summary": "List Workflow Templates",
+        "operationId": "list_workflow_templates_api_workflow_templates_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          }
+        },
+        "tags": [
+          "workflow-templates"
+        ],
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Create Workflow Template",
+        "operationId": "create_workflow_template_api_workflow_templates_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkflowTemplateCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          }
+        },
+        "tags": [
+          "workflow-templates"
+        ],
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/workflow-templates/{template_id}/history": {
+      "get": {
+        "summary": "Get Workflow Template History",
+        "operationId": "get_workflow_template_history_api_workflow_templates__template_id__history_get",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "tags": [
+          "workflow-templates"
+        ],
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/workflow-templates/{template_version_id}": {
+      "get": {
+        "summary": "Get Workflow Template",
+        "operationId": "get_workflow_template_api_workflow_templates__template_version_id__get",
+        "parameters": [
+          {
+            "name": "template_version_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Template Version Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "tags": [
+          "workflow-templates"
+        ],
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/workflow-templates/{template_id}/versions": {
+      "post": {
+        "summary": "Create Template Version",
+        "description": "Persist the canvas as a new version of `template_id`.\n\ndraft=true marks it WorkflowTemplate.is_draft \u2014 the \"run these changes\nwithout saving a version\" path. The rows are identical in every other\nrespect (the engine needs real wf_node/wf_edge rows to run anything at all;\nsee the is_draft docstring), they're just excluded from the template list so\nan ad-hoc run doesn't become the template everyone else opens.\n\nValidation applies to drafts too: a workflow with unsatisfied required\ninputs can't run, so there's nothing to be gained by letting it through.",
+        "operationId": "create_template_version_api_workflow_templates__template_id__versions_post",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Template Id"
+            }
+          },
+          {
+            "name": "draft",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Draft"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkflowTemplateCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "tags": [
+          "workflow-templates"
+        ],
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/workflow-templates/{template_id}/publish": {
+      "post": {
+        "summary": "Publish Template",
+        "description": "Make every version of this template visible to all authenticated users.\nOwner only.",
+        "operationId": "publish_template_api_workflow_templates__template_id__publish_post",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "tags": [
+          "workflow-templates"
+        ],
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/workflow-templates/{template_id}/unpublish": {
+      "post": {
+        "summary": "Unpublish Template",
+        "description": "Return this template to owner-only visibility. Owner only.\n\nExisting clones are unaffected \u2014 a clone is an independent template owned by\nwhoever made it, not a reference back to this one.",
+        "operationId": "unpublish_template_api_workflow_templates__template_id__unpublish_post",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "tags": [
+          "workflow-templates"
+        ],
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/workflow-templates/{template_version_id}/clone": {
+      "post": {
+        "summary": "Clone Template",
+        "description": "Copy a template version the caller can READ into a new template they own.\n\nThis is how a non-owner builds on a public template: they get version 1 of a\nfresh lineage, private to them, with the original left untouched. Copied\nfrom the persisted wf_node/wf_edge rows rather than from a request body, so\nthe clone reflects what is actually stored rather than whatever a client\nchose to send.",
+        "operationId": "clone_template_api_workflow_templates__template_version_id__clone_post",
+        "parameters": [
+          {
+            "name": "template_version_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Template Version Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "tags": [
+          "workflow-templates"
+        ],
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/pipeline-runs": {
+      "get": {
+        "summary": "List Pipeline Runs",
+        "operationId": "list_pipeline_runs_api_pipeline_runs_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          }
+        },
+        "tags": [
+          "pipeline-runs"
+        ],
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/pipeline-runs/{run_id}/detail": {
+      "get": {
+        "summary": "Get Pipeline Run Detail",
+        "description": "Per-run detail by run_id: overall status + each step's status/outputs.\nUsed by the history page to show which node is running/completed/failed.",
+        "operationId": "get_pipeline_run_detail_api_pipeline_runs__run_id__detail_get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "tags": [
+          "pipeline-runs"
+        ],
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/pipeline-runs/{run_id}/step/{node_id}/logs": {
+      "get": {
+        "summary": "Get Step Logs",
+        "description": "Fetch detailed failure logs for a step: the DBOS error we recorded, plus\nthe underlying Tapis job's lastMessage and its container stdout/stderr\n(tapisjob.out). Best-effort \u2014 degrades gracefully if the token is stale or\nthe job output isn't reachable.",
+        "operationId": "get_step_logs_api_pipeline_runs__run_id__step__node_id__logs_get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "node_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Node Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "tags": [
+          "pipeline-runs"
+        ],
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/pipeline-runs/execute-node": {
+      "post": {
+        "summary": "Execute Single Node",
+        "operationId": "execute_single_node_api_pipeline_runs_execute_node_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NodeExecutionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          }
+        },
+        "tags": [
+          "pipeline-runs"
+        ],
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/pipeline-runs/{template_version_id}/execute": {
+      "post": {
+        "summary": "Execute Workflow",
+        "description": "Kick off durable execution of a saved workflow template.\n\nBuilds the DAG from the persisted template and starts the DBOS orchestrator\nasynchronously. The pipeline_run + run_step rows are created synchronously\nhere (not inside the orchestrator's first transaction) so this call can\nreturn a real run_id immediately \u2014 the frontend navigates straight to\n/runs/{run_id} instead of polling a bare workflow id for one to appear.\n\nOptional run-level Tapis values (slurm_account, archive_system, work_dir, \u2026)\nare merged into the dag_config, which the orchestrator stores as frozen_config\nand the engine reads when rendering each step's Tapis job spec. The per-step\narchive location is derived automatically (work_dir/wf_runs/<run_id>/<node>).",
+        "operationId": "execute_workflow_api_pipeline_runs__template_version_id__execute_post",
+        "parameters": [
+          {
+            "name": "template_version_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Template Version Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RunOptions"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Options"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "tags": [
+          "pipeline-runs"
+        ],
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/pipeline-runs/{run_id}/stop": {
+      "post": {
+        "summary": "Stop Pipeline Run",
+        "description": "Stop a running pipeline run: cancel the DBOS workflow (and its child\nnode-workflows), cancel any in-flight Tapis job, and mark the run + its\nnon-terminal steps as cancelled.",
+        "operationId": "stop_pipeline_run_api_pipeline_runs__run_id__stop_post",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "tags": [
+          "pipeline-runs"
+        ],
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/pipeline-runs/status/{dbos_workflow_id}": {
+      "get": {
+        "summary": "Get Workflow Run Status",
+        "description": "Return live status of a workflow run: overall DBOS state, per-step detail,\nand an ASCII progress graph. `format=text` returns just the graph as text.",
+        "operationId": "get_workflow_run_status_api_pipeline_runs_status__dbos_workflow_id__get",
+        "parameters": [
+          {
+            "name": "dbos_workflow_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Dbos Workflow Id"
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "json",
+              "title": "Format"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "tags": [
+          "pipeline-runs"
+        ],
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/tapis-files/list": {
+      "get": {
+        "summary": "Tapis Files List",
+        "description": "List a directory on a Tapis storage system as the current user. Returns\nTapis' file objects: [{name, path, size, type: 'file'|'dir', mimeType}].",
+        "operationId": "tapis_files_list_api_tapis_files_list_get",
+        "parameters": [
+          {
+            "name": "system",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "System"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "/",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          }
+        },
+        "tags": [
+          "tapis"
+        ],
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/tapis-files/content": {
+      "get": {
+        "summary": "Tapis Files Content",
+        "description": "Stream a file's bytes from a Tapis storage system as the current user.",
+        "operationId": "tapis_files_content_api_tapis_files_content_get",
+        "parameters": [
+          {
+            "name": "system",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "System"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          }
+        },
+        "tags": [
+          "tapis"
+        ],
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/tapis-files/upload": {
+      "post": {
+        "summary": "Tapis Files Upload",
+        "description": "Write text content to a Tapis storage path as the current user (multipart\ninsert). Used to save the studio's operations.json where the job expects it.",
+        "operationId": "tapis_files_upload_api_tapis_files_upload_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TapisFileWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          }
+        },
+        "tags": [
+          "tapis"
+        ],
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/tapis-systems/{system_id}/queues": {
+      "get": {
+        "summary": "List Tapis System Queues",
+        "description": "List a Tapis exec system's batch scheduler queues, so the Run Settings UI\ncan offer a real queue dropdown instead of free text. Tapis exec systems\n(pitzer-tapis, expanse-tapis, ...) are shared/public system definitions \u2014\nany authenticated user's token can read them, no special ownership needed.",
+        "operationId": "list_tapis_system_queues_api_tapis_systems__system_id__queues_get",
+        "parameters": [
+          {
+            "name": "system_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "System Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "tags": [
+          "tapis"
+        ],
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/secrets": {
+      "get": {
+        "summary": "List Secrets",
+        "description": "List the current user's team's secrets \u2014 keys/descriptions only, never values.",
+        "operationId": "list_secrets_api_secrets_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          }
+        },
+        "tags": [
+          "secrets"
+        ],
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Create Secret",
+        "description": "Add a new secret for the current user's team.",
+        "operationId": "create_secret_api_secrets_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SecretCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          }
+        },
+        "tags": [
+          "secrets"
+        ],
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/secrets/{key}": {
+      "put": {
+        "summary": "Update Secret",
+        "description": "Update a secret's value and/or description. Omit value to change only the description.",
+        "operationId": "update_secret_api_secrets__key__put",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SecretUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "tags": [
+          "secrets"
+        ],
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      },
+      "delete": {
+        "summary": "Delete Secret",
+        "operationId": "delete_secret_api_secrets__key__delete",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "tags": [
+          "secrets"
+        ],
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/secrets/{key}/delete": {
+      "post": {
+        "summary": "Delete Secret Via Post",
+        "operationId": "delete_secret_via_post_api_secrets__key__delete_post",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "tags": [
+          "secrets"
+        ],
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/tapis/token": {
+      "get": {
+        "summary": "Tapis Token",
+        "description": "Hand the current user's raw Tapis access token to the browser, for step\npanels (e.g. smart_labeler) that embed a third-party component making Tapis\ncalls directly from client JS instead of through our /api/tapis-files proxy.\nRequires the Tapis tenant to allow CORS from this frontend's origin.\n\n`expires_at` is returned alongside so the caller can tell when its copy has\ngone stale. Without it the browser's only options were to hold the token\nforever (which broke whenever the Tapis session was re-authenticated behind\nan open page \u2014 the panel kept presenting a dead JWT straight to Tapis) or to\ndecode the JWT client-side, which means shipping a JWT library to answer a\nquestion the server already knows. Null when the token carries no readable\n`exp`; treat that as \"unknown, re-fetch on use\".\n\nThe token itself is resolved through get_token_for_user, so it reflects any\nrefresh that happened server-side, and _sync_inbound_token has already\nwritten this request's own (newer) inbound token to the user before we get\nhere \u2014 meaning a re-fetch after a Tapis re-auth returns the NEW token.",
+        "operationId": "tapis_token_api_tapis_token_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          }
+        },
+        "tags": [
+          "tapis"
+        ],
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/tapis/whoami": {
+      "get": {
+        "summary": "Tapis Whoami",
+        "description": "Diagnostic: report how Tapis auth is configured (mode) and whether the\nresolved token actually validates against Tapis. Reaching this endpoint at all\nmeans the APP session is fine; a bad token here means the Tapis credential is\nthe problem, not the login.",
+        "operationId": "tapis_whoami_api_tapis_whoami_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          }
+        },
+        "tags": [
+          "tapis"
+        ],
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ConvertRequest": {
+        "properties": {
+          "from_format": {
+            "type": "string",
+            "title": "From Format"
+          },
+          "to_format": {
+            "type": "string",
+            "title": "To Format"
+          },
+          "annotations": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TapisLoc"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "annotations_dir": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TapisLoc"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "annotations_gpkg": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TapisLoc"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "images": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TapisLoc"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dest": {
+            "$ref": "#/components/schemas/TapisLoc"
+          },
+          "text_prompts": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text Prompts"
+          }
+        },
+        "type": "object",
+        "required": [
+          "from_format",
+          "to_format",
+          "dest"
+        ],
+        "title": "ConvertRequest"
+      },
+      "EdgeModel": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "target": {
+            "type": "string",
+            "title": "Target"
+          },
+          "sourceHandle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sourcehandle"
+          },
+          "targetHandle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Targethandle"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "source",
+          "target"
+        ],
+        "title": "EdgeModel"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "NodeExecutionRequest": {
+        "properties": {
+          "template_version_id": {
+            "type": "integer",
+            "title": "Template Version Id"
+          },
+          "node_id": {
+            "type": "string",
+            "title": "Node Id"
+          },
+          "config_values": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Config Values"
+          }
+        },
+        "type": "object",
+        "required": [
+          "template_version_id",
+          "node_id",
+          "config_values"
+        ],
+        "title": "NodeExecutionRequest"
+      },
+      "NodeModel": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "position": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "title": "Position"
+          },
+          "data": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Data"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "type",
+          "position",
+          "data"
+        ],
+        "title": "NodeModel"
+      },
+      "RunOptions": {
+        "properties": {
+          "slurm_account": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slurm Account"
+          },
+          "exec_system": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exec System"
+          },
+          "exec_queue": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exec Queue"
+          },
+          "gpu_exec_system": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gpu Exec System"
+          },
+          "gpu_exec_queue": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gpu Exec Queue"
+          },
+          "work_dir": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Dir"
+          },
+          "archive_system": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Archive System"
+          },
+          "archive_dir": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Archive Dir"
+          }
+        },
+        "type": "object",
+        "title": "RunOptions"
+      },
+      "SecretCreate": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "title": "Key"
+          },
+          "value": {
+            "type": "string",
+            "title": "Value"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "key",
+          "value"
+        ],
+        "title": "SecretCreate"
+      },
+      "SecretUpdate": {
+        "properties": {
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          }
+        },
+        "type": "object",
+        "title": "SecretUpdate"
+      },
+      "TapisFileWrite": {
+        "properties": {
+          "system": {
+            "type": "string",
+            "title": "System"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          }
+        },
+        "type": "object",
+        "required": [
+          "system",
+          "path",
+          "content"
+        ],
+        "title": "TapisFileWrite"
+      },
+      "TapisLoc": {
+        "properties": {
+          "system": {
+            "type": "string",
+            "title": "System"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          }
+        },
+        "type": "object",
+        "required": [
+          "system",
+          "path"
+        ],
+        "title": "TapisLoc"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "WorkflowTemplateCreate": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description",
+            "default": ""
+          },
+          "category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category",
+            "default": "Custom"
+          },
+          "allocation_account": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allocation Account",
+            "default": "uot260"
+          },
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/NodeModel"
+            },
+            "type": "array",
+            "title": "Nodes"
+          },
+          "edges": {
+            "items": {
+              "$ref": "#/components/schemas/EdgeModel"
+            },
+            "type": "array",
+            "title": "Edges"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "nodes",
+          "edges"
+        ],
+        "title": "WorkflowTemplateCreate"
+      }
+    },
+    "securitySchemes": {
+      "tapisToken": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Tapis-Token",
+        "description": "Tapis access token. Preferred when the Studio is embedded in TapisUI, which supplies it."
+      },
+      "sessionCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "session",
+        "description": "Signed session cookie from this app's own Tapis OAuth login (GET /login)."
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "workflow-templates",
+      "description": "Create, read, version, publish and clone workflow templates. A *template* is a named graph; each save creates a new version sharing one `template_id`."
+    },
+    {
+      "name": "pipeline-runs",
+      "description": "Launch, monitor, and stop executions. A *run* freezes a template version's config at launch, so editing the template later never changes a run in flight."
+    },
+    {
+      "name": "step-registry",
+      "description": "The catalogue of available step types and port data types, synced from `backend/steps/*/step.json` at startup."
+    },
+    {
+      "name": "secrets",
+      "description": "Team-scoped API tokens (Weights & Biases, Hugging Face, ...). Only a secret's KEY is ever returned; values are decrypted server-side at job submission time."
+    },
+    {
+      "name": "tapis",
+      "description": "Thin proxies over the Tapis API using the caller's own OAuth token \u2014 file browsing, uploads, system queues, and identity."
+    },
+    {
+      "name": "geospatial",
+      "description": "GeoPackage-backed layers for a completed run, served on demand as GeoJSON, zipped Shapefile, or raw GeoPackage."
+    },
+    {
+      "name": "geospatial-preview",
+      "description": "The same conversions against a `tapis://` URI given directly, so a source node's static GeoPackage can be previewed before the workflow has ever run."
+    },
+    {
+      "name": "annotation-adapter",
+      "description": "Convert annotations between native, COCO, YOLO and GeoPackage formats."
+    },
+    {
+      "name": "auth",
+      "description": "Tapis OAuth login/logout, current identity, and credential diagnostics."
+    },
+    {
+      "name": "meta",
+      "description": "Service health and configuration."
+    }
+  ]
+}

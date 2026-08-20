@@ -11,6 +11,8 @@ Workflows are composed on a visual canvas from reusable **steps**, then executed
 | [HOW_TO_USE.md](HOW_TO_USE.md) | End-user walkthrough of the Studio — building, configuring, and running a workflow. |
 | [docs/adding-a-step-form.md](docs/adding-a-step-form.md) | Add a step defined entirely in the backend with a `step.json`. **Also the reference for ports, run configuration, and the runtime execution model.** |
 | [docs/adding-a-step-custom-ui.md](docs/adding-a-step-custom-ui.md) | Replace a step's generated form with a custom interactive React panel. |
+| [docs/TESTING.md](docs/TESTING.md) | How changes are verified — local checks, CI gates, manual verification, and deployment verification. **Read before opening a pull request.** |
+| [docs/openapi.yaml](docs/openapi.yaml) | Full backend API reference (OpenAPI 3.1) — every endpoint, auth scheme, and ownership rule. Generated from the live routes; also served at `/docs` and `/redoc` while the backend is running. |
 
 ## Project Structure
 

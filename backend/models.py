@@ -154,6 +154,18 @@ class WorkflowTemplate(Base):
     owner_id = Column(Integer, ForeignKey('app_user.user_id'))
     team_id = Column(Integer, ForeignKey('team.team_id'))
     is_shared = Column(Boolean, default=False)
+    # Published to every authenticated user, regardless of team.
+    #
+    # Deliberately separate from is_shared/team_id rather than expressed through
+    # them: every user is auto-attached to `default_team` (see auth._upsert_user),
+    # so a team-scoped flag would mean "everyone" today and silently narrow to
+    # "my team" the moment real teams exist. This one means the same thing
+    # whatever the team topology turns into.
+    #
+    # Grants READ + RUN + CLONE, never write: only the owner can add a version
+    # (see owned_template_or_404 in main.py). Set on every row sharing a
+    # template_id, so publishing covers the whole version lineage.
+    is_public = Column(Boolean, default=False, nullable=False, server_default='false')
     tapis_pipeline_id = Column(String)
     # Allocation/charge account (e.g. 'uot260') set at template creation; used as
     # the default slurm_account when running this template.

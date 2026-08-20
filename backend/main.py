@@ -2,7 +2,7 @@ from fastapi import FastAPI, Depends, Request, HTTPException
 from fastapi.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
-from sqlalchemy import func
+from sqlalchemy import func, or_, and_
 from sqlalchemy.orm import Session
 import os
 import uuid
@@ -23,7 +23,76 @@ from dbos import DBOS, DBOSConfig, SetWorkflowID
 from fastapi.responses import PlainTextResponse, Response
 import httpx
 
-app = FastAPI(title="Harvest Tapis Backend")
+API_DESCRIPTION = """\
+Backend for the **No-Code Workflow Studio** — build ML workflows on a visual
+canvas and execute them as a durable DAG against Tapis-managed HPC resources.
+
+### Authentication
+
+Every endpoint except `GET /` requires an authenticated user. Two credentials
+are accepted, checked in this order:
+
+1. **`X-Tapis-Token`** header — a Tapis access token. Used when the Studio is
+   embedded in TapisUI, where the host supplies the token.
+2. **`session`** cookie — set by this app's own Tapis OAuth login
+   (`GET /login` → `GET /oauth2/callback`).
+
+A token that fails verification falls through to the session rather than
+hard-failing. `GET /auth-debug` reports which credential a request carried and
+why it was or wasn't accepted.
+
+### Ownership
+
+Templates and runs are scoped to the calling user.
+
+* **Runs** are owner-only. Another user's run returns `404`.
+* **Templates** are owner-only until published (`POST
+  /api/workflow-templates/{template_id}/publish`), which grants every user
+  read, run and clone access — never write. Only the owner can add a version.
+
+Resources you may not access return **`404`, not `403`**, so a response never
+confirms that an id exists.
+"""
+
+OPENAPI_TAGS = [
+    {"name": "workflow-templates", "description":
+        "Create, read, version, publish and clone workflow templates. A *template* "
+        "is a named graph; each save creates a new version sharing one `template_id`."},
+    {"name": "pipeline-runs", "description":
+        "Launch, monitor, and stop executions. A *run* freezes a template version's "
+        "config at launch, so editing the template later never changes a run in flight."},
+    {"name": "step-registry", "description":
+        "The catalogue of available step types and port data types, synced from "
+        "`backend/steps/*/step.json` at startup."},
+    {"name": "secrets", "description":
+        "Team-scoped API tokens (Weights & Biases, Hugging Face, ...). Only a "
+        "secret's KEY is ever returned; values are decrypted server-side at job "
+        "submission time."},
+    {"name": "tapis", "description":
+        "Thin proxies over the Tapis API using the caller's own OAuth token — "
+        "file browsing, uploads, system queues, and identity."},
+    {"name": "geospatial", "description":
+        "GeoPackage-backed layers for a completed run, served on demand as GeoJSON, "
+        "zipped Shapefile, or raw GeoPackage."},
+    {"name": "geospatial-preview", "description":
+        "The same conversions against a `tapis://` URI given directly, so a source "
+        "node's static GeoPackage can be previewed before the workflow has ever run."},
+    {"name": "annotation-adapter", "description":
+        "Convert annotations between native, COCO, YOLO and GeoPackage formats."},
+    {"name": "auth", "description":
+        "Tapis OAuth login/logout, current identity, and credential diagnostics."},
+    {"name": "meta", "description": "Service health and configuration."},
+]
+
+app = FastAPI(
+    title="No-Code Workflow Studio API",
+    description=API_DESCRIPTION,
+    version="0.1.0",
+    openapi_tags=OPENAPI_TAGS,
+    license_info={"name": "MIT"},
+    contact={"name": "ICICLE-ai / workflow-orchestrator",
+             "url": "https://github.com/ICICLE-ai/workflow-orchestrator"},
+)
 
 # Enable CORS for the frontend. Always includes the plain-localhost dev
 # defaults, plus FRONTEND_URL (already used for the OAuth redirect — same
@@ -70,6 +139,98 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> AppUser
     session cookie from the Tapis OAuth login.
     """
     return auth.require_current_user(request, db)
+
+
+# --- Ownership scoping -------------------------------------------------------
+# Authentication only establishes WHO is calling. These establish WHAT they may
+# see. Every route that reads or acts on a template or a run must go through one
+# of these — a plain `db.query(WorkflowTemplate)` in a request handler is a bug,
+# because it returns every user's rows.
+#
+# Templates and runs already record ownership at write time (owner_id / user_id,
+# set from the authenticated user), so this is purely a read-side restriction.
+#
+# Missing/unknown ids return 404 rather than 403: a 403 confirms that a
+# template_version_id or run_id exists, which is itself a disclosure. The caller
+# cannot distinguish "no such run" from "not your run", which is the intent.
+
+
+def visible_templates(db: Session, user: AppUser):
+    """Base query for templates `user` may READ: their own, anything published
+    public, plus anything explicitly shared with their team.
+
+    Visibility is not permission to modify. Read access allows opening, running
+    and cloning; adding a version is owner-only (see owned_template_or_404).
+
+    The `team_id.isnot(None)` guard is load bearing. SQLAlchemy renders
+    `team_id == None` as `team_id IS NULL`, so for a user with no team the
+    sharing clause would otherwise match every team-less shared template.
+    """
+    return db.query(WorkflowTemplate).filter(
+        or_(
+            WorkflowTemplate.owner_id == user.user_id,
+            WorkflowTemplate.is_public.is_(True),
+            and_(
+                WorkflowTemplate.is_shared.is_(True),
+                WorkflowTemplate.team_id.isnot(None),
+                WorkflowTemplate.team_id == user.team_id,
+            ),
+        )
+    )
+
+
+def owned_templates(db: Session, user: AppUser):
+    """Base query for templates `user` may MODIFY — strictly their own.
+
+    Public and team-shared templates are readable but not writable: the version
+    list endpoint shows the LATEST version, so letting a non-owner add one would
+    change what the owner opens next. Non-owners clone instead.
+    """
+    return db.query(WorkflowTemplate).filter(WorkflowTemplate.owner_id == user.user_id)
+
+
+def template_or_404(db: Session, user: AppUser, template_version_id: int) -> WorkflowTemplate:
+    """One template version `user` may read, or 404."""
+    template = visible_templates(db, user).filter(
+        WorkflowTemplate.template_version_id == template_version_id
+    ).first()
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return template
+
+
+def owned_template_or_404(db: Session, user: AppUser, template_id: int) -> WorkflowTemplate:
+    """Any version of a template lineage `user` OWNS, or 404. For writes.
+
+    404 rather than 403 even when the template exists and is merely someone
+    else's: a public template's existence is already known to the caller, but
+    which account owns it is not, and 403-vs-404 here would answer that.
+    """
+    template = owned_templates(db, user).filter(
+        WorkflowTemplate.template_id == template_id
+    ).first()
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return template
+
+
+def visible_runs(db: Session, user: AppUser):
+    """Base query for runs `user` may see.
+
+    Runs are owner-only, deliberately narrower than templates: a shared template
+    is a design others may reuse, whereas a run carries that user's resolved
+    config, their Tapis paths, and their job output locations.
+    """
+    return db.query(PipelineRun).filter(PipelineRun.user_id == user.user_id)
+
+
+def run_or_404(db: Session, user: AppUser, run_id: int) -> PipelineRun:
+    """One run `user` owns, or 404."""
+    run = visible_runs(db, user).filter(PipelineRun.run_id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return run
+
 
 # --- DBOS durable-execution engine ---
 # Shares the harvest Postgres but keeps its internal bookkeeping in a dedicated
@@ -347,7 +508,11 @@ def on_startup():
             conn.execute(text(
                 "ALTER TABLE workflow_template "
                 "ADD COLUMN IF NOT EXISTS allocation_account VARCHAR, "
-                "ADD COLUMN IF NOT EXISTS is_draft BOOLEAN DEFAULT FALSE;"
+                "ADD COLUMN IF NOT EXISTS is_draft BOOLEAN DEFAULT FALSE, "
+                # NOT NULL DEFAULT FALSE so existing rows backfill to "private".
+                # Defaulting to public would republish every template already in
+                # the database the moment this deploys.
+                "ADD COLUMN IF NOT EXISTS is_public BOOLEAN NOT NULL DEFAULT FALSE;"
             ))
             conn.execute(text(
                 "ALTER TABLE step_type_registry "
@@ -486,16 +651,25 @@ def list_workflow_templates(db: Session = Depends(get_db), user: AppUser = Depen
     # everyone opens next.
     not_draft = WorkflowTemplate.is_draft.isnot(True)
 
-    subquery = db.query(
-        WorkflowTemplate.template_id,
-        func.max(WorkflowTemplate.version).label("max_version")
-    ).filter(not_draft).group_by(WorkflowTemplate.template_id).subquery()
+    # Scoped to this user (see visible_templates). The subquery is scoped too,
+    # not just the outer select: picking the max version across EVERY user's
+    # rows and then filtering would silently drop a template whose latest
+    # version belongs to someone else.
+    visible = visible_templates(db, user).filter(not_draft).subquery()
 
-    templates = db.query(WorkflowTemplate).join(
+    subquery = db.query(
+        visible.c.template_id,
+        func.max(visible.c.version).label("max_version")
+    ).group_by(visible.c.template_id).subquery()
+
+    # Scoped on BOTH sides. template_id happens to be globally unique today
+    # (assigned as max+1 across all rows), so an unscoped outer select would be
+    # safe by accident; scoping it means this stays correct if that ever changes.
+    templates = visible_templates(db, user).filter(not_draft).join(
         subquery,
         (WorkflowTemplate.template_id == subquery.c.template_id) &
         (WorkflowTemplate.version == subquery.c.max_version)
-    ).filter(not_draft).all()
+    ).all()
     
     return [
         {
@@ -505,13 +679,19 @@ def list_workflow_templates(db: Session = Depends(get_db), user: AppUser = Depen
             "name": t.name,
             "description": t.description,
             "category": t.category,
-            "created_at": t.created_at
+            "created_at": t.created_at,
+            # The UI needs both: is_public drives the "Public" badge, is_owner
+            # decides whether it offers Save (owner) or Clone (everyone else).
+            "is_public": bool(t.is_public),
+            "is_owner": t.owner_id == user.user_id,
         } for t in templates
     ]
 
 @app.get("/api/workflow-templates/{template_id}/history")
 def get_workflow_template_history(template_id: int, db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)):
-    versions = db.query(WorkflowTemplate).filter(WorkflowTemplate.template_id == template_id).order_by(WorkflowTemplate.version.desc()).all()
+    versions = visible_templates(db, user).filter(
+        WorkflowTemplate.template_id == template_id
+    ).order_by(WorkflowTemplate.version.desc()).all()
     if not versions:
         raise HTTPException(status_code=404, detail="Template history not found")
         
@@ -527,16 +707,16 @@ def get_workflow_template_history(template_id: int, db: Session = Depends(get_db
             "description": t.description,
             "category": t.category,
             "is_draft": bool(t.is_draft),
+            "is_public": bool(t.is_public),
+            "is_owner": t.owner_id == user.user_id,
             "created_at": t.created_at
         } for t in versions
     ]
 
 @app.get("/api/workflow-templates/{template_version_id}")
 def get_workflow_template(template_version_id: int, db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)):
-    template = db.query(WorkflowTemplate).filter(WorkflowTemplate.template_version_id == template_version_id).first()
-    if not template:
-        raise HTTPException(status_code=404, detail="Template not found")
-        
+    template = template_or_404(db, user, template_version_id)
+
     nodes = db.query(WfNode).filter(WfNode.template_version_id == template_version_id).all()
     edges = db.query(WfEdge).filter(WfEdge.template_version_id == template_version_id).all()
     
@@ -575,6 +755,11 @@ def get_workflow_template(template_version_id: int, db: Session = Depends(get_db
         "description": template.description,
         "category": template.category,
         "allocation_account": template.allocation_account,
+        # is_owner is false when this is someone else's public template: the
+        # canvas is still fully readable and runnable, but Save must offer
+        # "Clone to my workspace" rather than writing a version.
+        "is_public": bool(template.is_public),
+        "is_owner": template.owner_id == user.user_id,
         "nodes": [{"id": str(n.node_id), "type": "customNode", "position": {"x": n.position_x, "y": n.position_y}, "data": {"nodeType": n.step_type_key, "config_values": n.default_config}} for n in nodes],
         "edges": edge_list
     }
@@ -710,6 +895,12 @@ def create_template_version(
     """
     _validate_no_hanging_inputs(template, db)
 
+    # OWNER-only, deliberately stricter than read access. A public template is
+    # readable and runnable by everyone, but a version added by a non-owner
+    # would become what the owner opens next (the list shows the LATEST
+    # version). Non-owners use POST {template_version_id}/clone instead.
+    owned_template_or_404(db, user, template_id)
+
     max_version = db.query(func.max(WorkflowTemplate.version)).filter(WorkflowTemplate.template_id == template_id).scalar() or 0
     next_version = max_version + 1
 
@@ -778,11 +969,138 @@ def create_template_version(
         "is_draft": draft,
     }
 
+
+# --- Publishing ---------------------------------------------------------------
+# Publishing makes a template readable, runnable and clonable by every
+# authenticated user. It never grants write access — see owned_template_or_404.
+
+
+def _set_public(db: Session, user: AppUser, template_id: int, public: bool) -> dict:
+    """Flip is_public across a template's whole version lineage.
+
+    Applied to every row sharing `template_id`, not just the latest version:
+    visibility is evaluated per row, so publishing only the newest would leave
+    the history endpoint showing a partial list and would unpublish itself the
+    next time the owner saved a version.
+    """
+    owned_template_or_404(db, user, template_id)
+    updated = db.query(WorkflowTemplate).filter(
+        WorkflowTemplate.template_id == template_id
+    ).update({WorkflowTemplate.is_public: public}, synchronize_session=False)
+    db.commit()
+    return {
+        "template_id": template_id,
+        "is_public": public,
+        "versions_updated": updated,
+        "message": f"Template {'published' if public else 'unpublished'}.",
+    }
+
+
+@app.post("/api/workflow-templates/{template_id}/publish")
+def publish_template(template_id: int, db: Session = Depends(get_db),
+                     user: AppUser = Depends(get_current_user)):
+    """Make every version of this template visible to all authenticated users.
+    Owner only."""
+    return _set_public(db, user, template_id, True)
+
+
+@app.post("/api/workflow-templates/{template_id}/unpublish")
+def unpublish_template(template_id: int, db: Session = Depends(get_db),
+                       user: AppUser = Depends(get_current_user)):
+    """Return this template to owner-only visibility. Owner only.
+
+    Existing clones are unaffected — a clone is an independent template owned by
+    whoever made it, not a reference back to this one.
+    """
+    return _set_public(db, user, template_id, False)
+
+
+@app.post("/api/workflow-templates/{template_version_id}/clone")
+def clone_template(template_version_id: int, db: Session = Depends(get_db),
+                   user: AppUser = Depends(get_current_user)):
+    """Copy a template version the caller can READ into a new template they own.
+
+    This is how a non-owner builds on a public template: they get version 1 of a
+    fresh lineage, private to them, with the original left untouched. Copied
+    from the persisted wf_node/wf_edge rows rather than from a request body, so
+    the clone reflects what is actually stored rather than whatever a client
+    chose to send.
+    """
+    source = template_or_404(db, user, template_version_id)
+
+    max_id = db.query(func.max(WorkflowTemplate.template_id)).scalar() or 0
+    clone = WorkflowTemplate(
+        template_id=max_id + 1,
+        version=1,
+        name=f"{source.name} (copy)",
+        description=source.description,
+        category=source.category,
+        allocation_account=source.allocation_account,
+        owner_id=user.user_id,
+        # A clone always starts private, whatever the source was. Republishing
+        # is the new owner's decision to make, not one inherited from someone
+        # else's template.
+        is_public=False,
+        is_draft=False,
+    )
+    db.add(clone)
+    db.commit()
+    db.refresh(clone)
+
+    # Node ids are per-row, so edges have to be remapped onto the new ids.
+    # Port ids are keyed by step type, not by node, so they carry over as-is.
+    node_id_map = {}
+    for n in db.query(WfNode).filter(WfNode.template_version_id == template_version_id).all():
+        copy = WfNode(
+            template_version_id=clone.template_version_id,
+            step_type_key=n.step_type_key,
+            node_label=n.node_label,
+            default_config=n.default_config,
+            position_x=n.position_x,
+            position_y=n.position_y,
+        )
+        db.add(copy)
+        db.flush()
+        node_id_map[n.node_id] = copy.node_id
+
+    for e in db.query(WfEdge).filter(WfEdge.template_version_id == template_version_id).all():
+        src, tgt = node_id_map.get(e.source_node_id), node_id_map.get(e.target_node_id)
+        if src is None or tgt is None:
+            continue  # edge referencing a node that no longer exists; skip it
+        db.add(WfEdge(
+            template_version_id=clone.template_version_id,
+            source_node_id=src,
+            target_node_id=tgt,
+            source_port_id=e.source_port_id,
+            target_port_id=e.target_port_id,
+            condition_expr=e.condition_expr,
+            condition_desc=e.condition_desc,
+        ))
+
+    db.commit()
+    return {
+        "message": f"Cloned '{source.name}' into your workspace.",
+        "template_id": clone.template_id,
+        "template_version_id": clone.template_version_id,
+        "name": clone.name,
+        "nodes_copied": len(node_id_map),
+    }
+
+
 @app.get("/api/pipeline-runs")
 def list_pipeline_runs(db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)):
-    runs = db.query(PipelineRun).order_by(PipelineRun.created_at.desc()).all()
+    runs = visible_runs(db, user).order_by(PipelineRun.created_at.desc()).all()
     # Join the template name so the history page can show which workflow ran.
-    templates = {t.template_version_id: t.name for t in db.query(WorkflowTemplate).all()}
+    # Looked up by the ids these runs actually reference rather than by loading
+    # every template in the database — a run's own template may since have been
+    # unshared, and this is a label lookup, not an access grant.
+    template_ids = {r.template_version_id for r in runs if r.template_version_id is not None}
+    templates = {
+        t.template_version_id: t.name
+        for t in db.query(WorkflowTemplate).filter(
+            WorkflowTemplate.template_version_id.in_(template_ids)
+        ).all()
+    } if template_ids else {}
     return [
         {
             "run_id": r.run_id,
@@ -801,9 +1119,7 @@ def get_pipeline_run_detail(run_id: int, db: Session = Depends(get_db), user: Ap
     """Per-run detail by run_id: overall status + each step's status/outputs.
     Used by the history page to show which node is running/completed/failed."""
     from models import RunStep, WfNode
-    run = db.query(PipelineRun).filter(PipelineRun.run_id == run_id).first()
-    if not run:
-        raise HTTPException(status_code=404, detail="Run not found")
+    run = run_or_404(db, user, run_id)
     steps = db.query(RunStep).filter(RunStep.run_id == run_id).order_by(RunStep.run_step_id).all()
     # Map node_id -> step_type_key for readable labels.
     node_keys = {n.node_id: n.step_type_key for n in db.query(WfNode).filter(
@@ -842,6 +1158,11 @@ def get_step_logs(run_id: int, node_id: int, db: Session = Depends(get_db), user
     from models import RunStep
     import httpx as _httpx
     from engine import tapis_auth
+
+    # Ownership is checked on the RUN before any step lookup. These logs are
+    # container stdout/stderr and Tapis job messages — among the most revealing
+    # output in the system.
+    run_or_404(db, user, run_id)
 
     step = db.query(RunStep).filter(
         RunStep.run_id == run_id, RunStep.node_id == node_id
@@ -900,6 +1221,10 @@ class NodeExecutionRequest(BaseModel):
 
 @app.post("/api/pipeline-runs/execute-node")
 def execute_single_node(req: NodeExecutionRequest, db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)):
+    # Still a simulation (it only echoes the request back), but the access check
+    # belongs here now rather than whenever this grows a real job submission.
+    template_or_404(db, user, req.template_version_id)
+
     # In a real app, this would submit a Tapis job
     # For now, we simulate execution
     import time
@@ -914,18 +1239,17 @@ def execute_single_node(req: NodeExecutionRequest, db: Session = Depends(get_db)
 
 # --- Whole-workflow execution via the DBOS engine ---
 
-def _build_dag_config(db: Session, template_version_id: int) -> dict:
+def _build_dag_config(db: Session, template_version_id: int, user: AppUser) -> dict:
     """Read a saved template's nodes/edges and shape them into the dag_config the
     DBOS orchestrator expects: {template_version_id, nodes:[{id,type,inputs}], edges:[{from,to}]}.
 
     Node ids are the string form of wf_node.node_id (the DAG node key the engine
     uses throughout). Each node's inputs come from its saved default_config.
     """
-    template = db.query(WorkflowTemplate).filter(
-        WorkflowTemplate.template_version_id == template_version_id
-    ).first()
-    if not template:
-        raise HTTPException(status_code=404, detail="Template not found")
+    # Scoped here rather than at the call site so a future caller cannot execute
+    # a template its user can't see. Launching someone else's workflow would
+    # also run it under THIS user's Tapis token and allocation.
+    template = template_or_404(db, user, template_version_id)
 
     nodes = db.query(WfNode).filter(WfNode.template_version_id == template_version_id).all()
     edges = db.query(WfEdge).filter(WfEdge.template_version_id == template_version_id).all()
@@ -993,17 +1317,18 @@ def execute_workflow(template_version_id: int, options: Optional[RunOptions] = N
     and the engine reads when rendering each step's Tapis job spec. The per-step
     archive location is derived automatically (work_dir/wf_runs/<run_id>/<node>).
     """
-    dag_config = _build_dag_config(db, template_version_id)
+    dag_config = _build_dag_config(db, template_version_id, user)
     if options is not None:
         for key, value in options.model_dump(exclude_none=True).items():
             dag_config[key] = value
 
     # Default the charge account from the template's allocation_account when the
     # run didn't specify one (RunOptions.slurm_account still overrides).
-    template = db.query(WorkflowTemplate).filter(
-        WorkflowTemplate.template_version_id == template_version_id
-    ).first()
-    dag_config.setdefault("slurm_account", (template and template.allocation_account) or "uot260")
+    # _build_dag_config above already proved this user may see the template, so
+    # this cannot 404 here; it goes through the scoped helper anyway so no
+    # unscoped template query exists in this file.
+    template = template_or_404(db, user, template_version_id)
+    dag_config.setdefault("slurm_account", template.allocation_account or "uot260")
 
     # Record the launching user so the run is owned by them and the engine can
     # resolve their Tapis token (get_token_for_run) when submitting jobs. The
@@ -1062,9 +1387,9 @@ def stop_pipeline_run(run_id: int, db: Session = Depends(get_db), user: AppUser 
     from models import RunStep
     from engine.tapis import cancel_tapis_job
 
-    run = db.query(PipelineRun).filter(PipelineRun.run_id == run_id).first()
-    if not run:
-        raise HTTPException(status_code=404, detail="Run not found")
+    # Stopping is a write: without this any authenticated user could cancel
+    # anyone's in-flight run and its Tapis jobs.
+    run = run_or_404(db, user, run_id)
 
     terminal = {"COMPLETED", "FAILED", "CANCELLED"}
     if (run.status or "").upper() in terminal:
@@ -1100,9 +1425,18 @@ def stop_pipeline_run(run_id: int, db: Session = Depends(get_db), user: AppUser 
 
 
 @app.get("/api/pipeline-runs/status/{dbos_workflow_id}")
-def get_workflow_run_status(dbos_workflow_id: str, format: str = "json", user: AppUser = Depends(get_current_user)):
+def get_workflow_run_status(dbos_workflow_id: str, format: str = "json", db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)):
     """Return live status of a workflow run: overall DBOS state, per-step detail,
     and an ASCII progress graph. `format=text` returns just the graph as text."""
+    # Keyed by the DBOS workflow id rather than run_id, so ownership is resolved
+    # through the pipeline_run row that records it. Checked BEFORE asking DBOS
+    # for anything: the response carries per-step detail and the run's graph.
+    owned = visible_runs(db, user).filter(
+        PipelineRun.dbos_workflow_id == dbos_workflow_id
+    ).first()
+    if not owned:
+        raise HTTPException(status_code=404, detail="Workflow run not found")
+
     status = DBOS.get_workflow_status(dbos_workflow_id)
     if status is None:
         raise HTTPException(status_code=404, detail="Workflow run not found")
@@ -1401,6 +1735,119 @@ def tapis_whoami(db: Session = Depends(get_db), user: AppUser = Depends(get_curr
     info["tapis_username"] = check["username"]
     info["token_detail"] = check["detail"]
     return info
+
+
+# --- OpenAPI ------------------------------------------------------------------
+# The spec is GENERATED from the live routes, never hand-written, so it cannot
+# drift from the code. This pass adds what FastAPI can't infer: the auth schemes,
+# which operations are public, tags for routes declared directly on `app`
+# (routers carry their own), and the error responses every authenticated
+# operation shares.
+#
+# Export a copy with:  python -m scripts.export_openapi
+# Browse it live at:   /docs (Swagger UI)  ·  /redoc  ·  /openapi.json
+
+# Operations reachable without a credential — the login handshake plus health.
+# Everything else requires one, so this is a deny-by-default list: a new route
+# is treated as authenticated unless it is named here.
+_PUBLIC_OPERATIONS = {
+    ("/", "get"),
+    ("/login", "get"),
+    ("/logout", "get"),
+    ("/oauth2/callback", "get"),
+    # Reports only what the CALLER supplied and names no other user; it exists
+    # precisely for debugging a request that cannot authenticate.
+    ("/auth-debug", "get"),
+    # Returns the current identity, or null when signed out — it answers "am I
+    # logged in", so requiring login would defeat it.
+    ("/me", "get"),
+}
+
+# Path prefix -> tag, for operations declared on `app` itself. Longest prefix
+# wins, so /api/pipeline-runs/{run_id}/geospatial/... keeps the tag its own
+# router already set rather than being relabelled a pipeline-run.
+_TAG_BY_PREFIX = [
+    ("/api/workflow-templates", "workflow-templates"),
+    ("/api/pipeline-runs", "pipeline-runs"),
+    ("/api/step-types", "step-registry"),
+    ("/api/port-data-types", "step-registry"),
+    ("/api/secrets", "secrets"),
+    ("/api/tapis-files", "tapis"),
+    ("/api/tapis-systems", "tapis"),
+    ("/api/tapis", "tapis"),
+    ("/login", "auth"),
+    ("/logout", "auth"),
+    ("/oauth2", "auth"),
+    ("/auth-debug", "auth"),
+    ("/me", "auth"),
+    ("/", "meta"),
+]
+
+
+def custom_openapi():
+    """Build (and cache) the enriched OpenAPI schema."""
+    if app.openapi_schema:
+        return app.openapi_schema
+
+    from fastapi.openapi.utils import get_openapi
+
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+        tags=app.openapi_tags,
+        license_info=app.license_info,
+        contact=app.contact,
+    )
+
+    schema.setdefault("components", {})["securitySchemes"] = {
+        "tapisToken": {
+            "type": "apiKey", "in": "header", "name": "X-Tapis-Token",
+            "description": "Tapis access token. Preferred when the Studio is "
+                           "embedded in TapisUI, which supplies it.",
+        },
+        "sessionCookie": {
+            "type": "apiKey", "in": "cookie", "name": "session",
+            "description": "Signed session cookie from this app's own Tapis "
+                           "OAuth login (GET /login).",
+        },
+    }
+    # A list of two single-key requirements means OR: either credential alone
+    # satisfies the operation. One dict with two keys would mean AND.
+    default_security = [{"tapisToken": []}, {"sessionCookie": []}]
+
+    for path, operations in schema["paths"].items():
+        for method, operation in operations.items():
+            if method not in ("get", "post", "put", "patch", "delete"):
+                continue
+
+            if not operation.get("tags"):
+                for prefix, tag in _TAG_BY_PREFIX:
+                    if path == prefix or path.startswith(prefix.rstrip("/") + "/"):
+                        operation["tags"] = [tag]
+                        break
+
+            if (path, method) in _PUBLIC_OPERATIONS:
+                operation["security"] = []   # explicitly public
+                continue
+
+            operation["security"] = default_security
+            operation.setdefault("responses", {}).setdefault("401", {
+                "description": "Not authenticated — no valid X-Tapis-Token or session cookie.",
+            })
+            # Anything addressed by an id can also be someone else's. That is
+            # reported as 404 rather than 403 by design; see the description.
+            if "{" in path:
+                operation["responses"].setdefault("404", {
+                    "description": "Not found, or not visible to the calling user.",
+                })
+
+    app.openapi_schema = schema
+    return schema
+
+
+app.openapi = custom_openapi
 
 
 if __name__ == "__main__":
