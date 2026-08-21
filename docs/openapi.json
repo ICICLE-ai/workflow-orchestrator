@@ -1329,6 +1329,9 @@
           },
           "404": {
             "description": "Not found, or not visible to the calling user."
+          },
+          "403": {
+            "description": "Visible to the caller but owned by someone else \u2014 e.g. saving over a published template. The message names the template and points at cloning instead."
           }
         },
         "tags": [
@@ -1384,6 +1387,9 @@
           },
           "404": {
             "description": "Not found, or not visible to the calling user."
+          },
+          "403": {
+            "description": "Visible to the caller but owned by someone else \u2014 e.g. saving over a published template. The message names the template and points at cloning instead."
           }
         },
         "tags": [
@@ -1439,6 +1445,9 @@
           },
           "404": {
             "description": "Not found, or not visible to the calling user."
+          },
+          "403": {
+            "description": "Visible to the caller but owned by someone else \u2014 e.g. saving over a published template. The message names the template and points at cloning instead."
           }
         },
         "tags": [

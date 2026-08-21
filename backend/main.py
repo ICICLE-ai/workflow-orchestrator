@@ -199,19 +199,44 @@ def template_or_404(db: Session, user: AppUser, template_version_id: int) -> Wor
     return template
 
 
-def owned_template_or_404(db: Session, user: AppUser, template_id: int) -> WorkflowTemplate:
-    """Any version of a template lineage `user` OWNS, or 404. For writes.
+# Wording for the 403 below. Each write route says what it was trying to do and
+# what the caller can do instead, because "you don't own this" on its own leaves
+# someone staring at a template they can plainly see with no way forward.
+SAVE_HINT = "Run it as-is, or use “Save as my copy” to get an editable version you own."
+SHARING_HINT = "Only its owner can change how it is shared."
 
-    404 rather than 403 even when the template exists and is merely someone
-    else's: a public template's existence is already known to the caller, but
-    which account owns it is not, and 403-vs-404 here would answer that.
+
+def owned_template_or_404(db: Session, user: AppUser, template_id: int, *,
+                          action: str = "changed",
+                          hint: str = SAVE_HINT) -> WorkflowTemplate:
+    """Any version of a template lineage `user` OWNS. For writes.
+
+    Two different failures, deliberately reported differently:
+
+    * **403** when the caller CAN see the template but doesn't own it. Saying so
+      discloses nothing — they can already open, read and run it — and "Template
+      not found" would be actively misleading while they are looking at it.
+      `action` and `hint` let each route explain the specific refusal.
+    * **404** when they cannot see it at all, which keeps the "a response never
+      confirms an id exists" rule where it actually matters.
     """
     template = owned_templates(db, user).filter(
         WorkflowTemplate.template_id == template_id
     ).first()
-    if not template:
-        raise HTTPException(status_code=404, detail="Template not found")
-    return template
+    if template:
+        return template
+
+    readable = visible_templates(db, user).filter(
+        WorkflowTemplate.template_id == template_id
+    ).first()
+    if readable:
+        how = "published" if readable.is_public else "shared with your team"
+        raise HTTPException(
+            status_code=403,
+            detail=f"'{readable.name}' is {how} by another user, so it can't be {action}. {hint}",
+        )
+
+    raise HTTPException(status_code=404, detail="Template not found")
 
 
 def visible_runs(db: Session, user: AppUser):
@@ -899,7 +924,7 @@ def create_template_version(
     # readable and runnable by everyone, but a version added by a non-owner
     # would become what the owner opens next (the list shows the LATEST
     # version). Non-owners use POST {template_version_id}/clone instead.
-    owned_template_or_404(db, user, template_id)
+    owned_template_or_404(db, user, template_id, action="saved over", hint=SAVE_HINT)
 
     max_version = db.query(func.max(WorkflowTemplate.version)).filter(WorkflowTemplate.template_id == template_id).scalar() or 0
     next_version = max_version + 1
@@ -983,7 +1008,11 @@ def _set_public(db: Session, user: AppUser, template_id: int, public: bool) -> d
     the history endpoint showing a partial list and would unpublish itself the
     next time the owner saved a version.
     """
-    owned_template_or_404(db, user, template_id)
+    owned_template_or_404(
+        db, user, template_id,
+        action=f"{'published' if public else 'unpublished'} by you",
+        hint=SHARING_HINT,
+    )
     updated = db.query(WorkflowTemplate).filter(
         WorkflowTemplate.template_id == template_id
     ).update({WorkflowTemplate.is_public: public}, synchronize_session=False)
@@ -1747,6 +1776,15 @@ def tapis_whoami(db: Session = Depends(get_db), user: AppUser = Depends(get_curr
 # Export a copy with:  python -m scripts.export_openapi
 # Browse it live at:   /docs (Swagger UI)  ·  /redoc  ·  /openapi.json
 
+# Operations that require OWNERSHIP, not merely read access. These are the ones
+# that can return 403 (see owned_template_or_404): the caller can see the
+# template but may not write to it.
+_OWNER_ONLY_OPERATIONS = {
+    ("/api/workflow-templates/{template_id}/versions", "post"),
+    ("/api/workflow-templates/{template_id}/publish", "post"),
+    ("/api/workflow-templates/{template_id}/unpublish", "post"),
+}
+
 # Operations reachable without a credential — the login handshake plus health.
 # Everything else requires one, so this is a deny-by-default list: a new route
 # is treated as authenticated unless it is named here.
@@ -1841,6 +1879,12 @@ def custom_openapi():
             if "{" in path:
                 operation["responses"].setdefault("404", {
                     "description": "Not found, or not visible to the calling user.",
+                })
+            if (path, method) in _OWNER_ONLY_OPERATIONS:
+                operation["responses"].setdefault("403", {
+                    "description": "Visible to the caller but owned by someone else — "
+                                   "e.g. saving over a published template. The message "
+                                   "names the template and points at cloning instead.",
                 })
 
     app.openapi_schema = schema

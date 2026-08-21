@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, Suspense, lazy } from "react";
-import { Group, TextInput, Button, Loader, Stack, Popover, Select, Paper } from "@mantine/core";
-import { IconDeviceFloppy, IconSettings } from "@tabler/icons-react";
+import { Group, TextInput, Button, Loader, Stack, Popover, Select, Paper, Text, Alert, CloseButton } from "@mantine/core";
+import { IconDeviceFloppy, IconSettings, IconAlertTriangle, IconCheck } from "@tabler/icons-react";
 import { notifications } from "@mantine/notifications";
 import type { StepPanelProps } from "./types";
 import { apiFetch } from "../lib/api";
@@ -57,6 +57,20 @@ export default function ImagePreprocessStudioPanel({ config, onChange, step, con
     String(wiredDir ?? "") ||
     String(step.config_schema.source_dir?.default ?? "");
   const pipelinePath = field("pipeline_path");
+
+  // Where "Save operations.json" actually writes.
+  //
+  // An explicit pipeline path wins. Blank falls back to operations.json beside
+  // the images in the source directory — previously a blank path just refused
+  // to save at all, which read as the button doing nothing. Blank still means
+  // "auto" for the RUN (the pre-submit handler writes to the step's archive
+  // dir); this fallback only decides where a MANUAL save lands.
+  const saveTarget = useMemo(() => {
+    const explicit = pipelinePath.trim();
+    if (explicit) return explicit;
+    const dir = sourceDir.trim().replace(/\/+$/, "");
+    return dir ? `${dir}/operations.json` : "";
+  }, [pipelinePath, sourceDir]);
 
   // Custom FileSource: pickFile() opens the directory browser and resolves the
   // chosen image as a File (fetched from Tapis via the backend proxy).
@@ -132,15 +146,36 @@ export default function ImagePreprocessStudioPanel({ config, onChange, step, con
   // here reaches the job whether or not this button is ever pressed. Kept for
   // exporting the pipeline somewhere of your own choosing.
   const [saving, setSaving] = useState(false);
+  // Save result shown INLINE in the toolbar below, not only as a notification.
+  // This panel is a full-screen modal that paints its own toolbar at z-index
+  // 10001; a toast is easy to miss behind it, and "did that save or not?" is
+  // exactly the question this button has to answer unambiguously.
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [savedTo, setSavedTo] = useState<string | null>(null);
+
   const savePipeline = async () => {
-    if (!system || !pipelinePath) {
-      notifications.show({
-        color: "yellow",
-        message:
-          "Set a pipeline path under 'Paths' to save a copy here. (Not required to run — the workflow writes operations.json itself.)",
-      });
+    setSaveError(null);
+    setSavedTo(null);
+
+    if (!system) {
+      setSaveError("Pick a Tapis system first (top-left of this toolbar).");
       return;
     }
+    if (!saveTarget) {
+      setSaveError(
+        "Nowhere to save yet. Browse to an image to set the source directory, " +
+          "or open Paths and type a full path including the filename."
+      );
+      return;
+    }
+    // A directory-looking target would upload under a filename Tapis derives
+    // from the trailing segment, i.e. not operations.json. Catch it here rather
+    // than let the file land somewhere surprising.
+    if (saveTarget.endsWith("/")) {
+      setSaveError(`"${saveTarget}" is a directory. Include the filename, e.g. ${saveTarget}operations.json`);
+      return;
+    }
+
     setSaving(true);
     try {
       const res = await studioFetch(`/api/tapis-files/upload`, {
@@ -148,17 +183,20 @@ export default function ImagePreprocessStudioPanel({ config, onChange, step, con
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           system,
-          path: pipelinePath,
+          path: saveTarget,
           content: JSON.stringify(config.operations ?? {}, null, 2),
         }),
       });
       if (!res.ok) {
         const e = await res.json().catch(() => ({}));
-        throw new Error(e.detail || `HTTP ${res.status}`);
+        throw new Error(e.detail || `HTTP ${res.status} ${res.statusText}`.trim());
       }
-      notifications.show({ color: "green", message: `Saved operations.json to ${pipelinePath}` });
+      setSavedTo(saveTarget);
+      notifications.show({ color: "green", message: `Saved to ${saveTarget}` });
     } catch (err: any) {
-      notifications.show({ color: "red", title: "Save failed", message: err?.message || "Could not save" });
+      const message = err?.message || "Could not save (network error).";
+      setSaveError(message);
+      notifications.show({ color: "red", title: "Save failed", message });
     } finally {
       setSaving(false);
     }
@@ -220,11 +258,24 @@ export default function ImagePreprocessStudioPanel({ config, onChange, step, con
                     specific, or pointing at one maintained outside this app. */}
                 <TextInput
                   label="Pipeline path (operations.json target)"
-                  description="Optional — leave blank and the run writes it to this step's archive dir."
-                  placeholder="Auto (written to this step's archive dir)"
+                  description={
+                    "Enter the FULL path including the filename — e.g. " +
+                    `${(sourceDir || "/home/you/data").replace(/\/+$/, "")}/operations.json. ` +
+                    "Leave blank to save beside your images; the run always writes its " +
+                    "own copy to this step's archive dir either way."
+                  }
+                  placeholder={saveTarget || "/full/path/to/operations.json"}
                   value={pipelinePath}
                   onChange={(e) => setField("pipeline_path", e.currentTarget.value)}
                 />
+                {/* The single most useful line here: where the button will
+                    actually write, resolved the same way savePipeline resolves
+                    it, so "blank" is never a mystery. */}
+                <Text size="xs" c={saveTarget ? "dimmed" : "orange"}>
+                  {saveTarget
+                    ? `Save writes to: ${saveTarget}`
+                    : "No target yet — browse to an image, or type a full path above."}
+                </Text>
               </Stack>
             </Popover.Dropdown>
           </Popover>
@@ -237,6 +288,36 @@ export default function ImagePreprocessStudioPanel({ config, onChange, step, con
             Save operations.json
           </Button>
         </Group>
+
+        {/* Inline result, in the toolbar itself. A notification is also fired,
+            but this panel is a full-screen modal painting at z-index 10001, so
+            a toast can land behind it — this is the copy the user is certain
+            to see. Errors stay until the next attempt; the Tapis message is
+            shown verbatim because it names the actual cause (bad path, no
+            permission, expired token). */}
+        {(saveError || savedTo) && (
+          <Alert
+            mt={6}
+            py={6}
+            px={8}
+            variant="light"
+            color={saveError ? "red" : "green"}
+            icon={saveError ? <IconAlertTriangle size={16} /> : <IconCheck size={16} />}
+            title={saveError ? "Could not save operations.json" : "Saved"}
+            styles={{ title: { fontSize: 12, marginBottom: 2 }, body: { maxWidth: 420 } }}
+          >
+            <Group justify="space-between" align="flex-start" wrap="nowrap" gap="xs">
+              <Text size="xs" style={{ wordBreak: "break-word" }}>
+                {saveError ?? savedTo}
+              </Text>
+              <CloseButton
+                size="xs"
+                aria-label="Dismiss"
+                onClick={() => { setSaveError(null); setSavedTo(null); }}
+              />
+            </Group>
+          </Alert>
+        )}
       </Paper>
 
       <TapisDirectoryBrowser

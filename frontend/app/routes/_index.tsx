@@ -7,7 +7,7 @@ import TopNav from "../components/TopNav";
 
 export function meta({}: Route.MetaArgs) {
   return [
-    { title: "Harvest Workflow Orchestrator" },
+    { title: "No-Code Workflow Studio" },
     { name: "description", content: "Build dynamic AI pipelines" },
   ];
 }
@@ -22,11 +22,13 @@ export default function Dashboard() {
     >
       <AppShell.Header>
         <Group h="100%" px="md" justify="space-between">
-          <Group>
+          {/* nowrap: the product name is long enough to wrap onto a second
+              line on a narrow viewport, which a fixed 60px header would clip. */}
+          <Group wrap="nowrap">
             <ThemeIcon variant="gradient" gradient={{ from: 'indigo', to: 'cyan' }} size="lg" radius="md">
               <IconActivity size={20} />
             </ThemeIcon>
-            <Text fw={700} size="lg">Harvest</Text>
+            <Text fw={700} size="lg" style={{ whiteSpace: 'nowrap' }}>No-Code Workflow Studio</Text>
             <TopNav />
           </Group>
           <SecretsMenu />
