@@ -31,6 +31,17 @@ The project welcomes contributions in increasing order of technical and maintena
 
 For step-authoring requirements specifically, follow the guides in [`docs/`](docs/) listed above.
 
+## Testing
+
+This repository has no unit tests yet — that suite is deliberately deferred, and until it exists the evidence a change works is manual verification that you record. [docs/TESTING.md](docs/TESTING.md) is the full model; the flow is:
+
+1. **Run the local checks before you push.** `npm ci && npm run build && npm run typecheck` in `frontend/`; `docker compose up -d`, `pip install -r requirements.txt`, `python -m compileall -q . -x '\.venv|__pycache__'` and the import smoke check in `backend/`. These are the same commands CI runs — the exact forms are in [docs/TESTING.md](docs/TESTING.md#level-0--local-pre-submit-checks).
+2. **Let CI run.** Build, Repository health, and Secret Scan run on every pull request. They prove the project builds, installs and imports; they assert nothing about behaviour, which is why step 3 exists.
+3. **Exercise the change by hand** — happy path, one edge case, one failure case, and a regression check on adjacent behaviour — and write it up as `docs/user-tests/YYYY-MM-DD-<slug>.md` from [docs/user-tests/TEMPLATE.md](docs/user-tests/TEMPLATE.md), committed in the same pull request. A pull request that changes behaviour is not complete without one.
+4. **Verify the deployment surface** when you touch Dockerfiles, compose, dependencies, or environment variables: build and run both images and confirm the stack answers, new variables are documented everywhere, and no secrets are baked in.
+
+You will not be asked to add unit tests. You will be asked for the user test document.
+
 ## Pull requests
 
 A pull request should:

@@ -1,4 +1,4 @@
-- id: NoCodeWorkflow:0.1.0
+- id: NoCodeWorkflowStudio:0.1.0
   name: No-Code Workflow Studio
   owner: Hari Subramoni
   primaryThrust: core/AI4CI
@@ -13,5 +13,8 @@
   developerDocumentationAvailable: true
   developerDocumentationUrl: https://github.com/ICICLE-ai/workflow-orchestrator/tree/main/docs
   trainingTutorialsAvailable: true 
-  trainingTutorialsUrl: https://icicle-ai.github.io/training-catalog/docs/category/no-code-workflow-studio
   status: AlphaRelease
+  description: 
+    The No-Code Workflow Studio is a web-based application that allows users to create, manage, and execute workflows without writing any code. It provides a visual interface for designing workflows, integrating various services, and automating tasks. The studio supports drag-and-drop functionality, making it accessible to users with varying levels of technical expertise.
+  licenseUrl: https://github.com/ICICLE-ai/workflow-orchestrator/blob/main/LICENSE
+  sourceCodeUrl: https://github.com/ICICLE-ai/workflow-orchestrator

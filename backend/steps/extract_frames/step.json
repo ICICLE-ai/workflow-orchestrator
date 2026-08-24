@@ -1,61 +1,97 @@
 {
   "step_type_key": "extract_frames",
-  "resources": { "gpu": true },
+  "resources": { "gpu": false },
   "display_name": "Extract Frames",
-  "description": "Extracts image frames from a video stream/file for downstream processing.",
+  "description": "Decodes a video into sampled image frames. The source can be a public video link, a video on a Tapis file system, or a live RTSP/RTSPS stream.",
   "category": "Data Collection",
   "icon": "video",
-  "tapis_app_id": "extract-frames-from-stream",
+  "tapis_app_id": "extract-frames",
   "inputs": [
-    { "name": "video", "type": "video_file" }
+    {
+      "name": "video",
+      "type": "video_file",
+      "required": false,
+      "description": "A video on the Tapis file system (wire a 'Video File' source node here). Optional: leave it unwired and set the `source` config instead to pull from a public link or an RTSP stream. When BOTH are given the wired port wins — see the `source` description."
+    }
   ],
   "outputs": [
-    { "name": "frames", "type": "image_dir" }
+    { "name": "frames", "type": "image_dir", "output_path": "frames" },
+    { "name": "manifest", "type": "json_results", "output_path": "manifest.json" }
   ],
   "config_schema": {
-    "stream_url": {
+    "source": {
       "type": "string",
-      "description": "RTSPS stream URL to pull frames from (if not using a file input).",
+      "description": "Public video URL (https://host/clip.mp4) or a live stream URL (rtsp://, rtsps://). Used only when the `video` input port is unwired — the job prefers the staged Tapis file whenever one is present, since a connected edge is a more deliberate statement than a config field left over from an earlier edit. Credentials embedded in a stream URL are redacted out of the manifest and the job log.",
       "default": ""
     },
-    "results_basename": {
-      "type": "string",
-      "description": "Base name for the results manifest written by the extractor.",
-      "default": "results"
+    "sampling_mode": {
+      "type": "select",
+      "options": ["fps", "every_n", "all"],
+      "description": "How `sampling_rate` is read. 'fps' keeps that many frames per second of video (the usual choice — it means the same thing whatever the source's native frame rate is). 'every_n' keeps 1 of every N decoded frames. 'all' keeps every frame and ignores the rate.",
+      "default": "fps"
+    },
+    "sampling_rate": {
+      "type": "float",
+      "description": "Frames kept per second of video in 'fps' mode, or N in 'every_n' mode. Must be > 0 in fps mode; a 10-minute clip at 1.0 yields ~600 frames.",
+      "default": 1.0
+    },
+    "max_frames": {
+      "type": "int",
+      "description": "Stop after this many SAVED frames; 0 means unlimited. Set a real bound for an RTSP source — a live stream never reaches EOF, so extraction otherwise only stops when the stream drops or the job hits maxMinutes.",
+      "default": 0
+    },
+    "image_format": {
+      "type": "select",
+      "options": ["jpg", "png"],
+      "description": "Frame encoding. 'jpg' is the right default for feeding detection/training steps; 'png' is lossless and much larger.",
+      "default": "jpg"
+    },
+    "output_path": {
+      "type": "tapis_path",
+      "selectType": "dir",
+      "description": "Where the extracted frames are archived. Leave it EMPTY (the default) to use this run's own archive dir — job_spec._normalize_archive_dir falls back to it rather than archiving into a literal '${output_path}', and that is the only setting under which the `frames`/`manifest` output ports resolve correctly, because _derive_outputs builds port URIs from the run's archive_uri and not from this override. Set it only for a terminal node whose frames you want at a fixed location; to feed frames downstream AND keep a copy somewhere specific, leave this empty and wire `frames` into a 'Write Image Directory' sink instead.",
+      "default": ""
     }
   },
   "tapis_job": {
-    "name": "extract-frames-from-stream",
-    "appId": "extract-frames-from-stream",
-    "appVersion": "1.1.0",
-    "description": "Extract frames from an ARA-Harvest video stream",
+    "name": "extract-frames",
+    "appId": "extract-frames",
+    "appVersion": "1.0",
+    "description": "Decode a video file, public link, or RTSP stream into sampled frames",
     "execSystemId": "${exec_system}",
     "execSystemLogicalQueue": "${exec_queue}",
     "archiveSystemId": "${archive_system}",
-    "archiveSystemDir": "${archive_dir}",
+    "archiveSystemDir": "${output_path}",
     "nodeCount": 1,
     "coresPerNode": 2,
     "memoryMB": 8000,
-    "maxMinutes": 210,
+    "maxMinutes": 120,
     "fileInputs": [
-      { "name": "container SIF", "envKey": "sifpath", "autoMountLocal": true, "sourceUrl": "https://icicleai.tapis.io/v3/files/postits/redeem/17772bec-0a2d-476e-a212-b65adabfacdb-010", "targetPath": "extract_frames.sif" }
+      {
+        "name": "video",
+        "if": "video",
+        "autoMountLocal": true,
+        "sourceUrl": "${video}",
+        "description": "Dropped entirely when the `video` port is unwired: an unresolved placeholder here would send Tapis off to transfer a file literally named '${video}'. The plain '${video}' sourceUrl (no 'tapis://${system}/' prefix) is deliberate — the port always resolves to a full tapis://system/path URI, and prefixing it again is what job_spec._normalize_file_inputs exists to repair.",
+        "targetPath": "data/video"
+      }
     ],
     "parameterSet": {
       "appArgs": [
-        { "name": "Destination Directory", "arg": "--destDir" },
-        { "name": "Destination value", "arg": "/output" }
-      ],
-      "schedulerOptions": [
-        { "arg": "-G 1", "name": "gpu_per_node" },
-        { "name": "slurm account", "arg": "-A ${slurm_account}" },
-        { "name": "job name", "arg": "--job-name=extract-frames" }
+        { "name": "source", "arg": "--source '${source}'", "if": "source" },
+        { "name": "source file", "arg": "--source-file /job/data/video", "if": "video" },
+        { "name": "output", "arg": "--output /job/output" },
+        { "name": "sampling mode", "arg": "--sampling-mode ${sampling_mode}" },
+        { "name": "sampling rate", "arg": "--sampling-rate ${sampling_rate}" },
+        { "name": "max frames", "arg": "--max-frames ${max_frames}" },
+        { "name": "image format", "arg": "--image-format ${image_format}" }
       ],
       "containerArgs": [
-        { "name": "binding", "arg": "--bind $PWD/output:/output" }
+        { "name": "binding", "arg": "--bind $PWD:/job" }
       ],
-      "envVariables": [
-        { "key": "RTSPS_URL", "value": "${stream_url}" },
-        { "key": "RESULTS_BASENAME", "value": "${results_basename}" }
+      "schedulerOptions": [
+        { "name": "slurm account", "arg": "-A ${slurm_account}" },
+        { "name": "job name", "arg": "--job-name=extract-frames" }
       ],
       "archiveFilter": { "includeLaunchFiles": false }
     }

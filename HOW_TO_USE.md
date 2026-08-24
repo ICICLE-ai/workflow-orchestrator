@@ -1,4 +1,4 @@
-# Harvest Workflow Orchestrator
+# No-Code Workflow Studio
 
 A browser-based workflow builder for the full ML lifecycle: wire up a pipeline in
 a drag-and-drop canvas — data sources, pre-processing, annotation, training,
