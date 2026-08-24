@@ -1,0 +1,19 @@
+{
+  "step_type_key": "source_video_file",
+  "display_name": "🎬 Video File",
+  "description": "Provides a path to a video file on a Tapis file system as input to the pipeline.",
+  "category": "source",
+  "icon": "video",
+  "inputs": [],
+  "outputs": [
+    { "name": "video", "type": "video_file" }
+  ],
+  "config_schema": {
+    "path": {
+      "type": "tapis_path",
+      "description": "Tapis system + path to the video file (.mp4, .avi, .mov, ...).",
+      "default": "",
+      "selectType": "file"
+    }
+  }
+}

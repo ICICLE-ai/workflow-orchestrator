@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { ReactFlow, ReactFlowProvider, addEdge, useNodesState, useEdgesState, Background, Controls } from '@xyflow/react';
-import { AppShell, Group, Button, Text, ActionIcon, Stack, Title, Drawer, TextInput, Textarea, Select, Notification, Loader, Alert, List, Accordion, Divider, Modal, Badge } from '@mantine/core';
-import { IconArrowLeft, IconDeviceFloppy, IconX, IconPlayerPlay, IconAlertTriangle } from '@tabler/icons-react';
+import { AppShell, Group, Button, Text, ActionIcon, Stack, Title, Drawer, TextInput, Textarea, Select, Notification, Loader, Alert, List, Accordion, Divider, Modal, Badge, Tooltip } from '@mantine/core';
+import { IconArrowLeft, IconDeviceFloppy, IconX, IconPlayerPlay, IconAlertTriangle, IconEye } from '@tabler/icons-react';
 import { useNavigate, useParams, useLoaderData } from 'react-router';
 import CustomNode from '../components/CustomNode';
 import { apiFetch, fetchCurrentUser } from '../lib/api';
@@ -144,6 +144,18 @@ function StepCard({ step, variant }: { step: any; variant: 'source' | 'processin
 
 function Flow() {
   const { stepTypes, portDataTypes, templateData, id } = useLoaderData() as any;
+
+  // A template published by someone else: runnable, but not saveable.
+  //
+  // The backend is the actual enforcement (owned_template_or_404 returns 403 on
+  // any write); this only stops the UI from offering an action that is going to
+  // be refused. Compared against `false` explicitly so a response that predates
+  // the is_owner field — where it arrives undefined — is treated as editable
+  // rather than silently locking the canvas.
+  const isReadOnly = Boolean(templateData) && templateData.is_owner === false;
+  const readOnlyReason = templateData?.is_public
+    ? "This is a public template published by another user."
+    : "This template belongs to another user.";
   const navigate = useNavigate();
 
   // Steps offered in the palette. `hidden` (step.json -> StepTypeRegistry.hidden)
@@ -176,6 +188,9 @@ function Flow() {
   const [savedSnapshot, setSavedSnapshot] = useState<string | null>(null);
   // Prompt shown when Run is pressed with unsaved edits — see handleRun.
   const [unsavedPromptOpen, setUnsavedPromptOpen] = useState(false);
+  // Its counterpart for a template the user doesn't own, where neither "save a
+  // version" nor "save a draft" is available — see handleRun.
+  const [readOnlyRunPromptOpen, setReadOnlyRunPromptOpen] = useState(false);
   const isDirty = savedSnapshot !== null && graphSnapshot(nodes, edges) !== savedSnapshot;
 
   // Run settings — where/how the workflow's Tapis jobs execute. Defaults target
@@ -569,12 +584,28 @@ function Flow() {
   const handleRun = async () => {
     if (!templateData) return;
     if (isDirty) {
+      // On someone else's template BOTH answers to the usual prompt would fail:
+      // each one POSTs to /versions first (as a version or as a draft), and that
+      // route is owner-only. Ask a different question instead of offering two
+      // buttons that 403.
+      if (isReadOnly) {
+        setRunSettingsOpened(false);
+        setReadOnlyRunPromptOpen(true);
+        return;
+      }
       // Don't launch anything yet — ask how the changes should be handled.
       setRunSettingsOpened(false);
       setUnsavedPromptOpen(true);
       return;
     }
     executeVersion(templateData.template_version_id);
+  };
+
+  // Run the published graph, deliberately ignoring the user's local edits —
+  // the only run that can succeed on a template they don't own.
+  const runAsPublished = async () => {
+    setReadOnlyRunPromptOpen(false);
+    await executeVersion(templateData.template_version_id);
   };
 
   // Both answers to that prompt: capture the canvas, then run what was captured.
@@ -624,9 +655,33 @@ function Flow() {
                 Unsaved changes
               </Badge>
             )}
-            <Button leftSection={<IconDeviceFloppy size={16} />} onClick={() => setDrawerOpened(true)}>
-              {templateData ? 'Save New Version' : 'Save Template'}
-            </Button>
+            {isReadOnly ? (
+              // Disabled rather than hidden: a missing button reads as a bug,
+              // whereas a disabled one with a reason explains the model. Wrapped
+              // because Mantine's Tooltip needs an enabled element to hang off —
+              // a disabled <button> fires no pointer events of its own.
+              <Tooltip
+                label={`${readOnlyReason} You can run it, but only its owner can save changes.`}
+                multiline
+                w={260}
+                withArrow
+              >
+                <span>
+                  <Button
+                    leftSection={<IconDeviceFloppy size={16} />}
+                    disabled
+                    data-disabled
+                    style={{ pointerEvents: 'none' }}
+                  >
+                    Save New Version
+                  </Button>
+                </span>
+              </Tooltip>
+            ) : (
+              <Button leftSection={<IconDeviceFloppy size={16} />} onClick={() => setDrawerOpened(true)}>
+                {templateData ? 'Save New Version' : 'Save Template'}
+              </Button>
+            )}
           </Group>
         </Group>
       </AppShell.Header>
@@ -697,6 +752,31 @@ function Flow() {
 
       <AppShell.Main>
         <div style={{ width: '100%', height: 'calc(100vh - 60px)', position: 'relative' }} ref={reactFlowWrapper}>
+          {/* Standing banner for a template published by someone else. Placed
+              over the canvas rather than in the header so it is unmissable
+              before the user invests effort in edits they cannot keep. */}
+          {isReadOnly && (
+            <div style={{
+              position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)',
+              zIndex: 999, width: 'min(560px, calc(100% - 32px))',
+            }}>
+              <Alert
+                color="blue"
+                variant="light"
+                icon={<IconEye size={18} />}
+                title="Public demo template — view and run only"
+                withCloseButton={false}
+                style={{ boxShadow: '0 8px 24px rgba(0,0,0,0.12)' }}
+              >
+                <Text size="sm">
+                  {readOnlyReason} It is shown for demonstration: you can open it and{' '}
+                  <b>run it</b>, but changes can&apos;t be saved back to it. To edit, make it
+                  your own with <b>Save as my copy</b>.
+                </Text>
+              </Alert>
+            </div>
+          )}
+
           {/* Connection error toast */}
           {connectionError && (
             <div style={{
@@ -892,6 +972,43 @@ function Flow() {
       {/* Unsaved changes at launch time. The run has NOT started at this point —
           whichever option is taken, what executes is the graph currently on the
           canvas, never the last-saved one. */}
+      <Modal
+        opened={readOnlyRunPromptOpen}
+        onClose={() => setReadOnlyRunPromptOpen(false)}
+        title="Your changes can't be saved to this template"
+        centered
+      >
+        <Stack gap="md">
+          <Text size="sm">
+            {readOnlyReason} It is published for demonstration, so edits can&apos;t be saved
+            to it — and a run has to execute a saved graph.
+          </Text>
+          <Text size="sm">
+            You can run it exactly as published (your on-screen edits are ignored for this
+            run), or make your own copy first and run that instead.
+          </Text>
+          <Button
+            fullWidth
+            loading={running}
+            leftSection={<IconPlayerPlay size={16} />}
+            onClick={runAsPublished}
+          >
+            Run the published version as-is
+          </Button>
+          <Button
+            fullWidth
+            variant="default"
+            onClick={() => setReadOnlyRunPromptOpen(false)}
+          >
+            Cancel — I&apos;ll make my own copy
+          </Button>
+          <Text size="xs" c="dimmed">
+            The run itself belongs to you either way: it appears in your Runs list and uses
+            your Tapis account and allocation.
+          </Text>
+        </Stack>
+      </Modal>
+
       <Modal
         opened={unsavedPromptOpen}
         onClose={() => setUnsavedPromptOpen(false)}

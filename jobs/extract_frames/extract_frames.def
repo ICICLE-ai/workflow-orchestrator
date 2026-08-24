@@ -1,0 +1,42 @@
+Bootstrap: docker
+From: python:3.12-bullseye
+
+%files
+    extract_frames.py /app/extract_frames.py
+    requirements.txt /app/requirements.txt
+
+%environment
+    export PATH="/usr/local/bin:/app:$PATH"
+    export LC_ALL=C.UTF-8
+    export LANG=C.UTF-8
+    # OpenCV's FFmpeg backend defaults to UDP for RTSP, which loses packets on a
+    # congested compute node and yields torn frames. TCP is the safe transport.
+    export OPENCV_FFMPEG_CAPTURE_OPTIONS="rtsp_transport;tcp"
+
+%post
+    echo "Setting up environment for extract_frames.py"
+    apt-get update
+    # ca-certificates: TLS for public https:// video links and rtsps:// streams.
+    # libglib2.0-0: still required by the headless OpenCV wheel.
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        libglib2.0-0
+    rm -rf /var/lib/apt/lists/*
+    echo "Installing required Python packages"
+    cd /app
+    python3 -m pip install --upgrade pip
+    pip install --no-cache-dir -r requirements.txt
+    echo "Python dependencies installed."
+    chmod 755 /app/extract_frames.py
+    echo "Setup complete."
+
+%runscript
+    echo "extract_frames.py"
+    cd /app
+    python3 extract_frames.py "$@"
+
+%labels
+    Maintainer "Shyama Arunachalam <arunachalam.31@osu.edu>"
+    Version "1.0"
+    Appname "Extract Frames"
+    Description "Decode a video (file, public link, or RTSP stream) into sampled frames; paths passed as args"
