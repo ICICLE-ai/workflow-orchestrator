@@ -9,8 +9,7 @@ on HPC, and watch every step's status, config and logs live on the same canvas.
 
 ### License
 
-[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-
+[![License](https://img.shields.io/badge/License-BSD_3--Clause-blue.svg)](https://opensource.org/licenses/BSD-3-Clause)
 <!-- Add any other licenses you want to include. -->
 
 ## References

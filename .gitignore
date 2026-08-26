@@ -10,3 +10,7 @@ tapis-ui/
 
 # Reference docs kept locally only
 backend/Harvest Workflow Orchestrator - Schema Redesign.pdf
+
+*.pyc
+
+*__pycache__/
