@@ -1,0 +1,17 @@
+# PyTorch must be a CUDA build that includes sm_70 kernels: the cluster's V100s
+# are compute capability 7.0, and the default PyPI wheel (cu130) only ships
+# CC >= 7.5. Installing that one makes every op fail at runtime with
+# "GET was unable to find an engine to execute this computation".
+# The cu126 build covers sm_70 through sm_90 (V100 / A100 / H100).
+--index-url https://download.pytorch.org/whl/cu126
+--extra-index-url https://pypi.org/simple
+
+torch==2.13.0
+torchvision==0.28.0
+
+numpy
+opencv-python-headless
+Pillow
+transformers>=5.12.0
+tqdm
+accelerate

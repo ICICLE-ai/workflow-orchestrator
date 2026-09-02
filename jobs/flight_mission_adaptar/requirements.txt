@@ -1,0 +1,4 @@
+geopandas>=0.14
+shapely>=2.0
+fiona>=1.9
+pyogrio>=0.7

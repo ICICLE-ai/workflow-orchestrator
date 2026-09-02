@@ -1,0 +1,59 @@
+Bootstrap: docker
+From: continuumio/miniconda3:24.1.2-0
+
+%labels
+    Author WorkflowOrchestrator
+    Description Containerized environment for generate_flight_plan.py (farm_output.gpkg -> charge-cycle-segmented drone flight plan)
+    Version 1.0
+
+%help
+    This container runs generate_flight_plan.py, which takes a
+    farm_output.gpkg (farm_boundary, spray_zones, detections) plus nozzle,
+    tank, battery, and home-location parameters, and produces a
+    platform-agnostic flight plan (flight_plan.json + flight_plan.gpkg)
+    segmented into charge cycles.
+
+    Usage:
+        singularity run generate_flight_plan.sif \
+            --gpkg /data/farm_output.gpkg \
+            --outdir /data/output \
+            --nozzle-swath-ft 20 \
+            --flight-height-ft 15 \
+            --tank-capacity-gal 5 \
+            --nozzle-flow-rate-gpm 0.5 \
+            --dispersion-rate-gpa 2 \
+            --battery-time-min 20 \
+            --battery-reserve-pct 20 \
+            --home-lat 40.014361 --home-lon -83.042294
+
+    Mount your data directory at /data (or any path) using --bind, e.g.:
+        singularity run --bind /host/path/to/data:/data generate_flight_plan.sif [args...]
+
+%files
+    generate_flight_plan.py /opt/scripts/generate_flight_plan.py
+
+%post
+    # conda-forge for GDAL/geopandas -- pip alone is unreliable for these
+    # C-library-backed packages.
+    conda install -y -c conda-forge \
+        python=3.11 \
+        geopandas \
+        shapely \
+        fiona \
+        pyogrio \
+        gdal \
+    && conda clean -afy
+
+    mkdir -p /data
+    chmod 755 /opt/scripts/generate_flight_plan.py
+
+%environment
+    export LC_ALL=C.UTF-8
+    export LANG=C.UTF-8
+    export PATH=/opt/conda/bin:$PATH
+
+%runscript
+    exec python /opt/scripts/generate_flight_plan.py "$@"
+
+%test
+    python -c "import geopandas, shapely, fiona; print('Environment OK: geopandas', geopandas.__version__)"

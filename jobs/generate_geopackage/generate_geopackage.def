@@ -1,0 +1,112 @@
+Bootstrap: docker
+From: python:3.13-slim-bookworm
+
+%files
+    generate_geopackage.py /app/generate_geopackage.py
+    requirements.txt /app/requirements.txt
+
+%environment
+    export PATH="/app:$PATH"
+    export PYTHONPATH="/app:$PYTHONPATH"
+    export PYTHONUNBUFFERED=1
+    export LC_ALL=C.UTF-8
+    export LANG=C.UTF-8
+
+%post
+    echo "Setting up environment for generate_geopackage.py"
+    apt-get update
+    apt-get install -y --no-install-recommends ca-certificates
+    rm -rf /var/lib/apt/lists/*
+
+    cd /app
+    python3 -m pip install --upgrade pip
+
+    # Everything comes from the pinned requirements.txt, which was resolved
+    # against Python 3.13 -- hence the 3.13 base image. Change one, re-resolve
+    # the other.
+    #
+    # No system GDAL/PROJ/GEOS is installed on purpose: the pyogrio, pyproj and
+    # shapely manylinux wheels each vendor their own copy of those libraries.
+    # Installing a distro GDAL alongside them is the classic way to end up with
+    # two PROJ data directories and silently wrong reprojection, so a slim base
+    # with wheels only is both smaller and safer here.
+    pip install --no-cache-dir -r /app/requirements.txt
+
+    # Fail the build -- not the job -- if the geo stack can't actually round-trip
+    # a GeoPackage. A bare "import geopandas" is not enough: the GPKG driver and
+    # the PROJ data files are loaded lazily, so a broken vendored lib only shows
+    # up on the first real write.
+    python3 -c "
+import tempfile, os
+import geopandas as gpd
+from shapely.geometry import Point
+print('geopandas', gpd.__version__, '| engine', gpd.options.io_engine or 'default (pyogrio)')
+gdf = gpd.GeoDataFrame(
+    [{'geometry': Point(-83.0, 40.0), 'name': 'buildcheck'}], crs='EPSG:4326'
+)
+with tempfile.TemporaryDirectory() as d:
+    p = os.path.join(d, 'buildcheck.gpkg')
+    gdf.to_file(p, layer='detections', driver='GPKG')
+    back = gpd.read_file(p, layer='detections')
+    assert len(back) == 1, 'GPKG round-trip lost the feature'
+    assert back.crs.to_string() == 'EPSG:4326', f'CRS mangled: {back.crs}'
+print('GPKG write/read OK, CRS preserved.')
+"
+
+    # EXIF GPS parsing is the other hard dependency -- Pillow must expose the
+    # GPS tag tables the script reads.
+    python3 -c "
+from PIL import Image
+from PIL.ExifTags import TAGS, GPSTAGS
+assert 'GPSInfo' in TAGS.values(), 'Pillow EXIF tag table missing GPSInfo'
+assert 'GPSLatitude' in GPSTAGS.values(), 'Pillow GPSTAGS table incomplete'
+print('Pillow', Image.__version__, 'EXIF/GPS tables OK.')
+"
+
+    chmod 755 /app/generate_geopackage.py
+    chmod 644 /app/requirements.txt
+
+    echo "Setup complete."
+
+%test
+    # apptainer test generate_geopackage.sif
+    python3 /app/generate_geopackage.py --help > /dev/null
+    echo "generate_geopackage.py entrypoint OK."
+
+%runscript
+    cd /app
+    exec python3 generate_geopackage.py "$@"
+
+%help
+    Converts drone detection results (JSON) + source imagery (EXIF GPS) into a
+    GeoPackage with three layers: detections (points), spray_zones (grid
+    polygons with a spray decision) and farm_boundary (convex hull).
+
+    Build:
+        apptainer build generate_geopackage.sif generate_geopackage.def
+
+    Run (bind any host paths you reference -- /fs/ess is not visible inside the
+    container unless it is bound):
+
+        apptainer run \
+            --bind /fs/ess/PAS2699:/fs/ess/PAS2699 \
+            generate_geopackage.sif \
+            --json /fs/ess/PAS2699/Demo_data/outputs/out1/annotations.json \
+            --outdir /fs/ess/PAS2699/Demo_data/outputs/out1 \
+            --imagedir /fs/ess/PAS2699/Demo_data/Weed_data \
+            --grid-width 30 --grid-height 30 \
+            --fov-width-ft 29 --fov-height-ft 22 \
+            --gps-offset-x-ft 0 --gps-offset-y-ft 0 \
+            --spray-mode binary \
+            --score-threshold 0.3 \
+            --class-filter weed
+
+    Output: <outdir>/output.gpkg
+
+    CPU only -- do not pass --nv.
+
+%labels
+    Maintainer "Brijesh Nanda <brundayogananda.1@osu.edu>"
+    Version "1.0"
+    Appname "Geo Post-Processing"
+    Description "Drone detections JSON + EXIF GPS -> GeoPackage (detections, spray_zones, farm_boundary)"

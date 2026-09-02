@@ -1,0 +1,42 @@
+Bootstrap: docker
+From: python:3.11-slim
+
+%labels
+    Author WorkflowOrchestrator
+    Description Containerized environment for export_flight_mission.py (flight_plan.json -> ArduPilot/PX4/DJI/CSV mission files)
+    Version 1.0
+
+%help
+    This container runs export_flight_mission.py, which converts the
+    platform-agnostic flight_plan.json (from generate_flight_plan.py) into
+    drone/GCS-specific mission files -- ArduPilot .waypoints, PX4 .plan,
+    DJI WPML .kmz, and a generic debug CSV -- one file per charge cycle.
+
+    No third-party Python packages are required; this image is just a
+    slim Python interpreter running a stdlib-only script.
+
+    Usage:
+        singularity run export_flight_mission.sif \
+            --json /data/flight_plan.json \
+            --outdir /data/output/missions \
+            --format all
+
+    Mount your data directory at /data (or any path) using --bind, e.g.:
+        singularity run --bind /host/path/to/data:/data export_flight_mission.sif [args...]
+
+%files
+    export_flight_mission.py /opt/scripts/export_flight_mission.py
+
+%post
+    mkdir -p /data
+    chmod 755 /opt/scripts/export_flight_mission.py
+
+%environment
+    export LC_ALL=C.UTF-8
+    export LANG=C.UTF-8
+
+%runscript
+    exec python3 /opt/scripts/export_flight_mission.py "$@"
+
+%test
+    python3 -c "import argparse, csv, json, os, zipfile; print('Environment OK: stdlib-only, no extra deps needed')"
