@@ -1,0 +1,49 @@
+Bootstrap: docker
+From: python:3.12-bullseye
+
+%files
+    zero_shot_annotation.py /app/zero_shot_annotation.py
+    requirements.txt /app/requirements.txt
+
+%environment
+    export PATH="/usr/local/bin:/app:$PATH"
+    export LC_ALL=C.UTF-8
+    export LANG=C.UTF-8
+
+%post
+    echo "Setting up environment for zero_shot_annotation.py"
+    apt-get update
+
+    # libGL and X11 libraries required by opencv-python (mask -> polygon extraction)
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        git \
+        libgl1-mesa-glx \
+        libglib2.0-0 \
+        libxext6 \
+        libxrender1 \
+        libfontconfig1 \
+        libsm6 \
+        libice6
+
+    rm -rf /var/lib/apt/lists/*
+
+    echo "Installing required packages"
+    cd /app
+    python3 -m pip install --upgrade pip
+    pip install --no-cache-dir -r requirements.txt
+    echo "Python dependencies installed."
+
+    chmod 755 /app/zero_shot_annotation.py
+    chmod 644 /app/requirements.txt
+    echo "Setup complete."
+
+%runscript
+    cd /app
+    python3 zero_shot_annotation.py "$@"
+
+%labels
+    Maintainer "Brijesh Nanda <brundayogananda.1@osu.edu>"
+    Version "1.0"
+    Appname "Zero-Shot Annotator"
+    Description "Batch zero-shot annotation with SAM3 (pluggable backend), text and exemplar prompts, optional SAHI tiling"
