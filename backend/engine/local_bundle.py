@@ -558,9 +558,15 @@ def build_bundle(
                         f"cluster. Create it on your node (or edit the bundle's container_args) before running."
                     )
             if any(p["file_glob"] for p in out_ports):
+                # Informational, not a defect: it describes a resolution that
+                # happens automatically. Worded as a note because it was being
+                # read as an unresolved problem — the one line left standing in
+                # an otherwise clean export.
+                globbed = ", ".join(p["name"] for p in out_ports if p["file_glob"])
                 warnings.append(
-                    f"{label}: an output port uses a filename pattern (file_glob); the runner resolves it "
-                    f"by listing that directory after the step finishes."
+                    f"note — {label}: output '{globbed}' is a directory holding a file this step names "
+                    f"itself at run time. The runner resolves the real filename once the step finishes "
+                    f"and hands that to the steps downstream. No action needed."
                 )
                 entry["output_globs"] = {p["name"]: p["file_glob"] for p in out_ports if p["file_glob"]}
 
