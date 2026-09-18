@@ -550,11 +550,30 @@ def execute(bundle: dict, args) -> dict:
     results: dict[str, dict] = {}
     started = time.time()
 
+    # An output port with a filename pattern names a DIRECTORY holding one
+    # dynamically-named file, so its real location is only knowable once the
+    # step has written it. The bundle necessarily bakes in the directory, and
+    # downstream steps were wired to that — so as each step finishes, any port
+    # that resolved to something more specific is rewritten into the steps that
+    # have not run yet. Without this a consumer stages the directory where the
+    # producer's file was meant to go. (The platform avoids the problem by
+    # resolving every input at the moment the consuming step runs; an exported
+    # plan has to carry the correction forward itself.)
+    port_rewrites: dict[str, str] = {}
+
+    def apply_rewrites(node: dict) -> None:
+        for item in node.get("stage_in", []):
+            target = port_rewrites.get(item.get("source", ""))
+            if target:
+                log(f"    resolved {item['name']}: {Path(target).name}")
+                item["source"] = target
+
     log(f"run {run_id}: {len(order)} steps, workspace {workdir}")
     for position, node_id in enumerate(order, start=1):
         node = nodes_by_id[node_id]
         kind = node.get("kind")
         log(f"[{position}/{len(order)}] {node['label']} ({node['step_type']}, {kind})")
+        apply_rewrites(node)
         try:
             if kind == "job":
                 result = run_job_node(node, images_dir, data_root, workdir,
@@ -580,6 +599,11 @@ def execute(bundle: dict, args) -> dict:
             results[node_id] = {"status": "failed", "error": str(e)}
             write_report(workdir, run_id, bundle, results, started, "failed")
             raise
+
+        for port, actual in (result.get("outputs") or {}).items():
+            baked = (node.get("outputs") or {}).get(port)
+            if baked and actual and baked != actual:
+                port_rewrites[baked] = actual
 
         results[node_id] = result
         log(f"    {result['status']}" + (f" in {result['seconds']}s" if "seconds" in result else ""))
