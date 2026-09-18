@@ -1,0 +1,55 @@
+Bootstrap: docker
+From: python:3.12-slim-bookworm
+
+%files
+    wf_runner /app/wf_runner
+
+%environment
+    export PATH="/usr/local/bin:/app:$PATH"
+    export LC_ALL=C.UTF-8
+    export LANG=C.UTF-8
+    export PYTHONUNBUFFERED=1
+
+%post
+    echo "Setting up the workflow runner"
+    chmod -R 755 /app/wf_runner
+    echo "Setup complete."
+
+%runscript
+    cd /app
+    exec python3 -m wf_runner "$@"
+
+%test
+    cd /app && python3 -c "import wf_runner; print('runner OK', wf_runner.__version__)"
+
+%labels
+    Author WorkflowOrchestrator
+    Description Executes a workflow bundle exported from the platform on a self-hosted node. Orchestrator only - each step runs in its own .sif image.
+    Version 0.1.0
+
+%help
+    Runs a workflow bundle (exported from the Workflow Orchestrator's canvas)
+    on this node, with no Tapis API involved. This image contains ONLY the
+    orchestrator: every step runs in its own container image, which you supply
+    via --images-dir.
+
+    Usage:
+        apptainer run \
+            --bind /data:/data --bind /scratch:/scratch \
+            wf-runner.sif bundle.json \
+                --data-root /data/farm \
+                --workdir /scratch/wf-local \
+                --images-dir /data/images
+
+    IMPORTANT - nested containers. This image invokes `apptainer` once per
+    step, which means running it with `apptainer run` asks your node to run a
+    container inside a container. That works only where unprivileged user
+    namespaces are enabled, and is disabled on many hardened HPC kernels.
+    The runner is pure standard library precisely so it does not need this
+    image at all - if the nested call fails, run it directly on the host:
+
+        python3 -m wf_runner bundle.json --data-root /data/farm ...
+
+    Both paths execute exactly the same code. See runner/README.md.
+
+    Dependencies: Python 3.9+ standard library only. No pip install needed.

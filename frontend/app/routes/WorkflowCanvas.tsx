@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { ReactFlow, ReactFlowProvider, addEdge, useNodesState, useEdgesState, Background, Controls } from '@xyflow/react';
 import { AppShell, Group, Button, Text, ActionIcon, Stack, Title, Drawer, TextInput, Textarea, Select, Notification, Loader, Alert, List, Accordion, Divider, Modal, Badge, Tooltip } from '@mantine/core';
-import { IconArrowLeft, IconDeviceFloppy, IconX, IconPlayerPlay, IconAlertTriangle, IconEye } from '@tabler/icons-react';
+import { IconArrowLeft, IconDeviceFloppy, IconX, IconPlayerPlay, IconAlertTriangle, IconEye, IconServerBolt } from '@tabler/icons-react';
 import { useNavigate, useParams, useLoaderData } from 'react-router';
 import CustomNode from '../components/CustomNode';
 import { apiFetch, fetchCurrentUser } from '../lib/api';
@@ -218,6 +218,23 @@ function Flow() {
     archive_dir: '',
     slurm_account: 'PAS2699',
   });
+
+  // "Deploy to my node" — export this version as a portable execution plan for
+  // hardware the user owns (backend/engine/local_bundle.py). The paths here are
+  // only DEFAULTS baked into the file; the runner's own flags override them, so
+  // one export is reusable across nodes with different layouts.
+  const [deployOpened, setDeployOpened] = useState(false);
+  const [deployOptions, setDeployOptions] = useState({
+    data_root: '/data',
+    workdir: '/scratch/wf-local',
+    images_dir: '/data/images',
+  });
+  // Previewed before download so export warnings (an unrunnable step, a missing
+  // image, a credential the node must supply) are visible while the workflow is
+  // still in front of the user — rather than discovered on the node later.
+  const [deployPreview, setDeployPreview] = useState<any | null>(null);
+  const [deployLoading, setDeployLoading] = useState(false);
+  const [deployError, setDeployError] = useState<string | null>(null);
 
   // Tapis username — needed for expanse-tapis's per-user scratch path.
   const [tapisUsername, setTapisUsername] = useState('');
@@ -581,6 +598,66 @@ function Flow() {
     }
   };
 
+  // Query string shared by the preview and the download so both describe the
+  // same bundle — a preview whose warnings don't match the downloaded file
+  // would be worse than no preview at all.
+  const deployQuery = () =>
+    new URLSearchParams({
+      data_root: deployOptions.data_root,
+      workdir: deployOptions.workdir,
+      images_dir: deployOptions.images_dir,
+    }).toString();
+
+  const loadDeployPreview = async () => {
+    if (!templateData) return;
+    setDeployLoading(true);
+    setDeployError(null);
+    try {
+      const res = await apiFetch(
+        `/api/workflow-templates/${templateData.template_version_id}/local-bundle?download=false&${deployQuery()}`
+      );
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `Export failed (HTTP ${res.status})`);
+      }
+      setDeployPreview(await res.json());
+    } catch (e: any) {
+      setDeployPreview(null);
+      setDeployError(e.message || 'Could not build the bundle');
+    } finally {
+      setDeployLoading(false);
+    }
+  };
+
+  // Fetched as a blob rather than linked with an <a href>: this endpoint needs
+  // the same credential apiFetch carries (a session cookie standalone, the
+  // host's Tapis token when embedded in TapisUI), and a plain anchor would
+  // drop the header form of that entirely.
+  const downloadBundle = async () => {
+    if (!templateData) return;
+    setDeployLoading(true);
+    setDeployError(null);
+    try {
+      const res = await apiFetch(
+        `/api/workflow-templates/${templateData.template_version_id}/local-bundle?${deployQuery()}`
+      );
+      if (!res.ok) throw new Error(`Export failed (HTTP ${res.status})`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${templateData.name.replace(/[^A-Za-z0-9._-]+/g, '-')}-v${templateData.version}-bundle.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      setDeployError(e.message || 'Could not download the bundle');
+    } finally {
+      setDeployLoading(false);
+    }
+  };
+
   const handleRun = async () => {
     if (!templateData) return;
     if (isDirty) {
@@ -646,6 +723,23 @@ function Flow() {
                 title="Configure and run this workflow"
               >
                 {running ? 'Running…' : 'Run Workflow'}
+              </Button>
+            )}
+            {templateData && (
+              // Exports this version as a portable plan that runs on hardware
+              // the user owns, with no Tapis involved — see
+              // backend/engine/local_bundle.py and docs/local-deployment.md.
+              // Deliberately exports the SAVED version, not the canvas: the
+              // bundle must correspond to something reproducible, and the
+              // "Unsaved changes" badge beside it already says when those
+              // differ.
+              <Button
+                variant="default"
+                leftSection={<IconServerBolt size={16} />}
+                onClick={() => setDeployOpened(true)}
+                title="Export this workflow to run on your own node"
+              >
+                Deploy to my node
               </Button>
             )}
             {/* Standing indicator, so the state that changes what Run does is
@@ -968,6 +1062,92 @@ function Flow() {
           </Button>
         </Stack>
       </Drawer>
+
+      {/* Export for self-hosted execution. Unlike Launch Run, nothing executes
+          here and no Tapis job is submitted — this produces a file the user
+          carries to their own node and runs with the wf-runner image. */}
+      <Modal
+        opened={deployOpened}
+        onClose={() => setDeployOpened(false)}
+        title="Deploy to my node"
+        size="lg"
+        centered
+      >
+        <Stack gap="sm">
+          <Text size="sm" c="dimmed">
+            Exports <b>the last saved version</b> of this workflow as a self-contained plan you run on
+            hardware you own — no Tapis, no scheduler. The paths below are only defaults written into the
+            file; the runner's flags override them.
+          </Text>
+          {isDirty && (
+            <Alert color="yellow" icon={<IconAlertTriangle size={16} />}>
+              The canvas has unsaved changes. The bundle is built from the last saved version — save a new
+              version first if you want those changes included.
+            </Alert>
+          )}
+          <TextInput
+            label="Data root"
+            description="Root of your input data on the node. Every source path resolves beneath it, mirroring the platform's layout."
+            value={deployOptions.data_root}
+            onChange={(e) => setDeployOptions({ ...deployOptions, data_root: e.currentTarget.value })}
+          />
+          <TextInput
+            label="Work dir"
+            description="Where each step's job directory and outputs are written."
+            value={deployOptions.workdir}
+            onChange={(e) => setDeployOptions({ ...deployOptions, workdir: e.currentTarget.value })}
+          />
+          <TextInput
+            label="Images dir"
+            description="Where the .sif container images for these steps live on the node."
+            value={deployOptions.images_dir}
+            onChange={(e) => setDeployOptions({ ...deployOptions, images_dir: e.currentTarget.value })}
+          />
+
+          <Group gap="sm">
+            <Button variant="default" onClick={loadDeployPreview} loading={deployLoading}>
+              Check workflow
+            </Button>
+            <Button leftSection={<IconServerBolt size={16} />} onClick={downloadBundle} loading={deployLoading}>
+              Download bundle
+            </Button>
+          </Group>
+
+          {deployError && <Text size="sm" c="red">{deployError}</Text>}
+
+          {deployPreview && (
+            <Stack gap="xs">
+              <Text size="sm">
+                <b>{deployPreview.nodes.length}</b> steps · container images needed:{' '}
+                {deployPreview.images.length > 0 ? <b>{deployPreview.images.join(', ')}</b> : <i>none</i>}
+              </Text>
+              {deployPreview.secrets_required?.length > 0 && (
+                <Alert color="blue" title="Credentials required on the node">
+                  Export these before running — they are deliberately not stored in the bundle:{' '}
+                  <b>{deployPreview.secrets_required.join(', ')}</b>
+                </Alert>
+              )}
+              {deployPreview.warnings?.length > 0 && (
+                <Alert color="yellow" icon={<IconAlertTriangle size={16} />} title={`${deployPreview.warnings.length} warning(s)`}>
+                  <Stack gap={4}>
+                    {deployPreview.warnings.map((w: string, i: number) => (
+                      <Text key={i} size="xs">{w}</Text>
+                    ))}
+                  </Stack>
+                </Alert>
+              )}
+              {deployPreview.warnings?.length === 0 && (
+                <Text size="sm" c="green">No problems found — this workflow is ready to run locally.</Text>
+              )}
+            </Stack>
+          )}
+
+          <Text size="xs" c="dimmed">
+            On the node: <code>apptainer run wf-runner.sif bundle.json --data-root {deployOptions.data_root}</code>.
+            See docs/local-deployment.md for building the runner and the step images.
+          </Text>
+        </Stack>
+      </Modal>
 
       {/* Unsaved changes at launch time. The run has NOT started at this point —
           whichever option is taken, what executes is the graph currently on the

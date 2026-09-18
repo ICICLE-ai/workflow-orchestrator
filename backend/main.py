@@ -1305,6 +1305,53 @@ def _build_dag_config(db: Session, template_version_id: int, user: AppUser) -> d
     }
 
 
+@app.get("/api/workflow-templates/{template_version_id}/local-bundle")
+def export_local_bundle(
+    template_version_id: int,
+    data_root: str = "./data",
+    workdir: str = "./wf-local",
+    images_dir: str = "./images",
+    download: bool = True,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
+    """Export this template as a portable execution plan for self-hosted nodes.
+
+    The platform's normal path submits every step as a Tapis job; this returns
+    the same DAG as a fully-resolved local plan the `runner/` Apptainer image
+    executes on hardware the user owns, with no Tapis API involved at run time.
+    See engine/local_bundle.py for the plan's shape and docs/local-deployment.md
+    for the workflow around it.
+
+    The three path parameters are only DEFAULTS baked into the file — the
+    runner's own flags override them — so one exported bundle is reusable
+    across nodes with different layouts.
+
+    `download=false` returns the same JSON inline (no attachment header), which
+    is what the UI uses to preview export warnings before offering the file.
+    """
+    from engine import local_bundle
+
+    template = template_or_404(db, user, template_version_id)
+    try:
+        bundle = local_bundle.build_bundle(
+            db, template, data_root=data_root, workdir=workdir, images_dir=images_dir
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if not download:
+        return bundle
+
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", template.name or "workflow").strip("-") or "workflow"
+    filename = f"{safe_name}-v{template.version}-bundle.json"
+    return Response(
+        content=json.dumps(bundle, indent=2),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 class RunOptions(BaseModel):
     # Run-level Tapis values substituted into job specs (${slurm_account} etc.)
     # and stored on the run's frozen_config. All optional; sensible defaults
