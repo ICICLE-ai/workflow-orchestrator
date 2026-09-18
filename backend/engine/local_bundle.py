@@ -148,14 +148,30 @@ def _warn_on_empty_placeholders(template: dict, ctx: dict, label: str, warnings:
     the real ones in noise.
     """
     param_set = template.get("parameterSet") or {}
+
+    def kept(items):
+        """Only the items render() will actually emit.
+
+        An item carrying "if": "<key>" is dropped wholesale when that key is
+        falsy — which is exactly how a step declares an optional argument
+        (zero_shot_annotation's --model_id, geospatial's spray levels). Scanning
+        those would warn that an argument "collapses to a bare flag" when in
+        truth it never appears at all, sending people looking for a problem
+        that isn't there.
+        """
+        return [
+            item for item in (items or [])
+            if not (isinstance(item, dict) and "if" in item and not ctx.get(item["if"]))
+        ]
+
     # fileInputs are deliberately excluded: an empty sourceUrl there is an
     # unwired optional input, which is dropped from staging with its own
     # explicit warning (or supplied by _CONFIG_FILES), so flagging it again
     # here just contradicts that message.
     relevant = [
-        param_set.get("appArgs"),
-        param_set.get("containerArgs"),
-        param_set.get("envVariables"),
+        kept(param_set.get("appArgs")),
+        kept(param_set.get("containerArgs")),
+        kept(param_set.get("envVariables")),
     ]
     for key in sorted(_placeholder_keys(relevant)):
         if key in ctx and isinstance(ctx[key], str) and not ctx[key].strip():

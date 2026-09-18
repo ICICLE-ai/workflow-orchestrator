@@ -22,6 +22,7 @@ import fnmatch
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -37,8 +38,23 @@ class BundleError(RuntimeError):
     traceback, since neither is a bug in this program."""
 
 
+# Secret values resolved from the environment for this run. Every one is
+# masked out of anything this module prints or writes: a step's command line
+# carries them as --env flags, so logging it verbatim would spill live
+# credentials into terminal scrollback, CI output and the per-step log file.
+# The platform redacts the same way when it logs a rendered job spec.
+_REDACT: set[str] = set()
+
+
+def redact(text: str) -> str:
+    for value in _REDACT:
+        if value:
+            text = text.replace(value, "***")
+    return text
+
+
 def log(msg: str) -> None:
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {redact(msg)}", flush=True)
 
 
 def _normalized_image_name(name: str) -> str:
@@ -102,6 +118,17 @@ def substitute(value, tokens: dict[str, str]):
     return value
 
 
+def _collapse_slashes(value):
+    """Squash repeated slashes in every path string, leaving URLs alone."""
+    if isinstance(value, str):
+        return re.sub(r"(?<!:)//+", "/", value)
+    if isinstance(value, list):
+        return [_collapse_slashes(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _collapse_slashes(v) for k, v in value.items()}
+    return value
+
+
 # --- input staging --------------------------------------------------------
 
 def fetch_input(url: str, target: Path) -> None:
@@ -158,18 +185,42 @@ def stage_input(source: str, target: Path, copy: bool) -> None:
         target.symlink_to(src.resolve())
 
 
-def container_binds(data_root: Path, workdir: Path) -> list[str]:
-    """Bind the data root and workspace at their own absolute paths.
+def container_binds(data_root: Path, workdir: Path, sources: list[str]) -> list[str]:
+    """Bind everything this step reads or writes, at its own absolute path.
 
-    Required for the symlink staging above to resolve inside the container, and
-    harmless otherwise. Bound identically inside and out so a path means the
-    same thing on both sides of the container boundary — which also keeps any
-    absolute path a step writes into its outputs meaningful to later steps.
+    Identical paths inside and out, because inputs are staged as symlinks
+    pointing at the real data: a link only resolves in the container if its
+    target is mounted where the link says it is.
+
+    Two rules keep this safe:
+
+    - '/' is NEVER bound. `--data-root /` is a perfectly reasonable choice
+      when the node's paths already match the platform's, but binding the host
+      root over the container's root would mask the image's own filesystem —
+      its interpreter and scripts included — and the step could not start. The
+      individual source paths are bound instead, which is all that was needed.
+    - A path already covered by an ancestor in the set is dropped, so a step
+      reading several files from one tree gets one bind, not a dozen.
     """
-    binds = []
-    for path in (data_root, workdir):
-        resolved = str(path.resolve())
-        binds.extend(["--bind", f"{resolved}:{resolved}"])
+    wanted: set[str] = set()
+    for path in [data_root, workdir, *(Path(s) for s in sources)]:
+        try:
+            resolved = path.resolve()
+        except OSError:
+            continue
+        if str(resolved) == "/" or not resolved.exists():
+            continue
+        # Bind the containing directory for a file, so sibling reads work too.
+        wanted.add(str(resolved if resolved.is_dir() else resolved.parent))
+
+    minimal = [
+        p for p in sorted(wanted)
+        if not any(p != other and p.startswith(other.rstrip("/") + "/") for other in wanted)
+    ]
+
+    binds: list[str] = []
+    for path in minimal:
+        binds.extend(["--bind", f"{path}:{path}"])
     return binds
 
 
@@ -202,7 +253,8 @@ def build_command(node: dict, job_dir: Path, images_dir: Path, data_root: Path,
     step_args = [arg.replace("$PWD", str(job_dir.resolve())) for arg in node.get("container_args", [])]
 
     cmd = [runtime, "run"]
-    cmd.extend(container_binds(data_root, workdir))
+    sources = [item["source"] for item in node.get("stage_in", []) if not item.get("fetch")]
+    cmd.extend(container_binds(data_root, workdir, sources))
     cmd.extend(step_args)
     for key, value in (node.get("env") or {}).items():
         cmd.extend(["--env", f"{key}={value}"])
@@ -236,14 +288,18 @@ def run_job_node(node: dict, images_dir: Path, data_root: Path, workdir: Path,
                 stage_input(item["source"], target, copy_inputs)
 
     cmd = build_command(node, job_dir, images_dir, data_root, workdir, runtime)
-    log(f"    exec: {' '.join(cmd)}")
+    # shlex.join, not ' '.join: a correctly-quoted single argument like
+    # --text_prompts "purple flower" is otherwise indistinguishable from two
+    # separate arguments, which is exactly the confusion this line caused.
+    # It also makes the printed command paste-able into a shell as-is.
+    log(f"    exec: {shlex.join(cmd)}")
     if dry_run:
-        return {"status": "skipped (dry run)", "command": cmd}
+        return {"status": "skipped (dry run)", "command": shlex.join(cmd)}
 
     started = time.time()
     log_path = job_dir / "runner.log"
     with open(log_path, "w") as log_file:
-        log_file.write(f"# {' '.join(cmd)}\n\n")
+        log_file.write(redact(f"# {shlex.join(cmd)}") + "\n\n")
         log_file.flush()
         # Output is streamed to the step's own log file rather than this
         # process's stdout: a long-running step (training, inference) otherwise
@@ -432,11 +488,17 @@ def preflight(bundle: dict, images_dir: Path, data_root: Path, workdir: Path,
             if not Path(source).exists():
                 missing_inputs.append(f"{node['label']} needs {item['name']}: {source}")
     if missing_inputs:
-        problems.append(
+        detail = (
             "these inputs do not exist on this node:\n        "
             + "\n        ".join(missing_inputs)
             + "\n        Check --data-root: your local layout must mirror the platform's beneath it."
         )
+        # Same reasoning as the image check above: a dry run is for inspecting
+        # the plan before the node is fully set up, so it reports and continues.
+        if dry_run:
+            log(f"WARNING: {len(missing_inputs)} input(s) not present yet (continuing: --dry-run)")
+        else:
+            problems.append(detail)
 
     if problems:
         raise BundleError("preflight failed:\n\n  - " + "\n\n  - ".join(problems))
@@ -469,8 +531,12 @@ def execute(bundle: dict, args) -> dict:
         )
     for key in bundle.get("secrets_required", []):
         tokens["{{SECRET:" + key + "}}"] = os.environ[key]
+        _REDACT.add(os.environ[key])
 
     bundle = substitute(bundle, tokens)
+    # A '/' data root joins to '//fs/...'. Harmless on Linux but confusing
+    # in logs, and POSIX leaves a leading '//' implementation-defined.
+    bundle = _collapse_slashes(bundle)
 
     workdir.mkdir(parents=True, exist_ok=True)
     preflight(bundle, images_dir, data_root, workdir, args.runtime,
