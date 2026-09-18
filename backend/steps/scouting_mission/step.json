@@ -1,0 +1,118 @@
+{
+  "step_type_key": "scouting_mission",
+  "resources": { "gpu": false },
+  "display_name": "🔎 Scouting Mission Generator",
+  "description": "Generates a lawnmower survey mission (waypoints + timing) over a traced farm boundary, for image or video capture, via the generate-scouting-mission Tapis app (jobs/scouting_mission_generator). Produces .waypoints/.plan/.kmz/.json mission files plus a next_steps.txt with the exact local command to actually fly the mission and upload captured media — flying requires the drone's own local Wi-Fi network, so it always runs outside the platform, via the standalone executable built from fly_mission.py (see that folder's README).",
+  "category": "Post-processing",
+  "icon": "camera",
+  "tapis_app_id": "generate-scouting-mission",
+  "inputs": [
+    { "name": "gpkg", "type": "geopackage", "required": false, "description": "Optional — if wired, its farm_boundary layer is shown on the map as a reference overlay while tracing the scouting boundary. Not otherwise used by this step." }
+  ],
+  "outputs": [
+    { "name": "mission_json", "type": "json_results", "output_path": "mission.json" },
+    { "name": "mission_files", "type": "mission_files_dir", "output_path": "mission_files" }
+  ],
+  "config_schema": {
+    "boundary_points": {
+      "type": "string",
+      "description": "Farm boundary traced on the map, as 'lat,lon;lat,lon;...' (3+ points, internal — set by clicking the map, not typed directly).",
+      "default": ""
+    },
+    "home_lat": {
+      "type": "float",
+      "description": "Latitude of the approximate starting point — used for takeoff/RTL and to orient the scan pattern.",
+      "default": 0.0
+    },
+    "home_lon": {
+      "type": "float",
+      "description": "Longitude of the approximate starting point.",
+      "default": 0.0
+    },
+    "altitude_m": {
+      "type": "float",
+      "description": "Flight altitude in meters, relative to takeoff.",
+      "default": 10.0
+    },
+    "line_spacing_m": {
+      "type": "float",
+      "description": "Distance in meters between parallel lawnmower survey lines. Tighter spacing gives denser coverage but a longer flight.",
+      "default": 10.0
+    },
+    "capture_mode": {
+      "type": "select",
+      "options": ["image", "video"],
+      "description": "'image' stops and captures a still every 'Image capture distance'. 'video' records continuously through the whole mission with no stops.",
+      "default": "image"
+    },
+    "capture_spacing_m": {
+      "type": "float",
+      "description": "Image mode only: distance in meters between successive still-image captures along each survey line.",
+      "default": 5.0
+    },
+    "hold_time_s": {
+      "type": "float",
+      "description": "Image mode only: seconds to hover at each capture stop before taking the photo.",
+      "default": 2.0
+    },
+    "image_upload_path": {
+      "type": "tapis_path",
+      "selectType": "dir",
+      "description": "Where captured images/video should be uploaded after the flight — a Tapis system + directory. Not used by this generation job itself; carried through into the generated next_steps.txt so the local flight command is pre-filled.",
+      "default": ""
+    }
+  },
+  "tapis_job": {
+    "name": "scouting-mission",
+    "appId": "generate-scouting-mission",
+    "appVersion": "1.0.0",
+    "description": "Generate a lawnmower scouting-mission survey over a traced farm boundary",
+    "execSystemId": "${exec_system}",
+    "execSystemLogicalQueue": "${exec_queue}",
+    "archiveSystemId": "${archive_system}",
+    "archiveSystemDir": "${archive_dir}",
+    "nodeCount": 1,
+    "coresPerNode": 2,
+    "memoryMB": 2048,
+    "maxMinutes": 30,
+    "fileInputs": [],
+    "parameterSet": {
+      "appArgs": [
+        { "name": "boundary", "arg": "--boundary" },
+        { "name": "boundary value", "arg": "${boundary_points}" },
+        { "name": "home", "arg": "--home" },
+        { "name": "home value", "arg": "${home_lat},${home_lon}" },
+        { "name": "altitude", "arg": "--altitude" },
+        { "name": "altitude value", "arg": "${altitude_m}" },
+        { "name": "line spacing", "arg": "--line-spacing" },
+        { "name": "line spacing value", "arg": "${line_spacing_m}" },
+        { "name": "mode", "arg": "--mode" },
+        { "name": "mode value", "arg": "${capture_mode}" },
+        { "name": "capture spacing", "arg": "--capture-spacing" },
+        { "name": "capture spacing value", "arg": "${capture_spacing_m}" },
+        { "name": "hold time", "arg": "--hold-time" },
+        { "name": "hold time value", "arg": "${hold_time_s}" },
+        { "name": "outdir", "arg": "--out-dir" },
+        { "name": "outdir value", "arg": "/output/mission_files" },
+        { "name": "mission name", "arg": "--mission-name" },
+        { "name": "mission name value", "arg": "mission" },
+        { "name": "tapis system id", "arg": "--tapis-system-id" },
+        { "name": "tapis system id value", "arg": "${system}" },
+        { "name": "tapis remote path", "arg": "--tapis-remote-path" },
+        { "name": "tapis remote path value", "arg": "${image_upload_path}" },
+        { "name": "json copy to", "arg": "--json-copy-to" },
+        { "name": "json copy to value", "arg": "/output/mission.json" }
+      ],
+      "schedulerOptions": [
+        { "name": "slurm account", "arg": "-A ${slurm_account}" },
+        { "name": "job name", "arg": "--job-name=scouting-mission" },
+        { "name": "cpu cores", "arg": "--cpus-per-task=2" }
+      ],
+      "containerArgs": [
+        { "name": "binding", "arg": "--bind $PWD/output:/output" }
+      ],
+      "envVariables": [],
+      "archiveFilter": { "includeLaunchFiles": false }
+    }
+  }
+}

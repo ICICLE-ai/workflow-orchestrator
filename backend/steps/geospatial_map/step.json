@@ -1,11 +1,13 @@
 {
   "step_type_key": "geospatial_map",
   "display_name": "🗺️ Geospatial Map Viewer",
-  "description": "Renders a completed geospatial step's GeoPackage layers (detections, spray_zones, farm_boundary) on an OpenStreetMap basemap via the /api/pipeline-runs/{run_id}/geospatial/... resource. Design-time only — submits no Tapis job.",
+  "description": "Renders a completed geospatial step's GeoPackage layers (detections, spray_zones, farm_boundary), and/or a drone mission overlay, on an OpenStreetMap basemap. The mission overlay accepts either the generic waypoint JSON a flight_plan/scouting_mission step produces ('mission_json'), or a directory of exported per-format mission files from mission_export/scouting_mission ('mission_files' — .waypoints/.plan/.kmz, pick which one to preview). All three inputs are optional and independent; wire any subset. Design-time only — submits no Tapis job.",
   "category": "Visualization",
   "icon": "map",
   "inputs": [
-    { "name": "gpkg", "type": "geopackage" }
+    { "name": "gpkg", "type": "geopackage", "required": false, "description": "A GeoPackage's detections/spray_zones/farm_boundary layers." },
+    { "name": "mission_json", "type": "json_results", "required": false, "description": "The generic waypoint JSON from a flight_plan (flight_plan_json) or scouting_mission (mission_json) step — rendered directly, no file picker needed." },
+    { "name": "mission_files", "type": "mission_files_dir", "required": false, "description": "A directory of exported mission files (mission_export's missions_dir, or scouting_mission's mission_files) — pick which .waypoints/.plan/.kmz/.json to preview." }
   ],
   "outputs": [],
   "config_schema": {},

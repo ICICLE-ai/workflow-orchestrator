@@ -1,0 +1,61 @@
+Bootstrap: docker
+From: python:3.12-slim-bullseye
+
+%files
+    mission_generator.py /app/mission_generator.py
+    fly_mission.py /app/fly_mission.py
+    tapis_upload.py /app/tapis_upload.py
+    run_job.py /app/run_job.py
+    requirements.txt /app/requirements.txt
+
+%environment
+    export PATH="/usr/local/bin:/app:$PATH"
+    export LC_ALL=C.UTF-8
+    export LANG=C.UTF-8
+
+%post
+    echo "Setting up environment for run_job.py (scouting mission generator)"
+    apt-get update
+    apt-get install -y --no-install-recommends ca-certificates
+    rm -rf /var/lib/apt/lists/*
+    cd /app
+    python3 -m pip install --upgrade pip
+    pip install --no-cache-dir -r requirements.txt
+    chmod 755 /app/run_job.py
+    echo "Setup complete."
+
+%runscript
+    cd /app
+    exec python3 run_job.py "$@"
+
+%test
+    python3 -c "import shapely, requests; print('Environment OK: shapely', shapely.__version__)"
+
+%labels
+    Author WorkflowOrchestrator
+    Description Containerized environment for run_job.py -- generates a lawnmower scouting-mission survey (.waypoints/.plan/.kmz/.json) clipped to a farm boundary. Generation only; does not fly (see README.md).
+    Version 1.0
+
+%help
+    This container runs run_job.py, which wraps fly_mission.py's
+    mission-generation path (fly_mission.py --dry-run) to turn a traced
+    farm boundary + starting point + survey parameters into a
+    platform-agnostic lawnmower scouting mission
+    (mission.waypoints/.plan/.kmz/.json). It does NOT fly a drone or
+    upload media -- see fly_mission.py / README.md in this folder for
+    the locally-run flight + Tapis-upload step.
+
+    Usage:
+        singularity run scouting_mission.sif \
+            --boundary "40.0130,-83.0460;40.0130,-83.0448;40.0140,-83.0448;40.0140,-83.0460" \
+            --home "40.0130,-83.0460" \
+            --altitude 10 \
+            --line-spacing 10 \
+            --mode image \
+            --capture-spacing 5 \
+            --hold-time 2.0 \
+            --out-dir /data/output/mission_files \
+            --mission-name mission
+
+    Mount your output directory at /data (or any path) using --bind, e.g.:
+        singularity run --bind /host/path/to/data:/data scouting_mission.sif [args...]

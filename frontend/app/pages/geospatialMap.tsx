@@ -7,10 +7,16 @@ import {
 import { IconDownload } from "@tabler/icons-react";
 import type { StepPanelProps } from "./types";
 import { apiFetch, BACKEND_URL } from "../lib/api";
+import { resolveWiredLocation } from "../lib/tapis";
+import {
+  missionFileToPoints, missionJsonToPoints, listMissionFiles,
+  missionPointsToFeatureCollection, sampleDirectionArrows,
+} from "../lib/missionFormats";
+import type { MissionFileOption } from "../lib/missionFormats";
 
 // Type-only imports — erased at build, so Leaflet (manipulates window/document
 // directly) never loads during SSR. The runtime module is loaded lazily below.
-import type { MapContainerProps, TileLayerProps, GeoJSONProps } from "react-leaflet";
+import type { MapContainerProps, TileLayerProps, GeoJSONProps, MarkerProps } from "react-leaflet";
 import type * as LeafletNS from "leaflet";
 
 // Marker icon assets — plain asset URLs (no JS execution), safe to import
@@ -61,6 +67,18 @@ export default function GeospatialMapPanel({ step, connectedInputs, runId }: Ste
   const wiredInput = gpkgInputPort ? connectedInputs[gpkgInputPort] : undefined;
   const isWired = !!wiredInput;
 
+  // A mission overlay (path + waypoints) is entirely independent of the
+  // GeoPackage layers above — either or both may be wired. "mission_json" is
+  // the generic waypoint JSON a flight_plan/scouting_mission step produces
+  // (rendered directly, no picker); "mission_files" is a directory of
+  // exported per-format files (mission_export/scouting_mission) — .waypoints/
+  // .plan/.kmz/.json, one file picked to preview. See lib/missionFormats.ts.
+  const missionJsonPort = step.inputs.find((p) => p.port_name === "mission_json")?.port_name;
+  const missionFilesPort = step.inputs.find((p) => p.port_name === "mission_files")?.port_name;
+  const missionJsonWired = missionJsonPort ? connectedInputs[missionJsonPort] : undefined;
+  const missionFilesWired = missionFilesPort ? connectedInputs[missionFilesPort] : undefined;
+  const hasMissionSource = !!missionJsonWired || !!missionFilesWired;
+
   // The wired GeoPackage's own resolved location (a tapis://system/path URI)
   // — at design time via CustomNode's resolveOutputPath, or at run time via
   // this run's resolved RunStep.config (see runs.$runId.tsx's
@@ -89,7 +107,7 @@ export default function GeospatialMapPanel({ step, connectedInputs, runId }: Ste
       delete (L.Icon.Default.prototype as any)._getIconUrl;
       L.Icon.Default.mergeOptions({ iconRetinaUrl: markerIcon2x, iconUrl: markerIcon, shadowUrl: markerShadow });
       if (!cancelled) {
-        setLibs({ MapContainer: rl.MapContainer as any, TileLayer: rl.TileLayer, GeoJSON: rl.GeoJSON as any, L });
+        setLibs({ MapContainer: rl.MapContainer as any, TileLayer: rl.TileLayer, GeoJSON: rl.GeoJSON as any, Marker: rl.Marker as any, L });
       }
     })();
     return () => { cancelled = true; };
@@ -103,6 +121,70 @@ export default function GeospatialMapPanel({ step, connectedInputs, runId }: Ste
   const [missingCount, setMissingCount] = useState(0);
   const [visible, setVisible] = useState<Record<string, boolean>>({});
   const [sidebarLayer, setSidebarLayer] = useState<string>("");
+
+  // --- mission overlay: load + parse, independent of the gpkg layers -----
+  const [missionFileOptions, setMissionFileOptions] = useState<MissionFileOption[]>([]);
+  const [selectedMissionPath, setSelectedMissionPath] = useState<string>("");
+  const [missionFeatures, setMissionFeatures] = useState<any | null>(null);
+  const [missionLoading, setMissionLoading] = useState(false);
+  const [missionError, setMissionError] = useState<string | null>(null);
+  const [missionVisible, setMissionVisible] = useState(true);
+
+  const missionFilesLoc = missionFilesWired ? resolveWiredLocation(missionFilesWired) : null;
+  const missionFilesLocKey = missionFilesLoc ? `${missionFilesLoc.system}:${missionFilesLoc.path}` : "";
+
+  // List the wired mission_files directory whenever it (re)resolves, and
+  // default the picker to the first file found.
+  useEffect(() => {
+    setMissionFileOptions([]);
+    setSelectedMissionPath("");
+    if (!missionFilesLoc) return;
+    let cancelled = false;
+    listMissionFiles(missionFilesLoc.system, missionFilesLoc.path)
+      .then((files) => {
+        if (cancelled) return;
+        setMissionFileOptions(files);
+        if (files.length > 0) setSelectedMissionPath(files[0].path);
+      })
+      .catch((err) => { if (!cancelled) setMissionError(err?.message || "Could not list mission files"); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [missionFilesLocKey]);
+
+  const missionJsonLoc = missionJsonWired ? resolveWiredLocation(missionJsonWired) : null;
+  const missionJsonLocKey = missionJsonLoc ? `${missionJsonLoc.system}:${missionJsonLoc.path}` : "";
+  const selectedMissionFile = missionFileOptions.find((f) => f.path === selectedMissionPath) || null;
+
+  // Load + parse whichever mission source is actually active: the directly
+  // wired mission_json (no picker involved), or the currently-selected file
+  // out of a wired mission_files directory.
+  useEffect(() => {
+    setMissionError(null);
+    if (!missionJsonLoc && !selectedMissionFile) {
+      setMissionFeatures(null);
+      return;
+    }
+    let cancelled = false;
+    setMissionLoading(true);
+    (async () => {
+      try {
+        const loc = missionJsonLoc || { system: selectedMissionFile!.system, path: selectedMissionFile!.path };
+        const res = await apiFetch(`/api/tapis-files/content?system=${encodeURIComponent(loc.system)}&path=${encodeURIComponent(loc.path)}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const buf = await res.arrayBuffer();
+        const points = missionJsonLoc
+          ? missionJsonToPoints(JSON.parse(new TextDecoder("utf-8").decode(buf)))
+          : await missionFileToPoints(selectedMissionFile!.ext, buf);
+        if (!cancelled) setMissionFeatures(missionPointsToFeatureCollection(points));
+      } catch (err: any) {
+        if (!cancelled) { setMissionError(err?.message || "Could not load mission file"); setMissionFeatures(null); }
+      } finally {
+        if (!cancelled) setMissionLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [missionJsonLocKey, selectedMissionPath]);
 
   useEffect(() => {
     if (!isWired || !hasData) return;
@@ -181,15 +263,16 @@ export default function GeospatialMapPanel({ step, connectedInputs, runId }: Ste
   const mapRef = useRef<any>(null);
   const layerRefs = useRef<Record<string, any>>({});
 
-  // Fit the map to the union of every loaded layer once loaded.
+  // Fit the map to the union of every loaded gpkg layer PLUS the mission
+  // overlay (if any), once loaded.
   useEffect(() => {
     if (!libs || !mapRef.current) return;
-    const collections = Object.values(layerData).filter(Boolean);
+    const collections = [...Object.values(layerData), missionFeatures].filter(Boolean);
     if (collections.length === 0) return;
-    const merged = { type: "FeatureCollection" as const, features: collections.flatMap((fc) => fc.features || []) };
+    const merged = { type: "FeatureCollection" as const, features: collections.flatMap((fc: any) => fc.features || []) };
     const bounds = libs.L.geoJSON(merged as any).getBounds();
     if (bounds.isValid()) mapRef.current.fitBounds(bounds, { padding: [20, 20], maxZoom: 19 });
-  }, [libs, layerData]);
+  }, [libs, layerData, missionFeatures]);
 
   const onEachFeature = useCallback((feature: any, layer: any, layerKey: string, idx: number) => {
     const id = `${layerKey}-${idx}`;
@@ -211,23 +294,26 @@ export default function GeospatialMapPanel({ step, connectedInputs, runId }: Ste
     }
   };
 
-  if (!gpkgInputPort) {
+  if (!gpkgInputPort && !missionJsonPort && !missionFilesPort) {
     return (
       <Stack align="center" justify="center" style={{ height: "100%" }} p="xl">
-        <Text c="dimmed">This step type has no GeoPackage input configured.</Text>
+        <Text c="dimmed">This step type has no geospatial inputs configured.</Text>
       </Stack>
     );
   }
 
-  if (!isWired) {
+  if (!isWired && !hasMissionSource) {
     return (
       <Stack align="center" justify="center" style={{ height: "100%" }} p="xl">
-        <Text c="dimmed">Connect a Geospatial step's GeoPackage output to this step's "gpkg" input to visualize it.</Text>
+        <Text c="dimmed">
+          Connect a GeoPackage, a mission JSON (flight_plan/scouting_mission), or a mission files
+          output (mission_export/scouting_mission) to this step to visualize it.
+        </Text>
       </Stack>
     );
   }
 
-  if (!hasData) {
+  if (!hasData && !hasMissionSource) {
     return (
       <Stack align="center" justify="center" style={{ height: "100%" }} p="xl">
         <Text c="dimmed">
@@ -246,7 +332,7 @@ export default function GeospatialMapPanel({ step, connectedInputs, runId }: Ste
     );
   }
 
-  const { MapContainer, TileLayer, GeoJSON } = libs;
+  const { MapContainer, TileLayer, GeoJSON, Marker } = libs;
   const presentLayers = Object.keys(layerData).sort(layerDrawOrder);
   const sidebarFeatures = (layerData[sidebarLayer]?.features || []).map((f: any, i: number) => ({
     idx: i,
@@ -281,6 +367,16 @@ export default function GeospatialMapPanel({ step, connectedInputs, runId }: Ste
                 }}
               />
             ))}
+            {missionLoading && <Loader size="xs" />}
+            {missionError && <Text size="xs" c="red">{missionError}</Text>}
+            {missionFeatures && (
+              <Checkbox
+                size="xs"
+                label="Mission path"
+                checked={missionVisible}
+                onChange={(e) => setMissionVisible(e.currentTarget.checked)}
+              />
+            )}
           </Group>
           <Group gap="sm" wrap="nowrap">
             {missingCount > 0 && (
@@ -318,6 +414,21 @@ export default function GeospatialMapPanel({ step, connectedInputs, runId }: Ste
 
       {sprayMode && layerData.spray_zones && (
         <SprayLegend sprayMode={sprayMode} levels={levels} thresholds={thresholds} />
+      )}
+
+      {missionFileOptions.length > 0 && (
+        <Group gap="sm" px="sm" py={4} style={{ borderBottom: "1px solid #e2e8f0" }}>
+          <Text size="xs" c="dimmed">Mission file:</Text>
+          <Select
+            size="xs"
+            w={280}
+            data={missionFileOptions.map((f) => ({ value: f.path, label: f.label }))}
+            value={selectedMissionPath}
+            onChange={(v) => v && setSelectedMissionPath(v)}
+            allowDeselect={false}
+            comboboxProps={{ withinPortal: true, zIndex: 10002 }}
+          />
+        </Group>
       )}
 
       <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
@@ -366,6 +477,9 @@ export default function GeospatialMapPanel({ step, connectedInputs, runId }: Ste
                 />
               );
             })}
+            {missionVisible && missionFeatures && (
+              <MissionLayer fc={missionFeatures} GeoJSON={GeoJSON} Marker={Marker} L={libs.L} />
+            )}
           </MapContainer>
         </div>
 
@@ -424,6 +538,7 @@ interface Libs {
   MapContainer: ComponentType<MapContainerProps & { ref?: any }>;
   TileLayer: ComponentType<TileLayerProps>;
   GeoJSON: ComponentType<GeoJSONProps & { ref?: any }>;
+  Marker: ComponentType<MarkerProps & { ref?: any }>;
   L: typeof LeafletNS;
 }
 
@@ -476,6 +591,85 @@ function genericLayerColor(label: string): string {
 
 const FARM_BOUNDARY_STYLE = { color: "#334155", weight: 2, fill: false, dashArray: "6 4" };
 const DETECTION_MARKER_STYLE = { radius: 5, color: "#dc2626", fillColor: "#f87171", fillOpacity: 0.85, weight: 1 };
+
+// --- mission overlay (path + direction arrows + start/end icons) ---------
+//
+// Renders a MissionPoint[]-derived FeatureCollection (see lib/missionFormats.ts)
+// on top of whatever gpkg layers are showing: the flown path as a line, small
+// chevrons along it indicating direction of travel, a distinct icon for the
+// first ("start") and last ("end") waypoint, and plain dots for the rest —
+// amber for a capture stop, teal otherwise.
+const MISSION_PATH_STYLE = { color: "#0891b2", weight: 3, opacity: 0.85 };
+
+function arrowDivIcon(bearingDeg: number, L: typeof LeafletNS) {
+  return L.divIcon({
+    html: `<svg width="16" height="16" viewBox="0 0 16 16" style="transform: rotate(${bearingDeg}deg)">
+             <polygon points="8,1 14,14 8,10 2,14" fill="#0891b2" stroke="#0e7490" stroke-width="0.5" />
+           </svg>`,
+    className: "",
+    iconSize: [16, 16],
+    iconAnchor: [8, 8],
+  });
+}
+function endpointDivIcon(emoji: string, L: typeof LeafletNS) {
+  return L.divIcon({
+    html: `<div style="font-size:20px; line-height:24px; text-align:center;">${emoji}</div>`,
+    className: "",
+    iconSize: [24, 24],
+    iconAnchor: [12, 22],
+  });
+}
+function waypointDivIcon(action: string | undefined, L: typeof LeafletNS) {
+  const color = action === "CAPTURE" ? "#d97706" : "#0891b2";
+  return L.divIcon({
+    html: `<div style="width:9px;height:9px;border-radius:50%;background:${color};border:1.5px solid white;box-shadow:0 0 1px rgba(0,0,0,0.5);"></div>`,
+    className: "",
+    iconSize: [9, 9],
+    iconAnchor: [4.5, 4.5],
+  });
+}
+
+function MissionLayer({
+  fc, GeoJSON, Marker, L,
+}: {
+  fc: any;
+  GeoJSON: ComponentType<GeoJSONProps & { ref?: any }>;
+  Marker: ComponentType<MarkerProps & { ref?: any }>;
+  L: typeof LeafletNS;
+}) {
+  const lineFeature = fc.features.find((f: any) => f.geometry?.type === "LineString");
+  const pointFeatures = fc.features.filter((f: any) => f.geometry?.type === "Point");
+  const arrows = lineFeature ? sampleDirectionArrows(lineFeature.geometry.coordinates) : [];
+
+  return (
+    <>
+      {lineFeature && <GeoJSON data={lineFeature} style={() => MISSION_PATH_STYLE} />}
+      {arrows.map((a, i) => (
+        <Marker key={`arrow-${i}`} position={[a.lat, a.lon]} icon={arrowDivIcon(a.bearingDeg, L)} interactive={false} />
+      ))}
+      {pointFeatures.map((f: any, i: number) => {
+        const [lon, lat] = f.geometry.coordinates;
+        const role = f.properties?.role;
+        const icon = role === "start" ? endpointDivIcon("🟢", L)
+          : role === "end" ? endpointDivIcon("🏁", L)
+          : waypointDivIcon(f.properties?.action, L);
+        return (
+          <Marker
+            key={`wp-${i}`}
+            position={[lat, lon]}
+            icon={icon}
+            eventHandlers={{
+              add: (e: any) => e.target.bindPopup(buildPopup({
+                seq: f.properties?.seq,
+                action: f.properties?.action || (role === "start" ? "START" : role === "end" ? "END" : ""),
+              })),
+            }}
+          />
+        );
+      })}
+    </>
+  );
+}
 
 function downloadUrl(apiBase: string, previewQs: string, endpoint: string, label: string) {
   return `${BACKEND_URL}${apiBase}/${endpoint}/${encodeURIComponent(label)}${previewQs}`;

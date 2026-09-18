@@ -1,0 +1,12 @@
+shapely>=2.0
+requests>=2.28
+
+# Parrot's Olympe SDK is NOT on PyPI and is not listed here -- it must be
+# installed separately following Parrot's own instructions before this
+# script can actually fly a drone (mission generation / --dry-run works
+# without it):
+#   https://developer.parrot.com/docs/olympe/installation.html
+
+# Only needed on the machine used to BUILD the standalone executable,
+# not needed by the end user running the built binary:
+# pyinstaller>=6.0
