@@ -21,6 +21,7 @@ import argparse
 import fnmatch
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -38,6 +39,33 @@ class BundleError(RuntimeError):
 
 def log(msg: str) -> None:
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
+
+
+def _normalized_image_name(name: str) -> str:
+    """Fold the differences that don't actually identify a container image."""
+    return re.sub(r"[-_\s]+", "", name.strip().lower())
+
+
+def resolve_image(images_dir: Path, name: str) -> Path | None:
+    """Find an image in the images directory, tolerating - / _ / case.
+
+    The bundle names each image after the step's Tapis app id
+    ('export-flight-mission.sif'), but this repo's container definitions are
+    named with underscores ('export_flight_mission.def'), so building one the
+    obvious way produces 'export_flight_mission.sif' — the same image under a
+    spelling the exact match would miss. Rather than make everyone rename
+    files, match on a normalized name and report which file was used.
+    """
+    exact = images_dir / name
+    if exact.exists():
+        return exact
+    if not images_dir.is_dir():
+        return None
+    target = _normalized_image_name(name)
+    for candidate in sorted(images_dir.iterdir()):
+        if candidate.is_file() and _normalized_image_name(candidate.name) == target:
+            return candidate
+    return None
 
 
 def inside_container() -> bool:
@@ -159,9 +187,17 @@ def build_command(node: dict, job_dir: Path, images_dir: Path, data_root: Path,
     # A step that stages its own container (training/inference/preprocessing)
     # runs the staged file itself; everything else runs an image from the
     # images directory. See "image_is_staged" in the exporter.
-    image = (job_dir / node["image"]) if node.get("image_is_staged") else (images_dir / node["image"])
-    if not image.exists():
-        raise BundleError(f"container image not found: {image}")
+    if node.get("image_is_staged"):
+        image = job_dir / node["image"]
+        if not image.exists():
+            raise BundleError(f"container image not found: {image}")
+    else:
+        resolved = resolve_image(images_dir, node["image"])
+        if resolved is None:
+            raise BundleError(f"container image not found: {images_dir / node['image']}")
+        if resolved.name != node["image"]:
+            log(f"    using {resolved.name} for {node['image']}")
+        image = resolved
 
     step_args = [arg.replace("$PWD", str(job_dir.resolve())) for arg in node.get("container_args", [])]
 
@@ -275,7 +311,8 @@ def run_sink_node(node: dict, dry_run: bool) -> dict:
 # --- preflight ------------------------------------------------------------
 
 def preflight(bundle: dict, images_dir: Path, data_root: Path, workdir: Path,
-              runtime: str, skip_unsupported: bool, no_download: bool = False) -> None:
+              runtime: str, skip_unsupported: bool, no_download: bool = False,
+              dry_run: bool = False) -> None:
     """Fail before running anything, listing every problem at once.
 
     A workflow's first step can take hours; discovering a missing image or an
@@ -320,13 +357,13 @@ def preflight(bundle: dict, images_dir: Path, data_root: Path, workdir: Path,
     missing_images = sorted(
         {n["image"] for n in bundle["nodes"] if n.get("kind") == "job"
          and not n.get("image_is_staged")  # staged containers arrive with the inputs
-         and not (images_dir / n["image"]).exists()}
+         and resolve_image(images_dir, n["image"]) is None}
     )
     # An image the bundle knows a download URL for is fetched once and kept, so
     # later runs need no network and a use-limited link is redeemed only once.
     sources = bundle.get("image_sources") or {}
     fetchable = [name for name in missing_images if name in sources]
-    if fetchable and not no_download:
+    if fetchable and not no_download and not dry_run:
         images_dir.mkdir(parents=True, exist_ok=True)
         for name in fetchable:
             log(f"downloading image {name} (once; cached in {images_dir})")
@@ -338,13 +375,34 @@ def preflight(bundle: dict, images_dir: Path, data_root: Path, workdir: Path,
             missing_images.remove(name)
 
     if missing_images:
-        problems.append(
+        # List what IS there. The overwhelmingly common cause is a file that's
+        # present under a different spelling, and showing both lists side by
+        # side makes that obvious instead of leaving "but they ARE there".
+        try:
+            present = sorted(p.name for p in images_dir.iterdir() if p.is_file() and p.suffix == ".sif")
+        except OSError:
+            present = []
+        detail = (
             "container images not found in " + str(images_dir) + ":\n        "
             + "\n        ".join(missing_images)
-            + "\n        Build them from this repo's jobs/*.def, or obtain them for steps whose\n"
-              "        containers are defined outside it, and place them in --images-dir."
-            + ("\n        (--no-download is set, so known download URLs were not used.)" if no_download else "")
         )
+        detail += (
+            "\n\n        .sif files actually in that directory:\n        "
+            + ("\n        ".join(present) if present else "(none)")
+        )
+        detail += (
+            "\n\n        Names are matched ignoring case and -/_ , so a mismatch beyond that means\n"
+            "        the file really is absent or unreadable. Build from this repo's jobs/*.def,\n"
+            "        or obtain the image for steps defined outside it."
+        )
+        if no_download:
+            detail += "\n        (--no-download is set, so known download URLs were not used.)"
+        # A dry run exists precisely to inspect the plan BEFORE everything is in
+        # place, so a missing image must not block it.
+        if dry_run:
+            log("WARNING: " + detail.splitlines()[0] + " (continuing: --dry-run)")
+        else:
+            problems.append(detail)
 
     unsupported = [n for n in bundle["nodes"] if n.get("kind") == "unsupported"]
     if unsupported and not skip_unsupported:
@@ -416,7 +474,7 @@ def execute(bundle: dict, args) -> dict:
 
     workdir.mkdir(parents=True, exist_ok=True)
     preflight(bundle, images_dir, data_root, workdir, args.runtime,
-              args.skip_unsupported, args.no_download)
+              args.skip_unsupported, args.no_download, args.dry_run)
 
     for warning in bundle.get("warnings", []):
         log(f"WARNING: {warning}")

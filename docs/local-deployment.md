@@ -69,9 +69,12 @@ three ways one gets there, and the runner tells you which applies:
    with no URL registered. Get the image from whoever owns the Tapis app and
    drop it in `--images-dir`.
 
-Either way the filename must match the bundle's `image` field, which is named
-after the step's Tapis app id. **Check workflow** in the export dialog lists
-exactly which images a given workflow needs.
+Either way the filename should match the bundle's `image` field, which is named
+after the step's Tapis app id. Matching ignores case and `-` vs `_`, so
+`generate_flight_plan.sif` (what building `generate_flight_plan.def` produces)
+satisfies a bundle asking for `generate-flight-plan.sif`; the runner logs which
+file it used. **Check workflow** in the export dialog lists exactly which images
+a given workflow needs.
 
 A few steps (`training`, `inference`, `preprocessing`) need nothing here at
 all: they stage their real container as an input, and the Tapis app is only a

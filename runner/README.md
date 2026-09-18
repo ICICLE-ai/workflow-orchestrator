@@ -26,8 +26,10 @@ end-to-end workflow is in [`docs/local-deployment.md`](../docs/local-deployment.
    ```bash
    cd jobs/flight_plan_generator && apptainer build generate-flight-plan.sif generate_flight_plan.def
    ```
-   The `.sif` filename must match the bundle's `image` field, which is named
-   after the step's Tapis app id. Steps backed by container definitions that
+   The `.sif` filename should match the bundle's `image` field, which is named
+   after the step's Tapis app id — though matching ignores case and `-`/`_`, so
+   the `generate_flight_plan.sif` you get from building `generate_flight_plan.def`
+   satisfies a bundle asking for `generate-flight-plan.sif`. Steps backed by container definitions that
    live outside this repo, with no URL registered in
    `backend/image_sources.json`, have to be obtained from whoever maintains
    them. `training`, `inference` and `preprocessing` need nothing here: they
