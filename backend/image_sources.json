@@ -1,0 +1,24 @@
+{
+  "_comment": [
+    "Where to download each step's container image from, for LOCAL deployment",
+    "(see engine/local_bundle.py and docs/local-deployment.md). Keyed by Tapis",
+    "app id; the exporter maps each to the <app-id>.sif filename the runner",
+    "looks for, and the runner downloads it once into --images-dir and reuses",
+    "the file on every later run.",
+    "",
+    "Only needed for steps whose container is NOT built from this repo's",
+    "jobs/*/*.def. Steps that stage their own .sif as a fileInput (training,",
+    "inference, preprocessing) already carry their URL in their step.json and",
+    "do not belong here.",
+    "",
+    "NOTE: a Tapis postit redeem URL is a capability link - anyone holding it",
+    "can download that file, and it is copied into every exported bundle. Set",
+    "WF_IMAGE_SOURCES to an alternate file path to keep them out of the repo.",
+    "Links are typically use-limited or expiring, which is exactly why the",
+    "runner caches the .sif rather than redeeming on every run."
+  ],
+  "images": {
+    "few_shot_detection": "https://icicleai.tapis.io/v3/files/postits/redeem/457c3311-cf84-4828-b0e5-9661ee7ab0f3-010",
+    "opencv-preprocess": "https://icicleai.tapis.io/v3/files/postits/redeem/6f44fec5-9b2c-4ecf-adeb-c91033e4445f-010"
+  }
+}

@@ -51,18 +51,43 @@ platform ever does.
 
 ### Container images
 
-One directory holding the `.sif` for every image the bundle names. For steps
-whose containers are defined in this repo, build them from `jobs/`:
+One directory holding the `.sif` for every image the bundle names. There are
+three ways one gets there, and the runner tells you which applies:
 
-```bash
-cd jobs/flight_plan_generator
-apptainer build generate-flight-plan.sif generate_flight_plan.def
+1. **Downloaded automatically.** If `backend/image_sources.json` knows a URL
+   for the image, the bundle carries it and the runner fetches it into
+   `--images-dir` on the first run, then reuses that file forever after. The
+   caching is the point: these are typically use-limited Tapis postit links,
+   so redeeming once and keeping the `.sif` is the only thing that works
+   long-term. `--no-download` opts out.
+2. **Built from this repo**, for steps whose container is defined in `jobs/`:
+   ```bash
+   cd jobs/flight_plan_generator
+   apptainer build generate-flight-plan.sif generate_flight_plan.def
+   ```
+3. **Supplied by you**, for steps backed by containers maintained elsewhere
+   with no URL registered. Get the image from whoever owns the Tapis app and
+   drop it in `--images-dir`.
+
+Either way the filename must match the bundle's `image` field, which is named
+after the step's Tapis app id. **Check workflow** in the export dialog lists
+exactly which images a given workflow needs.
+
+A few steps (`training`, `inference`, `preprocessing`) need nothing here at
+all: they stage their real container as an input, and the Tapis app is only a
+wrapper that runs it. The runner executes the staged `.sif` directly.
+
+#### Registering a new image source
+
+`backend/image_sources.json` maps Tapis app id → download URL:
+
+```json
+{ "images": { "few_shot_detection": "https://…/postits/redeem/…" } }
 ```
 
-The filename must match the bundle's `image` field (named after the step's
-Tapis app id). Several step types are backed by containers maintained outside
-this repo — for those, get the image from whoever owns the app. The export
-dialog lists exactly which images a given workflow needs.
+Set `WF_IMAGE_SOURCES` to a path outside the repo if you'd rather not keep
+capability URLs in version control — anyone holding such a link can download
+that file, and it is copied into every exported bundle.
 
 ### Data layout
 

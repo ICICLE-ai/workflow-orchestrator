@@ -47,6 +47,8 @@ WHAT THIS DELIBERATELY DOES NOT DO
 """
 from __future__ import annotations
 
+import json
+import os
 import re
 import shlex
 from datetime import datetime, timezone
@@ -242,6 +244,28 @@ def _schema_defaults(schema: dict | None) -> dict:
     return out
 
 
+def _load_image_sources() -> dict[str, str]:
+    """Download URL per Tapis app id, from backend/image_sources.json.
+
+    Steps whose container isn't built from this repo's jobs/*.def have to get
+    it from somewhere; this is that somewhere. Missing or unreadable is not an
+    error — the bundle then simply names the images and the operator supplies
+    the files themselves, which is the pre-existing behaviour.
+
+    WF_IMAGE_SOURCES points at an alternate file, for deployments that would
+    rather not keep capability URLs in the repo.
+    """
+    path = os.environ.get("WF_IMAGE_SOURCES") or os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "image_sources.json"
+    )
+    try:
+        with open(path) as f:
+            return {str(k): str(v) for k, v in (json.load(f).get("images") or {}).items()}
+    except (OSError, ValueError, AttributeError) as e:
+        print(f"[local_bundle] no image sources loaded from {path}: {type(e).__name__}")
+        return {}
+
+
 def _sif_name(app_id: str | None, step_type_key: str) -> str:
     """Container filename a node expects to find in the images directory.
 
@@ -333,9 +357,11 @@ def build_bundle(
         })
 
     order = _topological_order(list(nodes_by_id), deps)
+    image_sources = _load_image_sources()
 
     warnings: list[str] = []
     secrets_required: set[str] = set()
+    image_app_ids: dict[str, str] = {}
     outputs_by_node: dict[str, dict[str, str]] = {}
     plan: list[dict] = []
     images: set[str] = set()
@@ -465,9 +491,24 @@ def build_bundle(
                         f"and the step will fail. Build it in the step's panel on the platform first."
                     )
 
+            # Some steps ship the REAL container as a staged input rather than
+            # running the Tapis app's own image: `training` stages trainer.sif,
+            # `inference` inf.sif, `preprocessing` preprocess.sif, and the app
+            # is just a wrapper that runs the staged file. For those, the image
+            # to run is that staged path — demanding an <app_id>.sif in the
+            # images directory as well would be asking for a file that does not
+            # exist anywhere.
+            staged_image = next(
+                (item["target"] for item in stage_in if str(item.get("target", "")).endswith(".sif")),
+                None,
+            )
+
             entry.update({
                 "kind": "job",
-                "image": _sif_name(registry.tapis_app_id, step_type),
+                "image": staged_image or _sif_name(registry.tapis_app_id, step_type),
+                # Relative to the job dir (and staged at run time) rather than
+                # looked up in --images-dir.
+                "image_is_staged": bool(staged_image),
                 "write_files": write_files,
                 "gpu": bool((registry.resources or {}).get("gpu")),
                 "job_dir": job_dir,
@@ -484,8 +525,22 @@ def build_bundle(
                     for p in out_ports
                 },
             })
-            images.add(entry["image"])
+            if not staged_image:
+                images.add(entry["image"])
+                image_app_ids[entry["image"]] = registry.tapis_app_id or step_type
             outputs_by_node[node_key] = entry["outputs"]
+
+            # A bind whose host side is an absolute path baked into the
+            # step.json is a SITE path (an HPC scratch cache, say) that almost
+            # certainly does not exist on the user's own node, and apptainer
+            # fails outright on a missing bind source rather than skipping it.
+            for carg in entry["container_args"]:
+                host_side = carg.split(":", 1)[0]
+                if host_side.startswith("/") and not host_side.startswith("{{"):
+                    warnings.append(
+                        f"{label}: binds the host path '{host_side}', which is a path on the platform's "
+                        f"cluster. Create it on your node (or edit the bundle's container_args) before running."
+                    )
             if any(p["file_glob"] for p in out_ports):
                 warnings.append(
                     f"{label}: an output port uses a filename pattern (file_glob); the runner resolves it "
@@ -548,6 +603,14 @@ def build_bundle(
         "defaults": {"data_root": data_root, "workdir": workdir, "images_dir": images_dir},
         "tokens": {"data_root": DATA_ROOT, "workdir": WORKDIR, "run_id": RUN_ID},
         "images": sorted(images),
+        # Where the runner can fetch each image it does not already have.
+        # Only images with a known source appear; anything absent here the
+        # operator must place in --images-dir themselves.
+        "image_sources": {
+            name: image_sources[image_app_ids[name]]
+            for name in sorted(images)
+            if image_app_ids.get(name) in image_sources
+        },
         # Env vars the RUNNER must supply on the node. Never the values —
         # see _rewrite_secrets for why a bundle carries only the names.
         "secrets_required": sorted(secrets_required),

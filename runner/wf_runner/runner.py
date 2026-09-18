@@ -40,6 +40,21 @@ def log(msg: str) -> None:
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
+def inside_container() -> bool:
+    """Whether this process is itself running inside Apptainer/Singularity.
+
+    Only used to tailor the "no container runtime" message, since the fix is
+    completely different depending on the answer. Both the env vars and the
+    marker directory are checked because which of them is set varies by version
+    and by how the container was started.
+    """
+    return bool(
+        os.environ.get("APPTAINER_CONTAINER")
+        or os.environ.get("SINGULARITY_CONTAINER")
+        or os.path.isdir("/.singularity.d")
+    )
+
+
 # --- token substitution ---------------------------------------------------
 
 def substitute(value, tokens: dict[str, str]):
@@ -141,7 +156,10 @@ def build_command(node: dict, job_dir: Path, images_dir: Path, data_root: Path,
     Tapis resolves to the job directory — so the same "--bind $PWD:/job" that
     makes `/job/data/images` work on the platform makes it work here.
     """
-    image = images_dir / node["image"]
+    # A step that stages its own container (training/inference/preprocessing)
+    # runs the staged file itself; everything else runs an image from the
+    # images directory. See "image_is_staged" in the exporter.
+    image = (job_dir / node["image"]) if node.get("image_is_staged") else (images_dir / node["image"])
     if not image.exists():
         raise BundleError(f"container image not found: {image}")
 
@@ -257,7 +275,7 @@ def run_sink_node(node: dict, dry_run: bool) -> dict:
 # --- preflight ------------------------------------------------------------
 
 def preflight(bundle: dict, images_dir: Path, data_root: Path, workdir: Path,
-              runtime: str, skip_unsupported: bool) -> None:
+              runtime: str, skip_unsupported: bool, no_download: bool = False) -> None:
     """Fail before running anything, listing every problem at once.
 
     A workflow's first step can take hours; discovering a missing image or an
@@ -272,23 +290,60 @@ def preflight(bundle: dict, images_dir: Path, data_root: Path, workdir: Path,
         )
 
     if shutil.which(runtime) is None:
-        problems.append(
-            f"'{runtime}' is not on PATH.\n"
-            f"        Install Apptainer on this node, or pass --runtime with the binary's path.\n"
-            f"        If you are running this runner INSIDE a container, nested container execution\n"
-            f"        may be unavailable — see 'Running the runner' in runner/README.md."
-        )
+        if inside_container():
+            # By far the most likely way to hit this: the runner image ships the
+            # orchestrator only, so `apptainer run wf-runner.sif` leaves it with
+            # no runtime to launch the steps with. Spell out both fixes rather
+            # than leaving "not on PATH" to be puzzled over.
+            problems.append(
+                f"'{runtime}' is not on PATH, and this runner is itself running inside a container.\n"
+                f"        The runner image contains the orchestrator only — it has to reach a\n"
+                f"        container runtime to start each step. Either:\n"
+                f"\n"
+                f"        (a) run it on the host instead (it needs nothing but python3):\n"
+                f"              python3 -m wf_runner <bundle.json> --data-root ... --images-dir ...\n"
+                f"\n"
+                f"        (b) expose the host's apptainer to this container, e.g.\n"
+                f"              apptainer run --bind /usr/bin/apptainer,/usr/libexec/apptainer,/var/lib/apptainer \\\n"
+                f"                  wf-runner.sif <bundle.json> ...\n"
+                f"            (paths vary by install; `which apptainer` and `apptainer --version` on the\n"
+                f"             host show what to bind. Nested execution also needs unprivileged user\n"
+                f"             namespaces, which some hardened kernels disable — if so, use (a).)"
+            )
+        else:
+            problems.append(
+                f"'{runtime}' is not on PATH.\n"
+                f"        Install Apptainer on this node, or pass --runtime with the binary's path\n"
+                f"        (--runtime singularity also works)."
+            )
 
     missing_images = sorted(
         {n["image"] for n in bundle["nodes"] if n.get("kind") == "job"
+         and not n.get("image_is_staged")  # staged containers arrive with the inputs
          and not (images_dir / n["image"]).exists()}
     )
+    # An image the bundle knows a download URL for is fetched once and kept, so
+    # later runs need no network and a use-limited link is redeemed only once.
+    sources = bundle.get("image_sources") or {}
+    fetchable = [name for name in missing_images if name in sources]
+    if fetchable and not no_download:
+        images_dir.mkdir(parents=True, exist_ok=True)
+        for name in fetchable:
+            log(f"downloading image {name} (once; cached in {images_dir})")
+            try:
+                fetch_input(sources[name], images_dir / name)
+            except BundleError as e:
+                problems.append(f"could not download {name}: {e}")
+                continue
+            missing_images.remove(name)
+
     if missing_images:
         problems.append(
             "container images not found in " + str(images_dir) + ":\n        "
             + "\n        ".join(missing_images)
             + "\n        Build them from this repo's jobs/*.def, or obtain them for steps whose\n"
               "        containers are defined outside it, and place them in --images-dir."
+            + ("\n        (--no-download is set, so known download URLs were not used.)" if no_download else "")
         )
 
     unsupported = [n for n in bundle["nodes"] if n.get("kind") == "unsupported"]
@@ -360,7 +415,8 @@ def execute(bundle: dict, args) -> dict:
     bundle = substitute(bundle, tokens)
 
     workdir.mkdir(parents=True, exist_ok=True)
-    preflight(bundle, images_dir, data_root, workdir, args.runtime, args.skip_unsupported)
+    preflight(bundle, images_dir, data_root, workdir, args.runtime,
+              args.skip_unsupported, args.no_download)
 
     for warning in bundle.get("warnings", []):
         log(f"WARNING: {warning}")
@@ -454,6 +510,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="Copy staged inputs instead of symlinking them")
     parser.add_argument("--skip-unsupported", action="store_true",
                         help="Continue past steps that can only run on the platform")
+    parser.add_argument("--no-download", action="store_true",
+                        help="Never fetch container images, even when the bundle knows a URL for them")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print the plan and the exact container commands without running anything")
     args = parser.parse_args(argv)

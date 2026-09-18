@@ -17,15 +17,21 @@ end-to-end workflow is in [`docs/local-deployment.md`](../docs/local-deployment.
 ## What you need on the node
 
 1. **Apptainer** (or Singularity) on `PATH`.
-2. **The step container images** (`.sif`) the bundle names, in one directory.
-   `Check workflow` in the export dialog lists exactly which. Build the ones
-   defined in this repo from `jobs/*/*.def`:
+2. **The step container images** (`.sif`) the bundle names, in one directory —
+   though the runner fills that in for you where it can. On the first run it
+   downloads any image the bundle has a URL for into `--images-dir` and reuses
+   that file on every later run (these are use-limited links, so redeeming once
+   and keeping the `.sif` is what makes repeat runs work); `--no-download` opts
+   out. Build the ones defined in this repo from `jobs/*/*.def`:
    ```bash
    cd jobs/flight_plan_generator && apptainer build generate-flight-plan.sif generate_flight_plan.def
    ```
    The `.sif` filename must match the bundle's `image` field, which is named
    after the step's Tapis app id. Steps backed by container definitions that
-   live outside this repo have to be obtained from whoever maintains them.
+   live outside this repo, with no URL registered in
+   `backend/image_sources.json`, have to be obtained from whoever maintains
+   them. `training`, `inference` and `preprocessing` need nothing here: they
+   stage their real container as an input and the runner runs that directly.
 3. **Your input data**, laid out beneath one directory so it mirrors the paths
    the workflow used on the platform. If a source step read
    `tapis://pitzer-tapis/users/you/farm/images`, then with `--data-root /data`
