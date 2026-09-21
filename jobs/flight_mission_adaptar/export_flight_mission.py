@@ -11,7 +11,7 @@ file after the physical battery-swap / tank-refill step.
 
 SUPPORTED FORMATS
 -----------------
-  ardupilot    -- QGC WPL 110 plain-text waypoint file (.waypoints), for
+  ardupilot    -- QGC WPL 120 plain-text waypoint file (.waypoints), for
                    ArduPilot / Mission Planner
   px4          -- QGroundControl .plan JSON, for PX4
   generic_csv  -- simple lat/lon/alt/action CSV for debugging, spreadsheet
@@ -73,7 +73,11 @@ import os
 
 MAV_CMD_NAV_WAYPOINT = 16
 MAV_CMD_NAV_RETURN_TO_LAUNCH = 20
+MAV_CMD_NAV_TAKEOFF = 22
 MAV_CMD_DO_SET_SERVO = 183
+MAV_CMD_DO_SET_CAM_TRIGG_DIST = 206
+FRAME_GLOBAL = 0
+FRAME_GLOBAL_RELATIVE_ALT = 3
 
 
 # ---------------------------------------------------------------------------
@@ -114,29 +118,77 @@ def expand_cycle_to_commands(cycle, servo_channel, pwm_on, pwm_off):
 # ArduPilot / Mission Planner -- QGC WPL 110 (.waypoints)
 # ---------------------------------------------------------------------------
 
-def write_ardupilot(cycle, commands, outpath):
-    home = cycle["waypoints"][0]
-    lines = ["QGC WPL 110"]
+def write_ardupilot(cycle, commands, outpath, waypoint_hold_s=1.0,
+                    takeoff_pitch_deg=15.0, emit_sprayer_servo=False,
+                    cam_trigger_dist_m=0.0):
+    """QGC WPL 120 waypoint file, in the layout verified against real hardware.
 
-    lines.append(
-        f"0\t1\t0\t{MAV_CMD_NAV_WAYPOINT}\t0\t0\t0\t0\t"
-        f"{home['lat']:.8f}\t{home['lon']:.8f}\t{home['alt']:.2f}\t1"
+    Three things here differ from a naive reading of the QGC WPL spec, and all
+    three are deliberate:
+
+    - COLUMN ORDER IS LONGITUDE THEN LATITUDE. The format's own header calls
+      these columns PARAM5/X/LONGITUDE and PARAM6/Y/LATITUDE, even though
+      MAVLink's MISSION_ITEM puts latitude in param5 — the documentation and
+      the wire protocol genuinely disagree. Flight-tested files from this
+      project use lon-then-lat, and jobs/scouting_mission_generator's writer
+      independently settled on the same order, so that is what is written
+      here. Swapping it sends the aircraft somewhere else entirely.
+
+    - TAKE-OFF CLIMBS TO THE MISSION'S ALTITUDE, NOT HOME'S. HOME sits at
+      ground level (alt 0) in flight_plan.json, so using its altitude for the
+      NAV_TAKEOFF item would command a take-off to 0 m.
+
+    - EVERY WAYPOINT HOLDS. param1 of NAV_WAYPOINT is a hold time in seconds;
+      a brief stop at each point is what a survey/scouting airframe wants, and
+      it is harmless on a sprayer. Set --waypoint-hold-s 0 to fly through.
+
+    Sprayer servo commands are opt-in (--emit-sprayer-servo): a plan flown on
+    an aircraft with no sprayer should not carry DO_SET_SERVO items for a
+    channel that isn't wired to anything.
+    """
+    home = cycle["waypoints"][0]
+    # First waypoint carrying a real altitude — HOME's is ground level.
+    flight_alt = next(
+        (wp["alt"] for wp in cycle["waypoints"] if wp.get("alt")),
+        home.get("alt", 0.0),
     )
 
-    idx = 1
+    lines = ["QGC WPL 120"]
+    seq = 0
+
+    def add(current, frame, command, p1, p2, p3, p4, lon, lat, alt):
+        # Sequence numbers advance only when a line is actually written, so a
+        # skipped command (a suppressed servo item) cannot leave a gap — some
+        # ground stations reject a file whose indices aren't contiguous.
+        nonlocal seq
+        lines.append("\t".join(str(v) for v in [
+            seq, current, frame, command,
+            float(p1), float(p2), float(p3), float(p4),
+            float(lon), float(lat), float(alt), 1,
+        ]))
+        seq += 1
+
+    add(1, FRAME_GLOBAL_RELATIVE_ALT, MAV_CMD_NAV_TAKEOFF,
+        takeoff_pitch_deg, 0, 0, 0, home["lon"], home["lat"], flight_alt)
+
+    # Trigger the camera every N metres for the rest of the mission. A spray
+    # plan has no capture-distance of its own (only a scouting mission does),
+    # so this is emitted only when asked for -- which is how a spray-shaped
+    # plan gets flown as a survey on an aircraft carrying a camera.
+    if cam_trigger_dist_m and cam_trigger_dist_m > 0:
+        add(0, FRAME_GLOBAL_RELATIVE_ALT, MAV_CMD_DO_SET_CAM_TRIGG_DIST,
+            cam_trigger_dist_m, 0, 0, 0, home["lon"], home["lat"], flight_alt)
+
     for cmd in commands:
         if cmd["cmd"] == "NAV_WAYPOINT":
-            lines.append(
-                f"{idx}\t0\t3\t{MAV_CMD_NAV_WAYPOINT}\t0\t0\t0\t0\t"
-                f"{cmd['lat']:.8f}\t{cmd['lon']:.8f}\t{cmd['alt']:.2f}\t1"
-            )
+            add(0, FRAME_GLOBAL_RELATIVE_ALT, MAV_CMD_NAV_WAYPOINT,
+                waypoint_hold_s, 0, 0, 0, cmd["lon"], cmd["lat"], cmd["alt"])
         elif cmd["cmd"] == "DO_SET_SERVO":
-            lines.append(
-                f"{idx}\t0\t3\t{MAV_CMD_DO_SET_SERVO}\t{cmd['param1']}\t{cmd['param2']}\t0\t0\t0\t0\t0\t1"
-            )
+            if emit_sprayer_servo:
+                add(0, FRAME_GLOBAL_RELATIVE_ALT, MAV_CMD_DO_SET_SERVO,
+                    cmd["param1"], cmd["param2"], 0, 0, 0, 0, 0)
         elif cmd["cmd"] == "RTL":
-            lines.append(f"{idx}\t0\t0\t{MAV_CMD_NAV_RETURN_TO_LAUNCH}\t0\t0\t0\t0\t0\t0\t0\t1")
-        idx += 1
+            add(0, FRAME_GLOBAL, MAV_CMD_NAV_RETURN_TO_LAUNCH, 0, 0, 0, 0, 0, 0, 0)
 
     with open(outpath, "w") as f:
         f.write("\n".join(lines) + "\n")
@@ -404,6 +456,17 @@ def main():
     parser.add_argument("--sprayer-pwm-on", type=int, default=1900, help="PWM value for sprayer ON (default 1900)")
     parser.add_argument("--sprayer-pwm-off", type=int, default=1100, help="PWM value for sprayer OFF (default 1100)")
 
+    parser.add_argument("--waypoint-hold-s", type=float, default=1.0,
+                        help="ArduPilot: seconds to hold at each waypoint (NAV_WAYPOINT param1). "
+                             "0 flies through without stopping (default 1.0)")
+    parser.add_argument("--cam-trigger-dist-m", type=float, default=0.0,
+                        help="ArduPilot: trigger the camera every N metres "
+                             "(MAV_CMD_DO_SET_CAM_TRIGG_DIST). 0 disables it (default 0)")
+    parser.add_argument("--takeoff-pitch", type=float, default=15.0,
+                        help="ArduPilot: NAV_TAKEOFF minimum pitch in degrees (default 15.0)")
+    parser.add_argument("--emit-sprayer-servo", action="store_true",
+                        help="ArduPilot: emit DO_SET_SERVO sprayer items. Off by default - an "
+                             "airframe with no sprayer should not carry them")
     parser.add_argument("--cruise-speed-mps", type=float, default=None,
                          help="Cruise speed in m/s (default: derived from flight_plan.json meta speed_mph)")
     parser.add_argument("--hover-speed-mps", type=float, default=5.0, help="PX4 hover speed in m/s (default 5.0)")
@@ -456,7 +519,11 @@ def main():
 
         if "ardupilot" in formats:
             path = os.path.join(args.outdir, "ardupilot", f"flight_plan_cycle{cycle_id}.waypoints")
-            write_ardupilot(cycle, commands, path)
+            write_ardupilot(cycle, commands, path,
+                            waypoint_hold_s=args.waypoint_hold_s,
+                            takeoff_pitch_deg=args.takeoff_pitch,
+                            emit_sprayer_servo=args.emit_sprayer_servo,
+                            cam_trigger_dist_m=args.cam_trigger_dist_m)
             print(f"Wrote {path}")
 
         if "px4" in formats:
