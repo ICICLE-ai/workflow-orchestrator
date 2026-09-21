@@ -14,3 +14,5 @@ backend/Harvest Workflow Orchestrator - Schema Redesign.pdf
 *.pyc
 
 *__pycache__/
+
+*.sif
