@@ -1,0 +1,98 @@
+{
+  "step_type_key": "hf_inference",
+  "display_name": "HuggingFace Inference",
+  "description": "Runs a trained HuggingFace or YOLO model on new images to generate predictions.",
+  "category": "Inference",
+  "resources": { "gpu": true },
+  "inputs": [
+    { "name": "model", "type": "pytorch_model" },
+    { "name": "images", "type": "image_dir" }
+  ],
+  "outputs": [
+    { "name": "predictions", "type": "json_results", "output_path": "predictions.json" },
+    { "name": "summary",     "type": "json_results", "output_path": "summary.json" }
+  ],
+  "config_schema": {
+    "framework": {
+      "type": "str",
+      "description": "Inference framework: yolo or huggingface",
+      "default": "huggingface"
+    },
+    "task": {
+      "type": "str",
+      "description": "Task type: classify, detect, or segment",
+      "default": "classify"
+    },
+    "conf": {
+      "type": "float",
+      "description": "Minimum confidence threshold for predictions (0-1)",
+      "default": 0.25
+    },
+    "batch": {
+      "type": "int",
+      "description": "Batch size for HuggingFace inference",
+      "default": 16
+    },
+    "imgsz": {
+      "type": "int",
+      "description": "Inference image size in pixels (YOLO only)",
+      "default": 640
+    },
+    "device": {
+      "type": "str",
+      "description": "Compute device: cpu or cuda",
+      "default": "cuda"
+    }
+  },
+  "tapis_job": {
+    "name": "hf-inference",
+    "appId": "workflow-orchestrator-infer-v1",
+    "appVersion": "1.0",
+    "description": "HuggingFace/YOLO inference via Workflow Orchestrator",
+    "execSystemId": "${exec_system}",
+    "execSystemLogicalQueue": "${exec_queue}",
+    "archiveSystemId": "${archive_system}",
+    "archiveSystemDir": "${archive_dir}",
+    "nodeCount": 1,
+    "coresPerNode": 4,
+    "memoryMB": 64000,
+    "maxMinutes": 30,
+    "fileInputs": [
+      {
+        "name": "hf_cache",
+        "envKey": "HF_HOME",
+        "autoMountLocal": true,
+        "sourceUrl": "tapis://pitzer-tapis/fs/scratch/PAS2699/yolo_training/mod/hf_cache",
+        "targetPath": "hf_cache"
+      }
+    ],
+    "parameterSet": {
+      "appArgs": [
+        { "name": "script",    "arg": "infer_main.py" },
+        { "name": "framework", "arg": "--framework ${framework}" },
+        { "name": "model",     "arg": "--model ${model}" },
+        { "name": "task",      "arg": "--task ${task}" },
+        { "name": "data",      "arg": "--data ${images}" },
+        { "name": "output",    "arg": "--output_path ${JobWorkingDir}/output" },
+        { "name": "device",    "arg": "--device ${device}" },
+        { "name": "conf",      "arg": "--conf ${conf}" },
+        { "name": "batch",     "arg": "--batch ${batch}" },
+        { "name": "imgsz",     "arg": "--imgsz ${imgsz}" }
+      ],
+      "containerArgs": [
+        {
+          "name": "hf_cache_bind",
+          "arg": "--bind ${JobWorkingDir}/hf_cache:/root/.cache/huggingface"
+        }
+      ],
+      "schedulerOptions": [
+        { "arg": "-G 1",                   "name": "gpu_per_node" },
+        { "arg": "-A ${slurm_account}",    "name": "slurm_account" }
+      ],
+      "archiveFilter": {
+        "includeLaunchFiles": false,
+        "includes": ["predictions.json", "summary.json"]
+      }
+    }
+  }
+}
