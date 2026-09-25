@@ -4,6 +4,7 @@ import { IconLayoutDashboard, IconActivity, IconFolder } from "@tabler/icons-rea
 import { useNavigate } from "react-router";
 import SecretsMenu from "../components/SecretsMenu";
 import TopNav from "../components/TopNav";
+import ThemeToggle from "../components/ThemeToggle";
 
 export function meta({}: Route.MetaArgs) {
   return [
@@ -31,7 +32,10 @@ export default function Dashboard() {
             <Text fw={700} size="lg" style={{ whiteSpace: 'nowrap' }}>No-Code Workflow Studio</Text>
             <TopNav />
           </Group>
-          <SecretsMenu />
+          <Group gap="xs">
+            <ThemeToggle />
+            <SecretsMenu />
+          </Group>
         </Group>
       </AppShell.Header>
 

@@ -1,5 +1,11 @@
 @import "tailwindcss";
 
+/* Key Tailwind's `dark:` variant off Mantine's color scheme attribute
+   (set by ColorSchemeScript / useMantineColorScheme) instead of the raw OS
+   media query, so Tailwind-styled elements follow the same toggle as
+   Mantine components rather than only the system preference. */
+@custom-variant dark (&:where([data-mantine-color-scheme="dark"], [data-mantine-color-scheme="dark"] *));
+
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif,
     "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
@@ -8,8 +14,8 @@
 html,
 body {
   @apply bg-white dark:bg-gray-950;
+}
 
-  @media (prefers-color-scheme: dark) {
-    color-scheme: dark;
-  }
+html[data-mantine-color-scheme="dark"] {
+  color-scheme: dark;
 }

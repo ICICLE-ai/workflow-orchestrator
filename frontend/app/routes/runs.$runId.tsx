@@ -7,6 +7,7 @@ import { useState, useEffect, useCallback } from "react";
 import { ReactFlow, ReactFlowProvider, Background, Controls } from "@xyflow/react";
 import CustomNode from "../components/CustomNode";
 import StepSettingsModal from "../components/StepSettingsModal";
+import ThemeToggle from "../components/ThemeToggle";
 import { getStepPanel } from "../pages/registry";
 import TopNav from "../components/TopNav";
 import type { StepMeta, ConnectedInput } from "../pages/types";
@@ -345,6 +346,7 @@ export default function RunView({ loaderData }: Route.ComponentProps) {
                 <IconSettings size={18} />
               </ActionIcon>
             </Tooltip>
+            <ThemeToggle />
             <Tooltip label="Refresh status">
               <ActionIcon variant="light" color="gray" onClick={handleRefresh} disabled={refreshing}>
                 {refreshing ? <Loader size={16} /> : <IconRefresh size={18} />}

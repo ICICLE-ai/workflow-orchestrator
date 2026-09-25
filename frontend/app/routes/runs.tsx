@@ -5,6 +5,7 @@ import { useNavigate } from "react-router";
 import { useState, useEffect, useCallback } from "react";
 import { apiFetch } from "../lib/api";
 import TopNav from "../components/TopNav";
+import ThemeToggle from "../components/ThemeToggle";
 
 export async function clientLoader() {
   const res = await apiFetch("/api/pipeline-runs");
@@ -205,6 +206,7 @@ export default function Runs({ loaderData }: Route.ComponentProps) {
             <Text fw={700} style={{ whiteSpace: 'nowrap' }}>No-Code Workflow Studio</Text>
             <TopNav />
           </Group>
+          <ThemeToggle />
         </Group>
       </AppShell.Header>
 

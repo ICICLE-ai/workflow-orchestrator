@@ -4,6 +4,7 @@ import { IconActivity, IconArrowLeft, IconPlus, IconEdit } from "@tabler/icons-r
 import { useNavigate, Link } from "react-router";
 import { apiFetch } from "../lib/api";
 import TopNav from "../components/TopNav";
+import ThemeToggle from "../components/ThemeToggle";
 
 export async function clientLoader() {
   const res = await apiFetch("/api/workflow-templates");
@@ -31,6 +32,7 @@ export default function Templates({ loaderData }: Route.ComponentProps) {
             <Text fw={700} style={{ whiteSpace: 'nowrap' }}>No-Code Workflow Studio</Text>
             <TopNav />
           </Group>
+          <ThemeToggle />
         </Group>
       </AppShell.Header>
 

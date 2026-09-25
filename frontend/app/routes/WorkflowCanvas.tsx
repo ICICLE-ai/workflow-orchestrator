@@ -7,6 +7,7 @@ import CustomNode from '../components/CustomNode';
 import { apiFetch, fetchCurrentUser } from '../lib/api';
 import { TAPIS_SYSTEMS, defaultWorkDir } from '../lib/tapis';
 import TopNav from '../components/TopNav';
+import ThemeToggle from '../components/ThemeToggle';
 
 const nodeTypes = { customNode: CustomNode };
 
@@ -776,6 +777,7 @@ function Flow() {
                 {templateData ? 'Save New Version' : 'Save Template'}
               </Button>
             )}
+            <ThemeToggle />
           </Group>
         </Group>
       </AppShell.Header>

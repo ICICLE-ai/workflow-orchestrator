@@ -11,7 +11,14 @@ import type { Route } from "./+types/root";
 import "./app.css";
 import "@mantine/core/styles.css";
 import "@xyflow/react/dist/style.css";
-import { MantineProvider, ColorSchemeScript, Button, Group, Text, Paper } from "@mantine/core";
+import {
+  MantineProvider,
+  ColorSchemeScript,
+  Button,
+  Group,
+  Text,
+  Paper,
+} from "@mantine/core";
 import { useEffect, useState } from "react";
 import { fetchCurrentUser, loginUrl, logout, type CurrentUser } from "./lib/api";
 import { hostOwnsAuth } from "./lib/embed";
@@ -107,7 +114,7 @@ function AuthWidget() {
 export default function App() {
   return (
 
-    <MantineProvider defaultColorScheme="light">
+    <MantineProvider defaultColorScheme="auto">
       <Notifications />
         <AuthWidget />
         <Outlet />
