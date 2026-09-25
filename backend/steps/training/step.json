@@ -77,6 +77,11 @@
       "type": "str",
       "description": "Extra CLI arguments passed to train_main.py e.g. --lr 0.001 --seed 42",
       "default": ""
+    },
+    "checkpoint": {
+      "type": "str",
+      "description": "Path to checkpoint directory to resume training from (optional)",
+      "default": ""
     }
   },
   "tapis_job": {
@@ -103,21 +108,22 @@
     ],
     "parameterSet": {
       "appArgs": [
-        { "name": "framework",      "arg": "--framework ${framework}"           },
-        { "name": "model",          "arg": "--model ${model}"                   },
-        { "name": "task",           "arg": "--task ${task}"                     },
-        { "name": "data",           "arg": "--data ${dataset}"                  },
-        { "name": "output_path",    "arg": "--output_path ${archive_dir}"       },
-        { "name": "epochs",         "arg": "--epochs ${epochs}"                 },
-        { "name": "batch",          "arg": "--batch ${batch_size}"              },
-        { "name": "device",         "arg": "--device ${device}"                 },
-        { "name": "lr",             "arg": "--lr ${learning_rate}"              },
-        { "name": "warmup_steps",   "arg": "--warmup_steps ${warmup_steps}"     },
-        { "name": "seed",           "arg": "--seed ${seed}"                     },
-        { "name": "patience",       "arg": "--patience ${patience}"             },
-        { "name": "wandb_key",      "arg": "--wandb_key ${wandb_key}"           },
-        { "name": "wandb_project",  "arg": "--wandb_project ${wandb_project}"   },
-        { "name": "extra_args",     "arg": "${extra_args}"                      }
+        { "name": "framework",      "arg": "--framework ${framework}"                           },
+        { "name": "model",          "arg": "--model ${model}"                                   },
+        { "name": "task",           "arg": "--task ${task}"                                     },
+        { "name": "data",           "arg": "--data ${dataset}"                                  },
+        { "name": "output_path",    "arg": "--output_path ${archive_dir}"                       },
+        { "name": "epochs",         "arg": "--epochs ${epochs}"                                 },
+        { "name": "batch",          "arg": "--batch ${batch_size}"                              },
+        { "name": "device",         "arg": "--device ${device}"                                 },
+        { "name": "lr",             "arg": "--lr ${learning_rate}"                              },
+        { "name": "warmup_steps",   "arg": "--warmup_steps ${warmup_steps}"                     },
+        { "name": "seed",           "arg": "--seed ${seed}"                                     },
+        { "name": "patience",       "arg": "--patience ${patience}"                             },
+        { "name": "wandb_key",      "arg": "--wandb_key ${wandb_key}",    "if": "wandb_key"     },
+        { "name": "wandb_project",  "arg": "--wandb_project ${wandb_project}"                   },
+        { "name": "extra_args",     "arg": "${extra_args}"                                      },
+        { "name": "checkpoint",     "arg": "--checkpoint ${checkpoint}",  "if": "checkpoint"    }
       ],
       "containerArgs": [
         { "name": "hf_cache", "arg": "--bind /fs/scratch/PAS2699/yolo_training/mod/hf_cache:/app/hf_cache" }
