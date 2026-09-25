@@ -19,9 +19,6 @@ import {
 import { IconBrain, IconKey, IconSettings, IconInfoCircle, IconPlus, IconTrash } from "@tabler/icons-react";
 import type { StepPanelProps } from "./types";
 
-// Model registry — each entry has the HuggingFace/YOLO model ID,
-// a human-readable label, the task it supports, a short description,
-// and the extra params the user can pass via the + button.
 const MODELS = [
   // Classification
   {
@@ -151,10 +148,6 @@ const TASKS = [
   { value: "segment",  label: "Segmentation"         },
 ];
 
-// ─────────────────────────────────────────────────────────────
-// TrainingPanel — custom settings UI for the training step.
-// Registered in registry.ts under "training".
-// ─────────────────────────────────────────────────────────────
 export default function TrainingPanel({ config, onChange, onSave, step }: StepPanelProps) {
   const val = (key: string, fallback?: unknown) => {
     const v = config[key];
@@ -162,21 +155,17 @@ export default function TrainingPanel({ config, onChange, onSave, step }: StepPa
   };
   const set = (key: string, value: unknown) => onChange({ ...config, [key]: value });
 
-  // Build extra_args string from key-value pairs list
-  // Called every time params change so extra_args is always up to date
   const buildExtraArgs = (params: {key: string; value: string}[]) =>
     params
       .filter((p) => p.key.trim())
       .map((p) => `--${p.key.trim()} ${p.value.trim()}`.trim())
       .join(" ");
 
-  // Derive filtered model list from selected task
   const selectedTask = String(val("task", "classify"));
   const filteredModels = MODELS.filter((m) => m.task === selectedTask);
   const selectedModel = String(val("model", filteredModels[0]?.value ?? ""));
   const modelInfo = MODELS.find((m) => m.value === selectedModel);
 
-  // When task changes, auto-select the first compatible model
   const handleTaskChange = (task: string | null) => {
     if (!task) return;
     const compatible = MODELS.filter((m) => m.task === task);
@@ -228,7 +217,6 @@ export default function TrainingPanel({ config, onChange, onSave, step }: StepPa
             allowDeselect={false}
           />
 
-          {/* Model info card */}
           {modelInfo && (
             <Paper withBorder p="sm" radius="md" bg="blue.0">
               <Group gap="xs" mb={4}>
@@ -244,7 +232,6 @@ export default function TrainingPanel({ config, onChange, onSave, step }: StepPa
               <Text size="xs" c="blue.6" mt={4} style={{ fontFamily: "monospace" }}>
                 {modelInfo.value}
               </Text>
-
             </Paper>
           )}
 
@@ -307,9 +294,18 @@ export default function TrainingPanel({ config, onChange, onSave, step }: StepPa
             onChange={(e) => set("output_path", e.currentTarget.value)}
           />
 
+          <Divider label="Resume from Checkpoint" labelPosition="left" />
+
+          <TextInput
+            label="Checkpoint path"
+            description="Optional: path to a checkpoint directory to resume training from (e.g. /fs/scratch/.../checkpoint-325). Leave empty to start fresh."
+            placeholder="/fs/scratch/PAS2699/harvest_jobs/outputs/classify/.../checkpoint-325"
+            value={String(val("checkpoint", ""))}
+            onChange={(e) => set("checkpoint", e.currentTarget.value)}
+          />
+
           <Divider label="Additional Parameters" labelPosition="left" />
 
-          {/* Supported params hint box */}
           {modelInfo && modelInfo.params && modelInfo.params.length > 0 && (
             <Paper withBorder p="sm" radius="md" bg="blue.0">
               <Text size="xs" fw={600} mb={6}>Supported parameters for {modelInfo.label}:</Text>
@@ -324,7 +320,6 @@ export default function TrainingPanel({ config, onChange, onSave, step }: StepPa
             </Paper>
           )}
 
-          {/* Dynamic key-value pairs */}
           {(val("extra_params", []) as {key: string; value: string}[]).map((pair, i) => (
             <Group key={i} gap="xs" align="flex-end">
               <TextInput
