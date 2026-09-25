@@ -1,8 +1,8 @@
 import type { Route } from "./+types/runs";
-import { AppShell, Container, Title, Text, Button, Group, Card, ThemeIcon, ActionIcon, Badge, Stack, Collapse, Loader, Modal, Code, ScrollArea } from "@mantine/core";
-import { IconActivity, IconArrowLeft, IconRefresh, IconChevronDown, IconChevronRight, IconPlayerStop, IconFileText } from "@tabler/icons-react";
+import { AppShell, Container, Title, Text, Button, Group, Card, ThemeIcon, ActionIcon, Badge, Stack, Collapse, Loader, Modal, Code, ScrollArea, TextInput, Select } from "@mantine/core";
+import { IconActivity, IconArrowLeft, IconRefresh, IconChevronDown, IconChevronRight, IconPlayerStop, IconFileText, IconSearch } from "@tabler/icons-react";
 import { useNavigate } from "react-router";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { apiFetch } from "../lib/api";
 import TopNav from "../components/TopNav";
 import ThemeToggle from "../components/ThemeToggle";
@@ -29,6 +29,14 @@ const stepColor = (s: string) => {
   if (s === "cancelled") return "orange";
   return "gray";
 };
+
+const STATUS_OPTIONS = ["RUNNING", "COMPLETED", "FAILED", "CANCELLED"];
+const SORT_OPTIONS = [
+  { value: "created_desc", label: "Newest first" },
+  { value: "created_asc", label: "Oldest first" },
+  { value: "name_asc", label: "Name (A–Z)" },
+  { value: "name_desc", label: "Name (Z–A)" },
+];
 
 // Modal that fetches and shows a step's failure detail: our recorded error,
 // Tapis' outcome summary, and the container's stdout/stderr (tapisjob.out).
@@ -163,6 +171,30 @@ export default function Runs({ loaderData }: Route.ComponentProps) {
 
   const [stopping, setStopping] = useState<number | null>(null);
 
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<string | null>(null);
+  const [sortBy, setSortBy] = useState<string>("created_desc");
+
+  const visibleRuns = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    let result = runs.filter((r: any) => {
+      if (statusFilter && (r.status || "").toUpperCase() !== statusFilter) return false;
+      if (!q) return true;
+      const name = r.template_name || r.name || "";
+      return name.toLowerCase().includes(q) || String(r.run_id).includes(q);
+    });
+    result = [...result].sort((a: any, b: any) => {
+      switch (sortBy) {
+        case "name_asc": return (a.template_name || a.name || "").localeCompare(b.template_name || b.name || "");
+        case "name_desc": return (b.template_name || b.name || "").localeCompare(a.template_name || a.name || "");
+        case "created_asc": return new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime();
+        case "created_desc":
+        default: return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime();
+      }
+    });
+    return result;
+  }, [runs, search, statusFilter, sortBy]);
+
   const refresh = useCallback(async () => {
     setRefreshing(true);
     try {
@@ -222,8 +254,37 @@ export default function Runs({ loaderData }: Route.ComponentProps) {
           {runs.length === 0 ? (
             <Text c="dimmed" ta="center" py="xl">No runs yet. Execute a workflow to see it here.</Text>
           ) : (
-            <Stack gap="sm">
-              {runs.map((r: any) => {
+            <>
+              <Group mb="lg" gap="sm" wrap="wrap">
+                <TextInput
+                  placeholder="Search runs..."
+                  leftSection={<IconSearch size={16} />}
+                  value={search}
+                  onChange={(e) => setSearch(e.currentTarget.value)}
+                  style={{ flex: 1, minWidth: 200 }}
+                />
+                <Select
+                  placeholder="All statuses"
+                  data={STATUS_OPTIONS}
+                  value={statusFilter}
+                  onChange={setStatusFilter}
+                  clearable
+                  w={160}
+                />
+                <Select
+                  data={SORT_OPTIONS}
+                  value={sortBy}
+                  onChange={(v) => setSortBy(v || "created_desc")}
+                  allowDeselect={false}
+                  w={170}
+                />
+              </Group>
+
+              {visibleRuns.length === 0 ? (
+                <Text c="dimmed" ta="center" py="xl">No runs match your filters.</Text>
+              ) : (
+                <Stack gap="sm">
+                  {visibleRuns.map((r: any) => {
                 const isRunning = (r.status || '').toUpperCase() === 'RUNNING';
                 return (
                 <Card key={r.run_id} shadow="sm" padding="md" radius="md" withBorder
@@ -265,9 +326,11 @@ export default function Runs({ loaderData }: Route.ComponentProps) {
                     </Collapse>
                   )}
                 </Card>
-                );
-              })}
-            </Stack>
+                    );
+                  })}
+                </Stack>
+              )}
+            </>
           )}
         </Container>
       </AppShell.Main>
