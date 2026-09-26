@@ -1,9 +1,9 @@
 import type { Route } from "./+types/runs.$runId";
-import { AppShell, Container, Text, Group, ThemeIcon, ActionIcon, Badge, Loader, Tooltip, Button, Drawer, Stack, Code, Divider } from "@mantine/core";
-import { IconActivity, IconArrowLeft, IconRefresh, IconSettings, IconEdit, IconRepeat } from "@tabler/icons-react";
+import { AppShell, Container, Text, Group, ThemeIcon, ActionIcon, Badge, Loader, Tooltip, Button, Drawer, Stack, Code, Divider, Modal, Select, JsonInput, Alert } from "@mantine/core";
+import { IconActivity, IconArrowLeft, IconRefresh, IconSettings, IconEdit, IconRepeat, IconPlayerPlay, IconInfoCircle } from "@tabler/icons-react";
 import { useNavigate } from "react-router";
 import { notifications } from "@mantine/notifications";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { ReactFlow, ReactFlowProvider, Background, Controls } from "@xyflow/react";
 import CustomNode from "../components/CustomNode";
 import StepSettingsModal from "../components/StepSettingsModal";
@@ -73,6 +73,241 @@ const RUN_OPTION_FIELDS: { key: string; label: string }[] = [
 const RUN_INFO_FIELDS: { key: string; label: string }[] = [
   { key: "name", label: "Template" },
 ];
+
+// Which steps a resume would re-execute. Mirrors resume_pipeline_run in
+// main.py: every step that never completed, plus — when a checkpoint is chosen
+// — that step and everything downstream of it, whose inputs redoing the
+// checkpoint invalidates. Recomputed here rather than asked of the server so
+// the modal can show what a resume will do BEFORE the user commits to it; the
+// backend stays the authority and recomputes the same set on the request.
+function rerunSet(steps: any[], edges: any[], fromNode: string | null): Set<string> {
+  const rerun = new Set<string>(
+    steps.filter((s: any) => s.status !== "completed").map((s: any) => String(s.node_id))
+  );
+  if (fromNode) {
+    const adj: Record<string, string[]> = {};
+    edges.forEach((e: any) => { (adj[String(e.source)] ||= []).push(String(e.target)); });
+    // `seen` guards the walk rather than trusting the graph to be acyclic —
+    // nothing validates that at save time, and a cycle would hang the browser.
+    const seen = new Set<string>();
+    const stack = [fromNode];
+    while (stack.length) {
+      const node = stack.pop()!;
+      if (seen.has(node)) continue;
+      seen.add(node);
+      rerun.add(node);
+      (adj[node] || []).forEach((t) => stack.push(t));
+    }
+  }
+  const known = new Set(steps.map((s: any) => String(s.node_id)));
+  return new Set([...rerun].filter((k) => known.has(k)));
+}
+
+// Sentinel for the Select's "don't redo anything that succeeded" option. Maps to
+// omitting from_node_id entirely, which is a meaningfully different request from
+// naming a step — not just a different step id — so it needs its own value.
+const CONTINUE = "__continue__";
+
+function ResumeModal({ opened, onClose, runId, detail, template, stepTypes, onResumed }: any) {
+  const steps: any[] = detail?.steps || [];
+  const edges: any[] = template?.edges || [];
+  const incomplete = steps.filter((s) => s.status !== "completed");
+
+  // Label a node the way the canvas does, so the checkpoint list reads as the
+  // same graph the user is looking at behind the modal.
+  const labelFor = useCallback((nodeId: string) => {
+    const node = (template?.nodes || []).find((n: any) => String(n.id) === nodeId);
+    const type = node?.data?.nodeType;
+    const meta = stepTypes.find((s: any) => s.step_type_key === type);
+    return meta?.display_name || type || `Step ${nodeId}`;
+  }, [template, stepTypes]);
+
+  // A failed run opens on its failed step rather than on "continue": the two
+  // resume identically (a failed step never completed, so it re-runs either
+  // way), but naming it is what reveals the config editor — and a run that
+  // broke on a bad parameter is exactly the case for changing one.
+  const failedNode = steps.find((s) => s.status === "failed");
+  const initialFrom = failedNode ? String(failedNode.node_id)
+    : incomplete.length ? CONTINUE
+    : String(steps[0]?.node_id ?? CONTINUE);
+
+  const [from, setFrom] = useState<string>(initialFrom);
+  const [configText, setConfigText] = useState<string>("");
+  const [submitting, setSubmitting] = useState(false);
+
+  // The node's DESIGN-TIME config, not run_step.config: a step's config row is
+  // rewritten with fully resolved inputs as it runs, so the stored value is the
+  // last attempt's resolved paths. The backend resets to this same frozen
+  // config, so this is what the redo will actually start from.
+  const frozenConfigFor = useCallback((nodeId: string) => {
+    const node = (detail?.frozen_config?.nodes || []).find((n: any) => String(n.id) === nodeId);
+    return node?.inputs || {};
+  }, [detail]);
+
+  // Reset the form whenever the modal reopens — otherwise it reopens holding the
+  // previous attempt's checkpoint and an edited config for a different step.
+  useEffect(() => {
+    if (!opened) return;
+    setFrom(initialFrom);
+    setConfigText(
+      initialFrom === CONTINUE ? "" : JSON.stringify(frozenConfigFor(initialFrom), null, 2)
+    );
+  // initialFrom is derived from `detail`, which polls; depending on it would
+  // reset the user's selection mid-edit on every refresh.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [opened]);
+
+  const fromNode = from === CONTINUE ? null : from;
+  const rerun = useMemo(() => rerunSet(steps, edges, fromNode), [steps, edges, fromNode]);
+  const preserved = steps.filter((s) => !rerun.has(String(s.node_id)));
+
+  const configError = useMemo(() => {
+    if (!fromNode || !configText.trim()) return null;
+    try {
+      const parsed = JSON.parse(configText);
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        return "Configuration must be a JSON object.";
+      }
+      return null;
+    } catch {
+      return "Not valid JSON.";
+    }
+  }, [fromNode, configText]);
+
+  const onPickStep = (value: string | null) => {
+    const next = value || CONTINUE;
+    setFrom(next);
+    setConfigText(next === CONTINUE ? "" : JSON.stringify(frozenConfigFor(next), null, 2));
+  };
+
+  const submit = async () => {
+    if (configError) return;
+    setSubmitting(true);
+    try {
+      const body: any = {};
+      if (fromNode) body.from_node_id = Number(fromNode);
+      // Only send a config override when it actually differs from the frozen
+      // config — an unchanged round-trip would still be a legitimate override,
+      // but sending it makes the run's history claim a change that wasn't one.
+      if (fromNode && configText.trim()) {
+        const parsed = JSON.parse(configText);
+        if (JSON.stringify(parsed) !== JSON.stringify(frozenConfigFor(fromNode))) {
+          body.step_config = { [fromNode]: parsed };
+        }
+      }
+      const res = await apiFetch(`/api/pipeline-runs/${runId}/resume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `Could not resume the run (HTTP ${res.status}).`);
+      }
+      const result = await res.json();
+      notifications.show({
+        color: "blue",
+        title: "Run resumed",
+        message: `${result.steps_rerunning.length} step(s) re-running, `
+          + `${result.steps_preserved.length} preserved.`,
+      });
+      onClose();
+      onResumed();
+    } catch (e: any) {
+      notifications.show({
+        color: "red",
+        title: "Could not resume",
+        message: e?.message || "Unknown error",
+      });
+    }
+    setSubmitting(false);
+  };
+
+  const options = [
+    ...(incomplete.length
+      ? [{ value: CONTINUE, label: "Continue where it stopped — redo nothing that succeeded" }]
+      : []),
+    ...steps.map((s: any) => ({
+      value: String(s.node_id),
+      label: `Redo ${labelFor(String(s.node_id))} (${s.status}) and everything after it`,
+    })),
+  ];
+
+  return (
+    <Modal opened={opened} onClose={onClose} size="lg" title={`Resume run #${runId}`}>
+      <Stack gap="md">
+        <Select
+          label="Resume from"
+          description="Steps before this point keep the output they already produced."
+          data={options}
+          value={from}
+          onChange={onPickStep}
+          allowDeselect={false}
+        />
+
+        <div>
+          <Text size="sm" fw={600} mb={6}>
+            Will re-run ({rerun.size})
+          </Text>
+          <Group gap={6}>
+            {steps.filter((s: any) => rerun.has(String(s.node_id))).map((s: any) => (
+              <Badge key={s.node_id} color="blue" variant="light">
+                {labelFor(String(s.node_id))}
+              </Badge>
+            ))}
+            {rerun.size === 0 && <Text size="sm" c="dimmed">Nothing — this run is already complete.</Text>}
+          </Group>
+        </div>
+
+        <div>
+          <Text size="sm" fw={600} mb={6}>
+            Preserved ({preserved.length})
+          </Text>
+          <Group gap={6}>
+            {preserved.map((s: any) => (
+              <Badge key={s.node_id} color="teal" variant="light">
+                {labelFor(String(s.node_id))}
+              </Badge>
+            ))}
+            {preserved.length === 0 && <Text size="sm" c="dimmed">None — every step re-runs.</Text>}
+          </Group>
+        </div>
+
+        {fromNode && (
+          <JsonInput
+            label={`Configuration for ${labelFor(fromNode)}`}
+            description="Applies to this resume only — the saved template is unchanged."
+            value={configText}
+            onChange={setConfigText}
+            error={configError}
+            autosize
+            minRows={4}
+            maxRows={14}
+            formatOnBlur
+          />
+        )}
+
+        <Alert icon={<IconInfoCircle size={16} />} color="gray" variant="light" p="xs">
+          <Text size="xs">
+            Resuming continues this same run. To start over instead, close this and use
+            Start over — that launches a separate run and leaves this one's record intact.
+          </Text>
+        </Alert>
+
+        <Group justify="flex-end">
+          <Button variant="default" onClick={onClose}>Cancel</Button>
+          <Button
+            onClick={submit}
+            disabled={submitting || rerun.size === 0 || !!configError}
+            leftSection={submitting ? <Loader size={12} /> : <IconPlayerPlay size={14} />}
+          >
+            {submitting ? "Resuming…" : "Resume"}
+          </Button>
+        </Group>
+      </Stack>
+    </Modal>
+  );
+}
 
 function Flow({ runId, detail, stepTypes, template }: any) {
   // node_id -> run status (as strings the CustomNode understands)
@@ -246,6 +481,7 @@ export default function RunView({ loaderData }: Route.ComponentProps) {
   const [refreshing, setRefreshing] = useState(false);
   const [configOpened, setConfigOpened] = useState(false);
   const [rerunning, setRerunning] = useState(false);
+  const [resumeOpened, setResumeOpened] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -312,6 +548,11 @@ export default function RunView({ loaderData }: Route.ComponentProps) {
 
   const status = (detail?.status || "").toUpperCase();
   const canRerun = status === "FAILED" || status === "CANCELLED";
+  // Resuming is offered for any run that isn't in flight — including a COMPLETED
+  // one, where it means "redo this step and everything after it" rather than
+  // "carry on". Only a RUNNING run has nothing to resume: it has to be stopped
+  // first, which the backend also enforces.
+  const canResume = !!status && status !== "RUNNING";
 
   return (
     <AppShell header={{ height: 60 }} padding="0">
@@ -334,12 +575,21 @@ export default function RunView({ loaderData }: Route.ComponentProps) {
             )}
           </Group>
           <Group gap="sm">
-            {canRerun && (
-              <Button size="xs" color="blue" variant="light"
-                leftSection={rerunning ? <Loader size={12} /> : <IconRepeat size={14} />}
-                disabled={rerunning} onClick={handleRerun}>
-                {rerunning ? 'Starting…' : 'Re-run'}
+            {canResume && (
+              <Button size="xs" color="blue"
+                leftSection={<IconPlayerPlay size={14} />}
+                onClick={() => setResumeOpened(true)}>
+                Resume
               </Button>
+            )}
+            {canRerun && (
+              <Tooltip label="Launch this template again as a new run, from the first step">
+                <Button size="xs" color="blue" variant="light"
+                  leftSection={rerunning ? <Loader size={12} /> : <IconRepeat size={14} />}
+                  disabled={rerunning} onClick={handleRerun}>
+                  {rerunning ? 'Starting…' : 'Start over'}
+                </Button>
+              </Tooltip>
             )}
             <Tooltip label="View configuration">
               <ActionIcon variant="light" color="gray" onClick={() => setConfigOpened(true)}>
@@ -356,6 +606,16 @@ export default function RunView({ loaderData }: Route.ComponentProps) {
           </Group>
         </Group>
       </AppShell.Header>
+
+      <ResumeModal
+        opened={resumeOpened}
+        onClose={() => setResumeOpened(false)}
+        runId={runId}
+        detail={detail}
+        template={template}
+        stepTypes={stepTypes}
+        onResumed={load}
+      />
 
       <Drawer opened={configOpened} onClose={() => setConfigOpened(false)} title="Run configuration" position="right">
         <Stack gap="sm">

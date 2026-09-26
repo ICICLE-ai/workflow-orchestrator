@@ -1057,6 +1057,72 @@ paths:
       tags:
       - pipeline-runs
       security: *id001
+  /api/workflow-templates/{template_version_id}/local-bundle:
+    get:
+      summary: Export Local Bundle
+      description: "Export this template as a portable execution plan for self-hosted nodes.\n\nThe platform's\
+        \ normal path submits every step as a Tapis job; this returns\nthe same DAG as a fully-resolved\
+        \ local plan the `runner/` Apptainer image\nexecutes on hardware the user owns, with no Tapis\
+        \ API involved at run time.\nSee engine/local_bundle.py for the plan's shape and docs/local-deployment.md\n\
+        for the workflow around it.\n\nThe three path parameters are only DEFAULTS baked into the file\
+        \ \u2014 the\nrunner's own flags override them \u2014 so one exported bundle is reusable\nacross\
+        \ nodes with different layouts.\n\n`download=false` returns the same JSON inline (no attachment\
+        \ header), which\nis what the UI uses to preview export warnings before offering the file."
+      operationId: export_local_bundle_api_workflow_templates__template_version_id__local_bundle_get
+      parameters:
+      - name: template_version_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Template Version Id
+      - name: data_root
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ./data
+          title: Data Root
+      - name: workdir
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ./wf-local
+          title: Workdir
+      - name: images_dir
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ./images
+          title: Images Dir
+      - name: download
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: true
+          title: Download
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+        '404':
+          description: Not found, or not visible to the calling user.
+      tags:
+      - workflow-templates
+      security: *id001
   /api/pipeline-runs/{template_version_id}/execute:
     post:
       summary: Execute Workflow
@@ -1119,6 +1185,58 @@ paths:
         schema:
           type: integer
           title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+        '404':
+          description: Not found, or not visible to the calling user.
+      tags:
+      - pipeline-runs
+      security: *id001
+  /api/pipeline-runs/{run_id}/resume:
+    post:
+      summary: Resume Pipeline Run
+      description: "Resume a stopped or failed run, keeping the work it already did.\n\nCompleted steps\
+        \ keep their status and their recorded outputs, so the DAG\npicks up where it left off rather\
+        \ than recomputing hours of finished work.\nEverything being redone is reset to `pending` and\
+        \ the orchestrator is\nstarted again against this SAME run_id \u2014 no new run row, so the run's\n\
+        history stays one thread.\n\nNo orchestration logic is special-cased for this: dag_orchestrator_workflow\n\
+        already advances only `pending` nodes whose dependencies are all `completed`,\nand reads each\
+        \ upstream output from run_step.outputs. Pre-seeding the run\nwith the completed steps intact\
+        \ is therefore all a resume has to do.\n\nWhich steps re-execute:\n  * every step that never completed\
+        \ (failed / cancelled / blocked /\n    pending) \u2014 the run cannot reach a terminal state while\
+        \ any of them is\n    unfinished, so they run whether or not a checkpoint was given;\n  * plus,\
+        \ when `from_node_id` is given, that step and every step downstream\n    of it, including ones\
+        \ that had completed \u2014 their inputs are exactly what\n    redoing the checkpoint invalidates.\n\
+        \nTo start over instead, launch the template again\n(`POST /api/pipeline-runs/{template_version_id}/execute`):\
+        \ that creates a\nseparate run and leaves this one's record intact."
+      operationId: resume_pipeline_run_api_pipeline_runs__run_id__resume_post
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Run Id
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/ResumeRequest'
+              - type: 'null'
+              title: Req
       responses:
         '200':
           description: Successful Response
@@ -1622,6 +1740,29 @@ components:
       - position
       - data
       title: NodeModel
+    ResumeRequest:
+      properties:
+        from_node_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: From Node Id
+        options:
+          anyOf:
+          - $ref: '#/components/schemas/RunOptions'
+          - type: 'null'
+        step_config:
+          anyOf:
+          - additionalProperties:
+              additionalProperties: true
+              type: object
+            type: object
+          - type: 'null'
+          title: Step Config
+      type: object
+      title: ResumeRequest
+      description: "Body for `POST /api/pipeline-runs/{run_id}/resume`. Every field optional \u2014\n\
+        an empty body resumes the run without redoing anything already completed."
     RunOptions:
       properties:
         slurm_account:
@@ -1811,8 +1952,10 @@ tags:
   description: Create, read, version, publish and clone workflow templates. A *template* is a named graph;
     each save creates a new version sharing one `template_id`.
 - name: pipeline-runs
-  description: Launch, monitor, and stop executions. A *run* freezes a template version's config at launch,
-    so editing the template later never changes a run in flight.
+  description: 'Launch, monitor, stop and resume executions. A *run* freezes a template version''s config
+    at launch, so editing the template later never changes a run in flight. A stopped or failed run can
+    be resumed from any step: the steps that already completed keep their outputs, and only the checkpoint
+    and what depends on it re-execute.'
 - name: step-registry
   description: The catalogue of available step types and port data types, synced from `backend/steps/*/step.json`
     at startup.

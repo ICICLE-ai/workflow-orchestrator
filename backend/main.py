@@ -59,8 +59,11 @@ OPENAPI_TAGS = [
         "Create, read, version, publish and clone workflow templates. A *template* "
         "is a named graph; each save creates a new version sharing one `template_id`."},
     {"name": "pipeline-runs", "description":
-        "Launch, monitor, and stop executions. A *run* freezes a template version's "
-        "config at launch, so editing the template later never changes a run in flight."},
+        "Launch, monitor, stop and resume executions. A *run* freezes a template "
+        "version's config at launch, so editing the template later never changes a "
+        "run in flight. A stopped or failed run can be resumed from any step: the "
+        "steps that already completed keep their outputs, and only the checkpoint "
+        "and what depends on it re-execute."},
     {"name": "step-registry", "description":
         "The catalogue of available step types and port data types, synced from "
         "`backend/steps/*/step.json` at startup."},
@@ -1497,6 +1500,236 @@ def stop_pipeline_run(run_id: int, db: Session = Depends(get_db), user: AppUser 
         "message": "Run stopped.",
         "run_id": run_id,
         "tapis_jobs_cancelled": cancelled_jobs,
+    }
+
+
+class ResumeRequest(BaseModel):
+    """Body for `POST /api/pipeline-runs/{run_id}/resume`. Every field optional —
+    an empty body resumes the run without redoing anything already completed."""
+    # Checkpoint: the step to resume FROM. That step re-executes from scratch,
+    # and so does everything downstream of it, since redoing it invalidates the
+    # inputs they consumed. Steps upstream keep the outputs they already
+    # produced. Omit to redo nothing that succeeded — only the steps that never
+    # finished (failed / cancelled / blocked / pending) run.
+    from_node_id: Optional[int] = None
+    # Run-level overrides merged into the run's frozen_config before resuming,
+    # for fixing the setting that broke the run (a wrong archive_dir, an exec
+    # system that was down). Fields left unset keep the run's original value.
+    options: Optional[RunOptions] = None
+    # Per-step config overrides keyed by node id (as a string). Only accepted
+    # for steps that are re-executing — overriding a preserved step's config
+    # would describe a run that never happened. This is what makes "fix the
+    # failing step's parameters and pick up from there" possible without editing
+    # the template, which would create a new version and so a different DAG than
+    # the one this run froze.
+    step_config: Optional[Dict[str, Dict[str, Any]]] = None
+
+
+def _run_dag_config(db: Session, run: PipelineRun, user: AppUser) -> dict:
+    """The dag_config a run executes: its frozen_config, or one rebuilt from the
+    template version for runs predating frozen_config carrying the graph.
+
+    Rebuilt nodes/edges come from the template; the run's own stored keys (run
+    options) still win, so a rebuild never silently re-derives a setting the run
+    was actually launched with.
+    """
+    cfg = dict(run.frozen_config or {})
+    if cfg.get("nodes"):
+        return cfg
+    rebuilt = _build_dag_config(db, run.template_version_id, user)
+    rebuilt.update({k: v for k, v in cfg.items() if k not in ("nodes", "edges")})
+    return rebuilt
+
+
+def _downstream_nodes(edges: list, start: str) -> set:
+    """Every node reachable forward from `start` along `edges` (start excluded).
+
+    `seen` guards the traversal rather than trusting the graph to be acyclic —
+    nothing validates that at save time, and a cycle here would hang the request.
+    """
+    adj: Dict[str, List[str]] = {}
+    for e in edges:
+        adj.setdefault(str(e["from"]), []).append(str(e["to"]))
+    seen: set = set()
+    stack = list(adj.get(start, []))
+    while stack:
+        node = stack.pop()
+        if node in seen:
+            continue
+        seen.add(node)
+        stack.extend(adj.get(node, []))
+    return seen
+
+
+@app.post("/api/pipeline-runs/{run_id}/resume")
+def resume_pipeline_run(
+    run_id: int,
+    req: Optional[ResumeRequest] = None,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
+    """Resume a stopped or failed run, keeping the work it already did.
+
+    Completed steps keep their status and their recorded outputs, so the DAG
+    picks up where it left off rather than recomputing hours of finished work.
+    Everything being redone is reset to `pending` and the orchestrator is
+    started again against this SAME run_id — no new run row, so the run's
+    history stays one thread.
+
+    No orchestration logic is special-cased for this: dag_orchestrator_workflow
+    already advances only `pending` nodes whose dependencies are all `completed`,
+    and reads each upstream output from run_step.outputs. Pre-seeding the run
+    with the completed steps intact is therefore all a resume has to do.
+
+    Which steps re-execute:
+      * every step that never completed (failed / cancelled / blocked /
+        pending) — the run cannot reach a terminal state while any of them is
+        unfinished, so they run whether or not a checkpoint was given;
+      * plus, when `from_node_id` is given, that step and every step downstream
+        of it, including ones that had completed — their inputs are exactly what
+        redoing the checkpoint invalidates.
+
+    To start over instead, launch the template again
+    (`POST /api/pipeline-runs/{template_version_id}/execute`): that creates a
+    separate run and leaves this one's record intact.
+    """
+    from datetime import datetime, timezone
+    from engine.tapis import cancel_tapis_job
+
+    # Resuming re-executes steps under this user's Tapis token and allocation,
+    # so it is scoped exactly like stopping.
+    run = run_or_404(db, user, run_id)
+    req = req or ResumeRequest()
+
+    if (run.status or "").upper() == "RUNNING":
+        raise HTTPException(
+            status_code=409,
+            detail="Run is still in flight. Stop it before resuming.",
+        )
+
+    dag_config = _run_dag_config(db, run, user)
+    edges = dag_config.get("edges", [])
+
+    steps = db.query(RunStep).filter(RunStep.run_id == run_id).all()
+    by_key = {str(s.node_id): s for s in steps}
+    if not by_key:
+        raise HTTPException(status_code=400, detail="Run has no steps to resume.")
+
+    reset = {key for key, s in by_key.items() if (s.status or "") != "completed"}
+    checkpoint = None
+    if req.from_node_id is not None:
+        checkpoint = str(req.from_node_id)
+        if checkpoint not in by_key:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Step {checkpoint} is not part of run {run_id}.",
+            )
+        reset.add(checkpoint)
+        reset |= _downstream_nodes(edges, checkpoint)
+    # An edge may name a node this run has no step row for (a template edited
+    # between launch and resume). Only steps that exist can be reset.
+    reset &= set(by_key)
+
+    if not reset:
+        raise HTTPException(
+            status_code=400,
+            detail=("Every step in this run already completed. Pass from_node_id "
+                    "to re-execute part of it, or launch the template again to start over."),
+        )
+
+    overrides = req.step_config or {}
+    # Plain sort, not key=int: these keys came straight off the request body and
+    # are not guaranteed to be numeric — this is the path that reports that.
+    not_rerunning = sorted(set(overrides) - reset)
+    if not_rerunning:
+        raise HTTPException(
+            status_code=400,
+            detail=("Config overrides target steps that aren't being re-executed: "
+                    f"{', '.join(not_rerunning)}. Resume from an earlier step to change them."),
+        )
+
+    # Unwind the previous attempt before starting a new one. A FAILED run's
+    # orchestrator raised the moment one node failed, but its SIBLING child
+    # workflows were left running — and they write step status against this same
+    # run_id, so without this they would race the resumed attempt and overwrite
+    # its results with the old one's. (A stopped run has already been through
+    # this; cancelling a terminal workflow again is harmless.)
+    if run.dbos_workflow_id:
+        try:
+            DBOS.cancel_workflow(run.dbos_workflow_id, cancel_children=True)
+        except Exception as e:
+            print(f"[resume] DBOS.cancel_workflow failed for {run.dbos_workflow_id}: {type(e).__name__}")
+    for key in reset:
+        step = by_key[key]
+        # Terminal steps have no live job; anything else may still hold one, and
+        # an orphaned Tapis job would keep burning the allocation after the redo
+        # submits its replacement.
+        if step.tapis_job_uuid and (step.status or "") not in ("completed", "failed"):
+            cancel_tapis_job(step.tapis_job_uuid, run_id)
+
+    frozen_inputs = {
+        str(n["id"]): (n.get("inputs") or {}) for n in dag_config.get("nodes", [])
+    }
+    for key in reset:
+        step = by_key[key]
+        step.status = "pending"
+        # run_step.config is rewritten with fully RESOLVED inputs as a step runs
+        # (engine.transactions.update_step_inputs), so what sits on the row now
+        # is the last attempt's resolved paths, not the node's design-time
+        # config. Restoring the frozen config makes the redo resolve its edge
+        # inputs fresh instead of inheriting stale ones from the attempt that
+        # failed.
+        step.config = {**frozen_inputs.get(key, {}), **overrides.get(key, {})}
+        step.outputs = {}
+        step.error_message = None
+        step.tapis_job_uuid = None
+        step.tapis_job_status = None
+        step.started_at = None
+        step.completed_at = None
+
+    if req.options is not None:
+        for key, value in req.options.model_dump(exclude_none=True).items():
+            dag_config[key] = value
+
+    # A resume is a NEW DBOS workflow, never a restart of the old one. Child
+    # node-workflows are keyed `{orchestrator_id}-{node_key}` (see
+    # dag_orchestrator_workflow), so reusing the previous id would have DBOS hand
+    # back the previous attempt's memoized result for the very step the caller
+    # asked to redo. The superseded ids are kept on frozen_config so the run
+    # still traces back to every attempt that built it.
+    dbos_workflow_id = f"dag-{uuid.uuid4()}"
+    history = list(dag_config.get("resume_history") or [])
+    if run.dbos_workflow_id:
+        history.append({
+            "dbos_workflow_id": run.dbos_workflow_id,
+            "resumed_at": datetime.now(timezone.utc).isoformat(),
+            "from_node_id": checkpoint,
+        })
+    dag_config["resume_history"] = history
+    # Tells the orchestrator to adopt this run instead of creating another (see
+    # create_run_for_template's run_id short-circuit).
+    dag_config["run_id"] = run_id
+
+    # Reassigned rather than mutated in place: a JSON column is not
+    # mutation-tracked, so editing run.frozen_config's dict would never be
+    # written back.
+    run.frozen_config = dag_config
+    run.dbos_workflow_id = dbos_workflow_id
+    run.status = "RUNNING"
+    run.completed_at = None
+    db.commit()
+
+    with SetWorkflowID(dbos_workflow_id):
+        DBOS.start_workflow(dag_orchestrator_workflow, dag_config)
+
+    return {
+        "message": "Run resumed.",
+        "run_id": run_id,
+        "dbos_workflow_id": dbos_workflow_id,
+        "resumed_from": checkpoint,
+        # key=int so these read as node ids, not as text ("10" before "9").
+        "steps_rerunning": sorted(reset, key=int),
+        "steps_preserved": sorted(set(by_key) - reset, key=int),
     }
 
 

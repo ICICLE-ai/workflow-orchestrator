@@ -201,12 +201,17 @@ instead, so you can inspect what they produced.
 )
 
 The ⚙ in the header shows the run's frozen launch configuration; **Edit Template**
-jumps back to the canvas; a `FAILED` or `CANCELLED` run gets a **Re-run** button
-that relaunches it with the same settings.
+jumps back to the canvas. A run that isn't in flight gets a **Resume** button —
+carry on from where it stopped, or redo a chosen step and everything after it —
+and a `FAILED` or `CANCELLED` one also gets **Start over**, which relaunches it
+from the beginning as a new run with the same settings. See
+[Stop, resume, and recover](#stop-resume-and-recover).
 
-**Past Runs** (`/runs`) lists every run with its status. Expand a finished run
-for its per-step breakdown and logs, hit **View Live Graph** on an active one, or
-**Stop** it — which cancels the workflow and any in-flight Tapis job.
+**Past Runs** (`/runs`) lists every run with its status, with a search box and
+filters for status and ordering. Expand a finished run for its per-step
+breakdown and logs, hit **View Live Graph** on an active one, **Stop** it — which
+cancels the workflow and any in-flight Tapis job — or **Resume** a stopped or
+failed one straight from the list.
 
 ![Past runs](<img width="1919" height="1019" alt="Screenshot 2026-08-14 200941" src="https://github.com/user-attachments/assets/faf7c864-693f-4d05-9289-4fadf44886f8" />
 
@@ -317,15 +322,42 @@ than by a Tapis rejection minutes into the run.
 | *"X" output "y" is not saved to a sink* | Add a sink node (e.g. **💾 Write Results (JSON)**) and wire the output into it — or press **Save Anyway** if leaving it unconsumed is deliberate. |
 | *Cannot connect: … is incompatible with …* | The two ports' data types don't match. Insert an adapter step, or use a port of the right type. |
 
-## Stop, re-run, and recover
+## Stop, resume, and recover
 
 - **Stop** a running run from the *Past Runs* list. This cancels the durable
-  workflow, its child step workflows, and any in-flight Tapis job. It can't be
-  undone.
-- **Re-run** appears on a `FAILED` or `CANCELLED` run's page and relaunches the
-  same template version with the same Tapis options — no re-entering settings.
-- To change something first, use **Edit Template** on the run page: it opens the
-  exact version that ran.
+  workflow, its child step workflows, and any in-flight Tapis job. Stopping is
+  not the end of the run — a stopped run can be resumed.
+- **Resume** picks the run back up without repeating work it already did. Steps
+  that completed keep their outputs; only what never finished runs again. It's
+  on the run's page, and on any `FAILED` or `CANCELLED` run in the *Past Runs*
+  list for the one-click case.
+- **Start over** appears on a `FAILED` or `CANCELLED` run's page and launches the
+  same template version with the same Tapis options as a *separate* run, leaving
+  this one's record intact — no re-entering settings.
+
+### Resuming from a checkpoint
+
+The run page's **Resume** button opens a picker with two kinds of choice:
+
+- *Continue where it stopped* — every completed step is kept, and the steps that
+  failed, were cancelled, or never started run again.
+- *Redo `<step>` and everything after it* — re-runs that step even if it already
+  succeeded, along with everything downstream of it, because redoing a step
+  invalidates the inputs its dependents consumed. Steps upstream are untouched.
+
+Either way the modal lists exactly which steps will re-run and which are
+preserved before you commit.
+
+When you name a step, you can also edit **that step's configuration** right in
+the modal. The change applies to this resume only — the saved template is not
+touched — which is the quick path for a run that broke on a bad parameter: fix
+the value, resume from that step, and the hours of completed work before it are
+not repeated. To change the workflow itself instead, use **Edit Template** on the
+run page; it opens the exact version that ran, and saving creates a new version
+to launch fresh.
+
+Resuming continues the *same* run rather than creating a new one, so a run's
+history stays one thread no matter how many attempts it took.
 
 ## Add a new step type
 

@@ -1,6 +1,7 @@
 import type { Route } from "./+types/runs";
-import { AppShell, Container, Title, Text, Button, Group, Card, ThemeIcon, ActionIcon, Badge, Stack, Collapse, Loader, Modal, Code, ScrollArea, TextInput, Select } from "@mantine/core";
-import { IconActivity, IconArrowLeft, IconRefresh, IconChevronDown, IconChevronRight, IconPlayerStop, IconFileText, IconSearch } from "@tabler/icons-react";
+import { AppShell, Container, Title, Text, Button, Group, Card, ThemeIcon, ActionIcon, Badge, Stack, Collapse, Loader, Modal, Code, ScrollArea, TextInput, Select, Tooltip } from "@mantine/core";
+import { IconActivity, IconArrowLeft, IconRefresh, IconChevronDown, IconChevronRight, IconPlayerStop, IconFileText, IconSearch, IconPlayerPlay } from "@tabler/icons-react";
+import { notifications } from "@mantine/notifications";
 import { useNavigate } from "react-router";
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { apiFetch } from "../lib/api";
@@ -170,6 +171,7 @@ export default function Runs({ loaderData }: Route.ComponentProps) {
   const [refreshing, setRefreshing] = useState(false);
 
   const [stopping, setStopping] = useState<number | null>(null);
+  const [resuming, setResuming] = useState<number | null>(null);
 
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
@@ -203,6 +205,40 @@ export default function Runs({ loaderData }: Route.ComponentProps) {
     } catch { /* ignore */ }
     setRefreshing(false);
   }, []);
+
+  // One-click "carry on from where it stopped" — no checkpoint, so nothing that
+  // already succeeded is redone. Choosing a checkpoint (and changing a step's
+  // config along with it) needs the graph for context, so that lives on the run
+  // page's Resume modal rather than here.
+  const handleResume = useCallback(async (runId: number) => {
+    setResuming(runId);
+    try {
+      const r = await apiFetch(`/api/pipeline-runs/${runId}/resume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err.detail || `Could not resume the run (HTTP ${r.status}).`);
+      }
+      const result = await r.json();
+      notifications.show({
+        color: "blue",
+        title: `Run #${runId} resumed`,
+        message: `${result.steps_rerunning.length} step(s) re-running, `
+          + `${result.steps_preserved.length} preserved.`,
+      });
+    } catch (e: any) {
+      notifications.show({
+        color: "red",
+        title: "Could not resume",
+        message: e?.message || "Unknown error",
+      });
+    }
+    setResuming(null);
+    refresh();
+  }, [refresh]);
 
   const handleStop = useCallback(async (runId: number) => {
     if (!window.confirm(`Stop run #${runId}? This cancels the workflow and any running Tapis job. This cannot be undone.`)) return;
@@ -286,6 +322,7 @@ export default function Runs({ loaderData }: Route.ComponentProps) {
                 <Stack gap="sm">
                   {visibleRuns.map((r: any) => {
                 const isRunning = (r.status || '').toUpperCase() === 'RUNNING';
+                const canResume = ['FAILED', 'CANCELLED'].includes((r.status || '').toUpperCase());
                 return (
                 <Card key={r.run_id} shadow="sm" padding="md" radius="md" withBorder
                   style={isRunning ? { borderColor: '#3b82f6' } : undefined}>
@@ -311,6 +348,16 @@ export default function Runs({ loaderData }: Route.ComponentProps) {
                           onClick={() => handleStop(r.run_id)}>
                           {stopping === r.run_id ? 'Stopping…' : 'Stop'}
                         </Button>
+                      )}
+                      {canResume && (
+                        <Tooltip label="Carry on from where it stopped, keeping completed steps">
+                          <Button size="xs" color="blue" variant="light"
+                            leftSection={resuming === r.run_id ? <Loader size={12} /> : <IconPlayerPlay size={14} />}
+                            disabled={resuming === r.run_id}
+                            onClick={() => handleResume(r.run_id)}>
+                            {resuming === r.run_id ? 'Resuming…' : 'Resume'}
+                          </Button>
+                        </Tooltip>
                       )}
                       <Button size="xs" variant={isRunning ? 'filled' : 'light'}
                         color={isRunning ? 'blue' : 'gray'}
