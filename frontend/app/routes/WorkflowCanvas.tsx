@@ -8,6 +8,7 @@ import { apiFetch, fetchCurrentUser } from '../lib/api';
 import { TAPIS_SYSTEMS, defaultWorkDir } from '../lib/tapis';
 import TopNav from '../components/TopNav';
 import ThemeToggle from '../components/ThemeToggle';
+import WebhookTriggerPanel from '../components/WebhookTriggerPanel';
 
 const nodeTypes = { customNode: CustomNode };
 
@@ -1062,6 +1063,16 @@ function Flow() {
           <Button color="green" fullWidth mt="md" leftSection={<IconPlayerPlay size={16} />} onClick={handleRun}>
             Launch Run
           </Button>
+
+          {/* The other way this workflow can start: a webhook URL something
+              outside the Studio POSTs to. It lives here rather than in its own
+              dialog because a trigger fires with run settings, and these are
+              them — the URL is generated with whatever is on screen above. */}
+          <WebhookTriggerPanel
+            opened={runSettingsOpened}
+            templateVersionId={templateData?.template_version_id}
+            runOptions={runOptions}
+          />
         </Stack>
       </Drawer>
 

@@ -2076,6 +2076,400 @@
         ]
       }
     },
+    "/api/workflow-templates/{template_version_id}/triggers": {
+      "post": {
+        "tags": [
+          "triggers"
+        ],
+        "summary": "Create Trigger",
+        "description": "Create a webhook trigger for this workflow, or return the one that exists.\n\nIdempotent per (workflow lineage, user): opening Run Settings twice must show\nthe SAME URL, not mint a second one and leave the first copied into someone's\ncron job with no way to find it again. Use `/rotate` to deliberately replace\nthe token, and DELETE to remove the trigger.\n\nRequires only READ access to the template \u2014 the same access that already\nallows running it \u2014 because the run a fire produces is the caller's own.",
+        "operationId": "create_trigger_api_workflow_templates__template_version_id__triggers_post",
+        "parameters": [
+          {
+            "name": "template_version_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Template Version Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/TriggerCreate"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      },
+      "get": {
+        "tags": [
+          "triggers"
+        ],
+        "summary": "List Template Triggers",
+        "description": "The caller's triggers for this workflow's lineage (any version).\n\nKeyed on the lineage, not the version passed in: a trigger created on v1 must\nstill be found when the canvas is showing v4, or the UI would offer to create\na duplicate for every version.",
+        "operationId": "list_template_triggers_api_workflow_templates__template_version_id__triggers_get",
+        "parameters": [
+          {
+            "name": "template_version_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Template Version Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/triggers/{trigger_id}": {
+      "patch": {
+        "tags": [
+          "triggers"
+        ],
+        "summary": "Update Trigger",
+        "description": "Enable/disable a trigger, or re-capture the run settings it fires with.\n\nDisabling is the reversible half of revocation: the URL stops working but the\ntoken survives, so re-enabling restores the copies already handed out. Rotate\ninstead when the URL itself has leaked.",
+        "operationId": "update_trigger_api_triggers__trigger_id__patch",
+        "parameters": [
+          {
+            "name": "trigger_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Trigger Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TriggerUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "triggers"
+        ],
+        "summary": "Delete Trigger",
+        "description": "Remove a trigger. Runs it already started are untouched.",
+        "operationId": "delete_trigger_api_triggers__trigger_id__delete",
+        "parameters": [
+          {
+            "name": "trigger_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Trigger Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/triggers/{trigger_id}/rotate": {
+      "post": {
+        "tags": [
+          "triggers"
+        ],
+        "summary": "Rotate Trigger Token",
+        "description": "Replace the webhook's token, invalidating every copy of the old URL.",
+        "operationId": "rotate_trigger_token_api_triggers__trigger_id__rotate_post",
+        "parameters": [
+          {
+            "name": "trigger_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Trigger Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/triggers/{trigger_id}/delete": {
+      "post": {
+        "tags": [
+          "triggers"
+        ],
+        "summary": "Delete Trigger Via Post",
+        "operationId": "delete_trigger_via_post_api_triggers__trigger_id__delete_post",
+        "parameters": [
+          {
+            "name": "trigger_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Trigger Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/webhooks/{token}": {
+      "post": {
+        "tags": [
+          "triggers"
+        ],
+        "summary": "Fire Webhook",
+        "description": "Launch the workflow behind this webhook token. **No credential required.**\n\nThe only public endpoint that does real work, so every refusal is a 404 with\nthe same body \u2014 unknown token, disabled trigger, deleted workflow. Any other\nanswer would turn this into an oracle for finding live tokens.\n\nThe run is created exactly as the Launch Run button would create it, owned by\nthe trigger's owner and using the run options frozen on the trigger. The\nrequest body (if any) is read and discarded: it is untrusted input from an\nunauthenticated caller, and letting it reach run options would hand over the\ncharge account and archive paths.",
+        "operationId": "fire_webhook_api_webhooks__token__post",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
     "/api/tapis-files/list": {
       "get": {
         "summary": "Tapis Files List",
@@ -3047,6 +3441,54 @@
         ],
         "title": "TapisLoc"
       },
+      "TriggerCreate": {
+        "properties": {
+          "trigger_type": {
+            "type": "string",
+            "title": "Trigger Type",
+            "default": "webhook"
+          },
+          "run_options": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunOptions"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "TriggerCreate"
+      },
+      "TriggerUpdate": {
+        "properties": {
+          "is_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Enabled"
+          },
+          "run_options": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunOptions"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "TriggerUpdate"
+      },
       "ValidationError": {
         "properties": {
           "loc": {
@@ -3180,6 +3622,10 @@
     {
       "name": "step-registry",
       "description": "The catalogue of available step types and port data types, synced from `backend/steps/*/step.json` at startup."
+    },
+    {
+      "name": "triggers",
+      "description": "Ways for something outside the Studio to start a run. A *webhook* trigger is an autogenerated secret URL that launches the workflow when POSTed to \u2014 the run executes as the trigger's owner, with the run settings frozen on the trigger. `POST /api/webhooks/{token}` is the only endpoint here that needs no credential: the token is the credential."
     },
     {
       "name": "secrets",

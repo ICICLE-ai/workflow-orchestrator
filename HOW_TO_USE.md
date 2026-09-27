@@ -167,6 +167,10 @@ Click **Launch Run**. If the canvas differs from the last saved version (an
 to keep those edits as a new version or run them without recording one — either
 way **what runs is what's on screen**, never a stale saved graph.
 
+The drawer's **Trigger** section, below Launch Run, hands you a webhook URL that
+starts this same workflow from outside the Studio — see [Trigger a workflow from
+outside (webhook)](#trigger-a-workflow-from-outside-webhook).
+
 ### Watch it run
 
 Launching takes you straight to `/runs/{id}`: the same graph, read-only, with
@@ -297,6 +301,62 @@ CPU steps on OSC still writes all its artifacts to one place.
 Whatever you choose, each step archives under
 `.../{run_id}/{step_type_key}/{node_id}`, so one run's artifacts never collide
 with another's.
+
+## Trigger a workflow from outside (webhook)
+
+Press **Run Workflow** on a saved template and the Run Settings drawer's
+**Trigger** section hands you a webhook — a secret URL, generated for you the
+first time you look:
+
+```bash
+curl -X POST "https://<backend>/api/webhooks/<token>"
+```
+
+POSTing to it starts a run with no browser and no login, so a field sensor, a
+cron job on your own machine, or another pipeline can launch the workflow. Use
+**Copy URL** or **Copy curl** in the panel.
+
+What a call runs, and as whom:
+
+- **Your run.** It fires as *you* — your Tapis token, your allocation, your entry
+  in *Past Runs* — whoever calls the URL.
+- **The latest saved version.** A webhook belongs to the workflow, not to the
+  version you happened to create it on, so saving a new version changes what the
+  URL runs. The panel names the version a call would execute. Drafts (from *run
+  without saving*) are skipped.
+- **The run settings frozen on it** — the exec systems, queues, account and
+  archive paths that were on screen when it was created. Edit those fields and
+  press **Use current run settings** to re-capture them; the panel warns when
+  they have drifted.
+- **Nothing from the request.** Any JSON body you POST is read and discarded: an
+  unauthenticated caller must not be able to redirect a charge account or an
+  archive path.
+
+The URL is the only credential involved, so treat it like a password:
+
+| Control | Effect |
+| --- | --- |
+| **Enabled** switch | Turns the URL off and on. Copies already handed out work again once re-enabled. |
+| **Regenerate** (↻) | Issues a new URL and kills the old one — what to press if a URL leaks. |
+| **Delete** (🗑) | Removes the webhook. Runs it already started are untouched. |
+
+Unknown, deleted and disabled tokens all answer `404 No such webhook`, with
+nothing to tell them apart, so the endpoint can't be used to hunt for live URLs.
+Two fires of the same webhook less than `WEBHOOK_MIN_INTERVAL_SECONDS` apart
+(default 5) are refused with `429`, so a retry loop on the caller's end can't
+spend an allocation queueing one run per request.
+
+Backend configuration: set `WEBHOOK_BASE_URL` when the backend is reachable from
+outside on a different host than `APP_BASE_URL` (a tunnel, a reverse proxy) — the
+URL handed to the user is built from it.
+
+A *trigger* is the entity behind all of this, and webhook is its first kind. The
+API is shaped for the ones that follow (a schedule, a file arriving, an upstream
+run finishing): they are new `trigger_type` values on
+`POST /api/workflow-templates/{template_version_id}/triggers`, not new endpoints.
+See `WorkflowTrigger` in `backend/models.py` for the model and its security
+notes, and the `triggers` tag in [docs/openapi.yaml](docs/openapi.yaml) for the
+full surface.
 
 ## Run configuration reference (per step)
 
