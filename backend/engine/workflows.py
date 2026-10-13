@@ -5,6 +5,8 @@ graph, event-driven waiting, per-node child workflows) is unchanged; only the
 transaction layer it calls was rewritten to target the Harvest schema, and the
 run is created from an EXISTING template rather than from the POST body.
 """
+import json
+
 from dbos import DBOS, SetWorkflowID
 
 from engine.transactions import (
@@ -24,10 +26,11 @@ from engine.transactions import (
     update_run_status,
     update_run_step_status,
 )
-from engine.tapis import TapisV3, copy_tapis_path, resolve_latest_file
+from engine.tapis import TapisV3, copy_tapis_path, resolve_latest_file, use_real_tapis
 from engine import inline_steps
 from engine import job_spec
 from engine import secrets as secrets_store
+from engine import single_job
 
 
 # Context keys owned by get_run_archive_context and derived from each other —
@@ -362,6 +365,251 @@ def execute_node_workflow(node_key: str, run_id: int, orchestrator_workflow_id: 
         raise e
 
 
+# --- Single-job execution mode -----------------------------------------------
+# One Tapis job runs the whole pipeline, instead of one job per node. The plan is
+# built and frozen onto the run at launch (engine/single_job.py, called from
+# main._launch_run), so everything here works from dag_config["single_job"] and
+# never re-derives it — what executes is exactly what the user was shown before
+# they launched.
+
+
+def _upload_pipeline_plan(plan: dict, run_id: int) -> str:
+    """Put the bundle on Tapis so the job can stage it, and return its URI.
+
+    The plan file lands beside the run's archive dir, which makes it part of the
+    run's record: the exact graph this job executed stays recoverable next to its
+    outputs, rather than living only in a database column.
+    """
+    from annotation_adapter import _tapis_upload
+
+    system = plan["exec"]["archive_system"]
+    path = plan["pipeline_path"]
+    uri = f"tapis://{system}/{path.lstrip('/')}"
+    if not use_real_tapis():
+        print(f"[single-job] MOCK mode — not uploading the plan; pretending it is at {uri}")
+        return uri
+    token = _require_token(run_id)
+    _tapis_upload(system, path, json.dumps(plan["bundle"], indent=2).encode("utf-8"),
+                  token, "application/json")
+    print(f"[single-job] uploaded plan -> {uri}")
+    return uri
+
+
+def _require_token(run_id: int) -> str:
+    from engine.tapis import TapisAuthError
+    from engine import tapis_auth
+
+    token = tapis_auth.get_token_for_run(run_id)
+    if not token:
+        raise TapisAuthError(
+            "Tapis authentication required — the run owner's session has expired. "
+            "Please log in again and re-run."
+        )
+    return token
+
+
+def _fetch_run_report(plan: dict, run_id: int) -> dict | None:
+    """The runner's own report for this job, read back out of the archive.
+
+    The runner writes run-<id>-report.json under its workdir with each step's
+    status, timing and resolved output paths (see runner/wf_runner's
+    write_report). Reading it is what lets a single job still populate PER-STEP
+    detail in the UI rather than one opaque green bar.
+
+    Best effort on purpose: a missing or unreadable report must not fail a run
+    whose job Tapis has already reported FINISHED. The caller falls back to the
+    output locations baked into the plan, which are correct by construction —
+    the report only ever refines them (a file_glob port resolved to its real
+    filename, say).
+    """
+    if not use_real_tapis():
+        return None
+    from annotation_adapter import _tapis_get_bytes
+
+    system = plan["exec"]["archive_system"]
+    path = f"{plan['exec']['archive_dir'].rstrip('/')}/run-{run_id}-report.json"
+    try:
+        raw = _tapis_get_bytes(system, path, _require_token(run_id))
+        return json.loads(raw)
+    except Exception as e:
+        print(f"[single-job] could not read the run report at tapis://{system}{path}: "
+              f"{type(e).__name__}: {e} — falling back to the plan's own output paths.")
+        return None
+
+
+def _archived(plan: dict, run_id: int, plan_path: str) -> str:
+    """A path in the plan -> the tapis:// URI it archived to."""
+    return single_job.archived_uri(
+        plan["exec"]["archive_system"], plan["exec"]["archive_dir"], plan_path, run_id,
+    )
+
+
+def _single_job_spec(plan: dict, run_id: int, pipeline_uri: str) -> tuple:
+    """The frozen job spec, finished off with the two things planning can't know:
+    where the uploaded plan ended up, and the real values of the secrets it names.
+
+    Returns (spec, secret_values) — the values so the caller can keep them out of
+    any logging of the spec, exactly as the per-step path does.
+
+    NOT job_spec.render(): that helper also rewrites the fields a per-step job
+    derives from its render context, and would DELETE execSystem{Exec,Input,Output}Dir
+    here (it drops each one whose context value is absent, and this context has
+    only the plan URI). Those fields are already final in the frozen spec, and
+    losing them is not neutral — Tapis fills anything a job omits from the APP
+    definition, so the job would silently inherit whatever paths wf-runner was
+    registered with instead of the ones computed for this run's exec system. See
+    engine.transactions._exec_system_dirs. The plan has exactly one placeholder,
+    so substitute that one and nothing else.
+    """
+    spec = json.loads(json.dumps(plan["job"]).replace("${pipeline_uri}", pipeline_uri))
+    team_id = secrets_store.get_run_team_id(run_id)
+    spec, secret_values = job_spec.resolve_secret_refs(spec, team_id)
+    spec["name"] = f"wf-pipeline-{run_id}"
+    return spec, secret_values
+
+
+def _complete_single_job(plan: dict, run_id: int, job_uuid: str) -> None:
+    """Record per-step results once the one job has finished.
+
+    Every node gets a real status and real outputs, so the run page reads the
+    same whichever mode produced it:
+
+      * a job step's outputs come from the runner's report when it could be read,
+        translated from plan paths to their archived URIs, else from the plan's
+        own baked paths;
+      * a source node republishes its configured location, as it would in
+        per-step mode;
+      * a sink is COPIED to its configured destination here. The runner's own copy
+        only reached the job directory — off platform the data root is the user's
+        real destination, but on platform it is a location inside the job, so this
+        is the step that actually delivers the artifact.
+    """
+    report = _fetch_run_report(plan, run_id)
+    reported = {}
+    if report:
+        reported = {str(s.get("node_id")): s for s in report.get("steps") or [] if s.get("node_id")}
+
+    for node in plan["bundle"].get("nodes", []):
+        node_key = str(node["node_id"])
+        kind = node.get("kind")
+        if kind == "job":
+            baked = {port: _archived(plan, run_id, path) for port, path in (node.get("outputs") or {}).items()}
+            step_report = reported.get(node_key) or {}
+            for port, actual in (step_report.get("outputs") or {}).items():
+                # The report's paths are the authoritative ones: a port whose
+                # artifact the step named itself at run time (file_glob) only
+                # resolves once it has run.
+                baked[port] = _archived(plan, run_id, actual)
+            baked["archive_uri"] = _archived(plan, run_id, node.get("job_dir") or "")
+            baked["job_uuid"] = job_uuid
+            status = (step_report.get("status") or "completed").lower()
+            if status not in ("completed", "skipped", "dry-run"):
+                update_run_step_status(run_id, node_key, "failed",
+                                       error_message=step_report.get("error") or "Step failed inside the pipeline job")
+                continue
+            complete_run_step(run_id, node_key, baked)
+        elif kind == "sink":
+            dest = node.get("platform_dest") or ""
+            src = _archived(plan, run_id, node.get("source") or "")
+            copied = False
+            if src and dest and use_real_tapis():
+                copied = bool(copy_tapis_path(src, dest, run_id, replace=True))
+                print(f"[single-job] sink copy {src} -> {dest}: {'OK' if copied else 'FAILED'}")
+            complete_run_step(run_id, node_key, {"path": dest, "source": src, "copied": copied})
+        else:
+            # Source / design-time passthrough: same outputs per-step mode would
+            # publish — its own configured location on every declared port.
+            path = node.get("platform_path") or ""
+            outputs = {"path": path}
+            for port in (node.get("outputs") or {}):
+                outputs.setdefault(port, path)
+            complete_run_step(run_id, node_key, outputs)
+
+
+def run_pipeline_as_single_job(dag_config: dict, run_id: int) -> dict:
+    """Execute the whole DAG as ONE Tapis job.
+
+    Deliberately linear, with no per-node child workflows: there is one job to
+    submit and one to poll, and the ordering of the steps inside it is the
+    runner's business (the plan carries the topological order). The DAG-advancing
+    machinery in dag_orchestrator_workflow has nothing to do here.
+    """
+    plan = dag_config.get("single_job")
+    if not plan:
+        raise RuntimeError(
+            "This run was launched in single-job mode but carries no frozen plan. "
+            "Re-launch it from the template."
+        )
+    if plan.get("blockers"):
+        # Launch already refuses these (main._launch_run); re-checked here because
+        # a resume replays a frozen config that could predate a step change.
+        raise RuntimeError("Cannot run as a single job: " + " ".join(plan["blockers"]))
+
+    job_keys = [s["node_key"] for s in plan.get("steps", [])]
+    print(f"[single-job] run {run_id}: {len(job_keys)} job step(s), "
+          f"{plan['resources']['nodeCount']} node(s) x {plan['resources']['coresPerNode']} core(s), "
+          f"{plan['resources']['memoryMB']}MB, {plan['resources']['maxMinutes']}min, "
+          f"gpus={plan['resources']['gpus']} on {plan['exec']['exec_system']}"
+          f"/{plan['exec']['exec_queue'] or 'default'}")
+
+    try:
+        pipeline_uri = _upload_pipeline_plan(plan, run_id)
+        spec, secret_values = _single_job_spec(plan, run_id, pipeline_uri)
+        job_uuid = TapisV3.submit_job(spec, run_id, redact=secret_values)
+    except Exception as e:
+        # Nothing was submitted, so every step failed before it started. Marking
+        # them all (rather than only the first) is what keeps the run page honest.
+        for node_key in job_keys:
+            update_run_step_status(run_id, node_key, "failed", error_message=str(e))
+        update_run_status(run_id, "FAILED")
+        raise
+
+    # The single job IS every step's job, so each one carries its uuid — that is
+    # what lets Stop cancel the pipeline and the run page link to the job.
+    for node_key in job_keys:
+        update_run_step_status(run_id, node_key, "running",
+                               tapis_job_uuid=job_uuid, tapis_job_status="PENDING")
+
+    consecutive_poll_errors = 0
+    while True:
+        try:
+            status = TapisV3.check_job_status(job_uuid, run_id)
+            consecutive_poll_errors = 0
+        except Exception as poll_err:
+            consecutive_poll_errors += 1
+            print(f"[single-job] status poll error for {job_uuid} "
+                  f"(attempt {consecutive_poll_errors}): {type(poll_err).__name__}")
+            if consecutive_poll_errors >= 100:
+                for node_key in job_keys:
+                    update_run_step_status(run_id, node_key, "failed",
+                                           error_message=f"Lost contact with Tapis: {poll_err}")
+                update_run_status(run_id, "FAILED")
+                raise RuntimeError(f"Lost contact with Tapis while polling job {job_uuid}: {poll_err}")
+            DBOS.sleep(3)
+            continue
+
+        for node_key in job_keys:
+            update_run_step_status(run_id, node_key, "running", tapis_job_status=status)
+        if status == "FINISHED":
+            break
+        if status in ("FAILED", "CANCELLED"):
+            for node_key in job_keys:
+                update_run_step_status(run_id, node_key, "failed",
+                                       error_message=f"Pipeline job {job_uuid} ended as {status}")
+            update_run_status(run_id, "FAILED")
+            raise RuntimeError(f"Tapis Job {job_uuid} failed with status: {status}")
+        DBOS.sleep(3)
+
+    _complete_single_job(plan, run_id, job_uuid)
+
+    statuses = get_run_steps_status(run_id)
+    if any(s == "failed" for s in statuses.values()):
+        update_run_status(run_id, "FAILED")
+        raise RuntimeError("Pipeline job finished but one or more steps reported failure.")
+    update_run_status(run_id, "COMPLETED")
+    return {"status": "SUCCESS", "job_uuid": job_uuid, "mode": "single_job"}
+
+
 @DBOS.workflow()
 def dag_orchestrator_workflow(dag_config: dict):
     """Orchestrate execution of a full template DAG.
@@ -373,6 +621,15 @@ def dag_orchestrator_workflow(dag_config: dict):
     w_id = DBOS.workflow_id
 
     run_id = create_run_for_template(w_id, dag_config)
+
+    # Single-job mode replaces this orchestration entirely — one job, submitted
+    # and polled once (see run_pipeline_as_single_job). Branching here rather
+    # than at the HTTP layer keeps one entry point for launch, stop and resume:
+    # all three already start THIS workflow, and each stays correct for either
+    # mode without knowing which it is.
+    if (dag_config.get("execution_mode") or "per_step") == "single_job":
+        return run_pipeline_as_single_job(dag_config, run_id)
+
     nodes = {str(node["id"]): node for node in dag_config.get("nodes", [])}
     edges = dag_config.get("edges", [])
 

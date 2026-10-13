@@ -1363,6 +1363,97 @@ def export_local_bundle(
     )
 
 
+def _deployment_context(db: Session, user: AppUser, template_version_id: int,
+                        data_root: str, workdir: str, images_dir: str):
+    """Bundle + per-image rows + runner commands, shared by the info and zip
+    endpoints so the listing the user reads is exactly what the zip contains."""
+    from engine import deployment, local_bundle, tapis_auth
+
+    template = template_or_404(db, user, template_version_id)
+    try:
+        bundle = local_bundle.build_bundle(
+            db, template, data_root=data_root, workdir=workdir, images_dir=images_dir
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    step_types = {n["step_type"] for n in bundle["nodes"]}
+    registries = {
+        r.step_type_key: r
+        for r in db.query(StepTypeRegistry).filter(StepTypeRegistry.step_type_key.in_(step_types)).all()
+    }
+    # Optional: without a token (mock mode, logged out) the app lookups are
+    # skipped and each row says so, rather than the whole export failing.
+    token = tapis_auth.get_token_for_user(user, db)
+    rows = deployment.step_images(bundle, registries, token, local_bundle._load_image_sources())
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", template.name or "workflow").strip("-") or "workflow"
+    bundle_file = f"{safe_name}-v{template.version}-bundle.json"
+    runner = deployment.runner_instructions(
+        data_root, workdir, images_dir, bundle_file, bundle.get("secrets_required") or []
+    )
+    return template, bundle, rows, runner, token, safe_name
+
+
+@app.get("/api/workflow-templates/{template_version_id}/deployment")
+def deployment_info(
+    template_version_id: int,
+    data_root: str = "./data",
+    workdir: str = "./wf-local",
+    images_dir: str = "./images",
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
+    """How to run this template off-platform: the runner as a Docker or an
+    Apptainer image (with ready-to-paste commands), and every step's container
+    image as named by its live Tapis app definition, with the command that
+    fetches it. See engine/deployment.py.
+    """
+    from engine import deployment
+
+    _, bundle, rows, runner, _, _ = _deployment_context(
+        db, user, template_version_id, data_root, workdir, images_dir
+    )
+    for row in rows:
+        row["pull_command"] = deployment.pull_command(row, images_dir)
+    return {
+        "runner": runner,
+        "images": rows,
+        "secrets_required": bundle.get("secrets_required") or [],
+        "warnings": bundle.get("warnings") or [],
+    }
+
+
+@app.get("/api/workflow-templates/{template_version_id}/deployment.zip")
+def deployment_zip(
+    template_version_id: int,
+    data_root: str = "./data",
+    workdir: str = "./wf-local",
+    images_dir: str = "./images",
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
+    """Everything to run this template on an offline node, as one zip: the
+    bundle, every step image the server can fetch, the runner, run scripts and
+    a README saying where each piece goes.
+
+    Streamed, since the images make it gigabytes. Downloading redeems each
+    image's source link once — postit links are use-limited, so prefer keeping
+    the zip over re-downloading it.
+    """
+    from fastapi.responses import StreamingResponse
+    from engine import deployment
+
+    template, bundle, rows, runner, token, safe_name = _deployment_context(
+        db, user, template_version_id, data_root, workdir, images_dir
+    )
+    filename = f"{safe_name}-v{template.version}-deploy.zip"
+    return StreamingResponse(
+        deployment.stream_zip(bundle, rows, token, runner),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 class RunOptions(BaseModel):
     # Run-level Tapis values substituted into job specs (${slurm_account} etc.)
     # and stored on the run's frozen_config. All optional; sensible defaults
@@ -1382,11 +1473,59 @@ class RunOptions(BaseModel):
     gpu_exec_system: Optional[str] = None
     gpu_exec_queue: Optional[str] = None
     work_dir: Optional[str] = None
+    # How the pipeline is submitted:
+    #   "per_step"   (default) one Tapis job per node — steps get exactly the
+    #                resources they ask for and independent branches overlap.
+    #   "single_job" ONE Tapis job runs the whole DAG sequentially, sized from
+    #                the pipeline-wide maximum. One queue wait instead of N,
+    #                which on a busy allocation is usually the difference that
+    #                matters. See engine/single_job.py.
+    execution_mode: Optional[str] = None
     archive_system: Optional[str] = None
     # Base directory step outputs archive under (run_id/node_id is still
     # appended beneath it for isolation). Optional override — when omitted,
     # the base is derived from work_dir instead (see get_run_archive_context).
     archive_dir: Optional[str] = None
+
+
+@app.post("/api/workflow-templates/{template_version_id}/single-job-preview",
+          tags=["pipeline-runs"])
+def preview_single_job(template_version_id: int, options: Optional[RunOptions] = None,
+                       db: Session = Depends(get_db),
+                       user: AppUser = Depends(get_current_user)):
+    """What submitting this whole pipeline as ONE Tapis job would look like.
+
+    Answers the two questions that decide whether the mode is usable for a given
+    workflow, before anything is launched:
+
+      * **how big is the merged job** — the max-across-steps envelope, with the
+        arithmetic behind each number and which steps drove it, so a surprising
+        request can be traced to the step responsible;
+      * **can this pipeline run that way at all** — `blockers` is non-empty when
+        it can't (an inline step, an image with no source), and launching in
+        single-job mode would be refused with the same list.
+
+    Deliberately the SAME planner the launch freezes onto the run
+    (engine/single_job.plan), called with no run_id. A preview produced by
+    different code than the thing it previews would be worth very little.
+
+    The bundle the runner executes is omitted from the response — it is large,
+    and `GET .../local-bundle` already returns exactly that plan.
+    """
+    from engine import single_job
+
+    template = template_or_404(db, user, template_version_id)
+    cfg = options.model_dump(exclude_none=True) if options is not None else {}
+    cfg.setdefault("slurm_account", template.allocation_account or "uot260")
+    cfg.setdefault("tapis_username", user.username)
+
+    try:
+        plan = single_job.plan(db, template, cfg)
+    except ValueError as e:
+        # build_bundle's own refusal (a template with no nodes).
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return {k: v for k, v in plan.items() if k != "bundle"}
 
 
 def _launch_run(db: Session, template_version_id: int, user: AppUser,
@@ -1425,6 +1564,23 @@ def _launch_run(db: Session, template_version_id: int, user: AppUser,
     dag_config["owner_id"] = user.user_id
     dag_config.setdefault("tapis_username", user.username)
 
+    # Single-job mode is validated BEFORE any row is written: a pipeline this
+    # mode cannot express (an inline step, a container image with nowhere to come
+    # from) should be a 400 on the launch request, not a run that exists only to
+    # fail. The same planner then runs again below with the real run_id, because
+    # the archive location and the job name are derived from it.
+    single_job_mode = (dag_config.get("execution_mode") or "per_step") == "single_job"
+    if single_job_mode:
+        from engine import single_job as single_job_planner
+
+        precheck = single_job_planner.plan(db, template, dag_config)
+        if precheck["blockers"]:
+            raise HTTPException(
+                status_code=400,
+                detail="This workflow cannot run as a single Tapis job. "
+                       + " ".join(precheck["blockers"]),
+            )
+
     # Pick the DBOS workflow id ourselves (instead of letting DBOS generate one)
     # so we can create the pipeline_run row referencing it before the workflow
     # starts, and pass the resulting run_id back in this same response.
@@ -1436,7 +1592,14 @@ def _launch_run(db: Session, template_version_id: int, user: AppUser,
         name=dag_config.get("name", "DAG Run"),
         status="RUNNING",
         dbos_workflow_id=dbos_workflow_id,
-        frozen_config=dag_config,
+        # A COPY, not dag_config itself. This dict keeps being added to below (the
+        # single-job plan, and run_id after the commit), and if the column held the
+        # very same object then SQLAlchemy's "has this attribute changed?" check
+        # would compare the mutated dict against itself, see no change, and skip
+        # the UPDATE — which is exactly how the frozen plan silently failed to
+        # persist. A JSON column is not mutation-tracked; only assigning a
+        # genuinely different object marks it dirty.
+        frozen_config=dict(dag_config),
     )
     db.add(run)
     db.flush()  # assign run.run_id
@@ -1449,6 +1612,19 @@ def _launch_run(db: Session, template_version_id: int, user: AppUser,
             config=node.get("inputs", {}) or {},
             outputs={},
         ))
+
+    if single_job_mode:
+        # Freeze the whole plan — the merged resource envelope, the Tapis job
+        # spec, and the bundle the runner executes — onto the run. The engine
+        # reads it and never re-derives it, so what executes is exactly what the
+        # preview showed, and the run stays reproducible after the template moves
+        # on. Reassigned as a NEW dict because a JSON column isn't
+        # mutation-tracked (the same note applies in resume_pipeline_run).
+        dag_config["single_job"] = single_job_planner.plan(
+            db, template, dag_config, run_id=run.run_id
+        )
+        run.frozen_config = dict(dag_config)  # a different object than the one above
+
     db.commit()
 
     # Tell the orchestrator to reuse this run_id instead of creating its own
@@ -1644,6 +1820,22 @@ def resume_pipeline_run(
 
     reset = {key for key, s in by_key.items() if (s.status or "") != "completed"}
     checkpoint = None
+
+    # A run that executed as ONE Tapis job has no checkpoint inside it: the steps
+    # ran sequentially within a single allocation that is now gone, so there is
+    # no partial state to pick up from and nothing was preserved beyond what
+    # archived. Resuming it re-runs the whole pipeline, and asking for a
+    # checkpoint is refused rather than silently ignored.
+    if (dag_config.get("execution_mode") or "per_step") == "single_job":
+        if req.from_node_id is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="This run executed as a single Tapis job, which has no per-step "
+                       "checkpoint inside it. Resume without from_node_id to re-run the "
+                       "whole pipeline, or launch the template per step to get checkpoints.",
+            )
+        reset = set(by_key)
+
     if req.from_node_id is not None:
         checkpoint = str(req.from_node_id)
         if checkpoint not in by_key:

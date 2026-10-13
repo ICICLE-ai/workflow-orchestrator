@@ -8,6 +8,7 @@ platform at run time.
 |---|---|
 | `wf_runner/` | The orchestrator. Pure Python standard library — no pip install. |
 | `wf_runner.def` | Apptainer definition for the runner image. |
+| `Dockerfile` | Docker image for the runner, with Apptainer inside to start each step. Run with `--privileged`. |
 
 The bundle format, and how it's derived from the same step definitions the
 platform executes, is documented in

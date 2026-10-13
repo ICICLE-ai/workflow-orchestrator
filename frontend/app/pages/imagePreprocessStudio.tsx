@@ -51,9 +51,30 @@ export default function ImagePreprocessStudioPanel({ config, onChange, step, con
   // AND for where operations.json gets saved.
   const system = String(config.source_system ?? "") || wiredLocation?.system || DEFAULT_TAPIS_SYSTEM;
 
-  // Source dir precedence: explicitly browsed value > wired input > schema default.
+  // A browsed source_dir (and the image remembered with it) only holds while
+  // the wiring it was picked under is unchanged. Without this, ANY earlier
+  // browse pinned source_dir forever: re-wiring the input to another directory
+  // moved `system` (which follows the wire) but left the path on the old
+  // folder. A browse records the wired location it was made against
+  // (source_dir_wired_from); when that no longer matches, the wire wins again.
+  // Configs saved before that key existed count as still valid only if the
+  // browsed folder sits inside the currently wired one.
+  const trimSlash = (p: string) => p.replace(/\/+$/, "");
+  const wiredKey = wiredLocation ? `${wiredLocation.system}:${trimSlash(wiredLocation.path)}` : "";
+  const browsedDir = String(config.source_dir ?? "");
+  const browseStillValid = (() => {
+    if (!browsedDir) return false;
+    if (!wiredLocation) return true;
+    if (config.source_dir_wired_from !== undefined) return config.source_dir_wired_from === wiredKey;
+    const wired = trimSlash(wiredLocation.path);
+    const browsed = trimSlash(browsedDir);
+    return browsed === wired || browsed.startsWith(`${wired}/`);
+  })();
+
+  // Source dir precedence: browsed value (still valid for this wiring) > wired
+  // input > schema default.
   const sourceDir =
-    String(config.source_dir ?? "") ||
+    (browseStillValid ? browsedDir : "") ||
     String(wiredDir ?? "") ||
     String(step.config_schema.source_dir?.default ?? "");
   const pipelinePath = field("pipeline_path");
@@ -72,8 +93,35 @@ export default function ImagePreprocessStudioPanel({ config, onChange, step, con
     return dir ? `${dir}/operations.json` : "";
   }, [pipelinePath, sourceDir]);
 
+  // Keep the latest config reachable WITHOUT re-rendering the (expensive)
+  // playground on every keystroke. Typing in the path/system fields updates
+  // `config`, but the memoized <ImagePlayground> below stays stable.
+  const configRef = useRef(config);
+  configRef.current = config;
+
+  const fetchImage = async (sys: string, path: string, mimeType?: string): Promise<File> => {
+    const res = await studioFetch(`/api/tapis-files/content?${qs(sys, path)}`);
+    if (!res.ok) throw new Error(String(res.status));
+    const blob = await res.blob();
+    const name = path.split("/").pop() || path;
+    return new File([blob], name, { type: blob.type || mimeType || "application/octet-stream" });
+  };
+
+  // The image last worked on, remembered on the node config so reopening the
+  // studio brings it back alongside the saved `operations`. Captured once at
+  // mount: the restore below consumes it a single time.
+  // Skipped when the wiring has moved on: the remembered image belongs to the
+  // old directory.
+  const restoreRef = useRef<{ system: string; path: string } | null>(
+    config.last_image_path && (browseStillValid || !wiredLocation)
+      ? { system: String(config.last_image_system || system), path: String(config.last_image_path) }
+      : null
+  );
+
   // Custom FileSource: pickFile() opens the directory browser and resolves the
-  // chosen image as a File (fetched from Tapis via the backend proxy).
+  // chosen image as a File (fetched from Tapis via the backend proxy). While a
+  // restore is pending it resolves the remembered image instead, without
+  // opening the browser.
   const [browserOpen, setBrowserOpen] = useState(false);
   const resolverRef = useRef<((f: File | null) => void) | null>(null);
 
@@ -81,26 +129,61 @@ export default function ImagePreprocessStudioPanel({ config, onChange, step, con
     () => ({
       id: "input-dir",
       label: "Input directory",
-      pickFile: () =>
-        new Promise<File | null>((resolve) => {
+      pickFile: () => {
+        const restore = restoreRef.current;
+        if (restore) {
+          restoreRef.current = null;
+          return fetchImage(restore.system, restore.path).catch(() => {
+            notifications.show({ color: "red", message: `Could not reopen last image ${restore.path}` });
+            return null;
+          });
+        }
+        return new Promise<File | null>((resolve) => {
           resolverRef.current = resolve;
           setBrowserOpen(true);
-        }),
+        });
+      },
     }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     []
   );
 
+  // The playground holds the loaded image in internal state and only exposes
+  // its own "Open image" button as the way in (no initial-image prop), so a
+  // restore clicks that button once it renders; pickFile above answers it.
+  const containerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const root = containerRef.current;
+    if (!root || !restoreRef.current) return;
+    const tryOpen = () => {
+      const btn = Array.from(root.querySelectorAll("button")).find(
+        (b) => b.textContent?.trim() === "Open image"
+      );
+      if (!btn) return false;
+      btn.click();
+      return true;
+    };
+    if (tryOpen()) return;
+    const observer = new MutationObserver(() => {
+      if (tryOpen()) observer.disconnect();
+    });
+    observer.observe(root, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, []);
+
   const finishPick = async (remote: RemoteFile) => {
     setBrowserOpen(false);
-    // The folder we browsed becomes the (read-only) source directory.
-    setField("source_dir", parentOf(remote.path));
+    // The folder we browsed becomes the (read-only) source directory, and the
+    // image itself is remembered for the next time the studio opens.
+    onChange({
+      ...configRef.current,
+      source_dir: parentOf(remote.path),
+      last_image_path: remote.path,
+      last_image_system: system,
+      source_dir_wired_from: wiredKey,
+    });
     try {
-      const res = await studioFetch(`/api/tapis-files/content?${qs(system, remote.path)}`);
-      if (!res.ok) throw new Error(String(res.status));
-      const blob = await res.blob();
-      resolverRef.current?.(
-        new File([blob], remote.name, { type: blob.type || remote.mimeType || "application/octet-stream" })
-      );
+      resolverRef.current?.(await fetchImage(system, remote.path, remote.mimeType));
     } catch {
       notifications.show({ color: "red", message: `Could not load ${remote.name}` });
       resolverRef.current?.(null);
@@ -114,12 +197,6 @@ export default function ImagePreprocessStudioPanel({ config, onChange, step, con
     resolverRef.current?.(null);
     resolverRef.current = null;
   };
-
-  // Keep the latest config reachable WITHOUT re-rendering the (expensive)
-  // playground on every keystroke. Typing in the path/system fields updates
-  // `config`, but the memoized <ImagePlayground> below stays stable.
-  const configRef = useRef(config);
-  configRef.current = config;
 
   const handlePipelineChange = useCallback(
     (p: Pipeline) => onChange({ ...configRef.current, operations: p }),
@@ -203,7 +280,7 @@ export default function ImagePreprocessStudioPanel({ config, onChange, step, con
   };
 
   return (
-    <div style={{ height: "100%" }}>
+    <div ref={containerRef} style={{ height: "100%" }}>
       {mounted ? (
         <Suspense fallback={<Group justify="center" p="xl"><Loader /></Group>}>
           {playground}

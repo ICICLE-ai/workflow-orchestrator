@@ -45,6 +45,36 @@ node. This is deliberate: a bundle is a file that gets downloaded, copied and
 shared, so resolving secrets into it would leak them far more widely than the
 platform ever does.
 
+### Run instructions and the offline zip
+
+Below the bundle buttons, **Run it on your node** offers three tabs. The
+commands in them already use the paths you entered above:
+
+- **Docker:** the runner's Docker image name, how to get it (`docker pull`, or
+  `docker build` from `runner/` when no published image is configured), and the
+  exact `docker run` command. The container runs `--privileged` because each
+  step is an Apptainer container started inside it.
+- **Apptainer:** the same for the runner as a `.sif` (`apptainer pull`, or
+  `apptainer build` from `runner/wf_runner.def`).
+- **Offline zip:** one file with `bundle.json`, every step image the server
+  can fetch (in `images/`), the runner source, `run.sh` / `run-docker.sh` /
+  `pull-images.sh`, and a README saying where each piece goes. It is streamed,
+  because images make it gigabytes. Downloading it redeems each image's link
+  once, so keep the zip rather than downloading it again.
+
+The **Step container images** table lists each `.sif` the workflow needs. Its
+image comes from the step's live Tapis app definition (`containerImage` +
+`runtime`), so it is always what the platform actually runs. Below the table is
+the command that fetches each image into your images dir. A Docker-runtime or
+`docker://` app shows its Docker image name. Reading app definitions needs a
+real Tapis login. Without one, the table falls back to
+`backend/image_sources.json`.
+
+The same data is available from `GET /api/workflow-templates/{id}/deployment` and
+`GET /api/workflow-templates/{id}/deployment.zip`. Configure the published runner
+images with `WF_RUNNER_DOCKER_IMAGE` / `WF_RUNNER_APPTAINER_IMAGE` (see
+`backend/.env.example`).
+
 ## 2. Prepare the node
 
 **Apptainer** on `PATH`, plus:

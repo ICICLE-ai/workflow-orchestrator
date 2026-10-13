@@ -9,6 +9,8 @@ import { TAPIS_SYSTEMS, defaultWorkDir } from '../lib/tapis';
 import TopNav from '../components/TopNav';
 import ThemeToggle from '../components/ThemeToggle';
 import WebhookTriggerPanel from '../components/WebhookTriggerPanel';
+import SingleJobPanel, { type ExecutionMode, type SingleJobPlan } from '../components/SingleJobPanel';
+import DeploymentOptions from '../components/DeploymentOptions';
 
 const nodeTypes = { customNode: CustomNode };
 
@@ -185,6 +187,12 @@ function Flow() {
   // /runs/:runId, which we navigate to as soon as launch succeeds.
   const [running, setRunning] = useState(false);
 
+  // The merged single-job plan the backend would submit, when that mode is
+  // selected. Held here (not just inside the panel) because its `blockers` decide
+  // whether Launch is allowed at all — the same list the launch endpoint would
+  // refuse with, so the button doesn't offer a run that is going to 400.
+  const [singleJobPlan, setSingleJobPlan] = useState<SingleJobPlan | null>(null);
+
   // The graph as of the last load/save (see graphSnapshot). `null` until a
   // template is loaded, and for a brand-new unsaved canvas.
   const [savedSnapshot, setSavedSnapshot] = useState<string | null>(null);
@@ -206,6 +214,10 @@ function Flow() {
     // flight_plan/geospatial go to a CPU queue in the SAME run — previously
     // impossible, since every step either followed one run-level pair or
     // hardcoded its own site in step.json.
+    // Per-step (one Tapis job per node) or single_job (the whole pipeline in one).
+    // Part of runOptions because it IS a run option — it rides to /execute with
+    // the rest, and the backend freezes the merged plan onto the run.
+    execution_mode: 'per_step' as ExecutionMode,
     exec_system: 'pitzer-tapis',
     exec_queue: 'cpu',
     // Blank inherits the CPU pair above, preserving single-target behaviour for
@@ -220,6 +232,11 @@ function Flow() {
     archive_dir: '',
     slurm_account: 'PAS2699',
   });
+
+  // Derived from the two above, so it lives after both: a blocked single-job plan
+  // is what disables Launch.
+  const singleJobMode = runOptions.execution_mode === 'single_job';
+  const singleJobBlocked = singleJobMode && !!singleJobPlan && singleJobPlan.blockers.length > 0;
 
   // "Deploy to my node" — export this version as a portable execution plan for
   // hardware the user owns (backend/engine/local_bundle.py). The paths here are
@@ -610,6 +627,11 @@ function Flow() {
       images_dir: deployOptions.images_dir,
     }).toString();
 
+  // Same stem the backend names its files with, so the commands shown in the
+  // dialog refer to the bundle file the user actually downloaded.
+  const deployFileStem = () =>
+    `${(templateData?.name || 'workflow').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'workflow'}-v${templateData?.version}`;
+
   const loadDeployPreview = async () => {
     if (!templateData) return;
     setDeployLoading(true);
@@ -648,7 +670,7 @@ function Flow() {
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `${templateData.name.replace(/[^A-Za-z0-9._-]+/g, '-')}-v${templateData.version}-bundle.json`;
+      link.download = `${deployFileStem()}-bundle.json`;
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -1060,9 +1082,37 @@ function Flow() {
             value={runOptions.archive_dir}
             onChange={(e) => setRunOptions({ ...runOptions, archive_dir: e.currentTarget.value })}
           />
-          <Button color="green" fullWidth mt="md" leftSection={<IconPlayerPlay size={16} />} onClick={handleRun}>
-            Launch Run
-          </Button>
+          <Divider label="Execution" labelPosition="left" />
+          {/* How the pipeline is submitted — N jobs or one. Sits with the other
+              run settings because the merged job's size is DERIVED from them
+              (the exec target follows whether any step needs a GPU). */}
+          <SingleJobPanel
+            opened={runSettingsOpened}
+            templateVersionId={templateData?.template_version_id}
+            runOptions={runOptions}
+            mode={runOptions.execution_mode as ExecutionMode}
+            onModeChange={(mode) => setRunOptions((prev) => ({ ...prev, execution_mode: mode }))}
+            onPlanChange={setSingleJobPlan}
+          />
+
+          <Tooltip
+            label="This workflow can't run as a single job — see the reasons above."
+            disabled={!singleJobBlocked}
+            multiline
+            w={240}
+            withArrow
+          >
+            <Button
+              color="green"
+              fullWidth
+              mt="md"
+              leftSection={<IconPlayerPlay size={16} />}
+              onClick={handleRun}
+              disabled={singleJobBlocked}
+            >
+              Launch Run
+            </Button>
+          </Tooltip>
 
           {/* The other way this workflow can start: a webhook URL something
               outside the Studio POSTs to. It lives here rather than in its own
@@ -1155,10 +1205,15 @@ function Flow() {
             </Stack>
           )}
 
-          <Text size="xs" c="dimmed">
-            On the node: <code>apptainer run wf-runner.sif bundle.json --data-root {deployOptions.data_root}</code>.
-            See docs/local-deployment.md for building the runner and the step images.
-          </Text>
+          <Divider label="Run it on your node" labelPosition="left" />
+          {deployOpened && templateData && (
+            <DeploymentOptions
+              templateVersionId={templateData.template_version_id}
+              query={deployQuery()}
+              fileStem={deployFileStem()}
+            />
+          )}
+          <Text size="xs" c="dimmed">See docs/local-deployment.md for the full workflow.</Text>
         </Stack>
       </Modal>
 

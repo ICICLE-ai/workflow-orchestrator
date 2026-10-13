@@ -1812,6 +1812,78 @@
         ]
       }
     },
+    "/api/workflow-templates/{template_version_id}/single-job-preview": {
+      "post": {
+        "tags": [
+          "pipeline-runs"
+        ],
+        "summary": "Preview Single Job",
+        "description": "What submitting this whole pipeline as ONE Tapis job would look like.\n\nAnswers the two questions that decide whether the mode is usable for a given\nworkflow, before anything is launched:\n\n  * **how big is the merged job** \u2014 the max-across-steps envelope, with the\n    arithmetic behind each number and which steps drove it, so a surprising\n    request can be traced to the step responsible;\n  * **can this pipeline run that way at all** \u2014 `blockers` is non-empty when\n    it can't (an inline step, an image with no source), and launching in\n    single-job mode would be refused with the same list.\n\nDeliberately the SAME planner the launch freezes onto the run\n(engine/single_job.plan), called with no run_id. A preview produced by\ndifferent code than the thing it previews would be worth very little.\n\nThe bundle the runner executes is omitted from the response \u2014 it is large,\nand `GET .../local-bundle` already returns exactly that plan.",
+        "operationId": "preview_single_job_api_workflow_templates__template_version_id__single_job_preview_post",
+        "parameters": [
+          {
+            "name": "template_version_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Template Version Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RunOptions"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Options"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
     "/api/pipeline-runs/{template_version_id}/execute": {
       "post": {
         "summary": "Execute Workflow",
@@ -3315,6 +3387,17 @@
               }
             ],
             "title": "Work Dir"
+          },
+          "execution_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Mode"
           },
           "archive_system": {
             "anyOf": [

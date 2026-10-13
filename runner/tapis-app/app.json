@@ -1,0 +1,49 @@
+{
+  "id": "wf-runner",
+  "version": "1.0",
+  "description": "Executes a whole Workflow Orchestrator pipeline as a single Tapis job. Runs each step's container in topological order inside one allocation.",
+  "owner": "${apiUserId}",
+  "enabled": true,
+  "runtime": "ZIP",
+  "runtimeVersion": null,
+  "containerImage": "REPLACE-ME: tapis://<system>/<path>/wf-runner-1.0.zip",
+  "jobType": "BATCH",
+  "maxJobs": -1,
+  "maxJobsPerUser": -1,
+  "strictFileInputs": false,
+  "jobAttributes": {
+    "description": "One job, one queue wait, the whole pipeline.",
+    "dynamicExecSystem": false,
+    "execSystemConstraints": null,
+    "isMpi": false,
+    "nodeCount": 1,
+    "coresPerNode": 1,
+    "memoryMB": 4096,
+    "maxMinutes": 60,
+    "archiveOnAppError": true,
+    "fileInputs": [],
+    "fileInputArrays": [],
+    "parameterSet": {
+      "appArgs": [],
+      "containerArgs": [],
+      "schedulerOptions": [],
+      "envVariables": [],
+      "archiveFilter": {
+        "includeLaunchFiles": false,
+        "includes": [],
+        "excludes": []
+      }
+    },
+    "subscriptions": [],
+    "tags": ["workflow-orchestrator", "pipeline"]
+  },
+  "tags": ["workflow-orchestrator"],
+  "notes": {
+    "leaveTheseUnset": [
+      "execSystemId / execSystemLogicalQueue / archiveSystemId / archiveSystemDir",
+      "execSystemExecDir / execSystemInputDir / execSystemOutputDir",
+      "nodeCount / coresPerNode / memoryMB / maxMinutes"
+    ],
+    "why": "Every submitted job sends all of these explicitly: the exec target follows whether any step needs a GPU, the resource fields are the pipeline-wide envelope, and the exec dirs are computed per site (see backend/engine/transactions.py _exec_system_dirs). Tapis fills any field a job OMITS from this definition, so a value baked in here would silently override a run that targets a different site. The numbers above are placeholders Tapis requires, never what a real pipeline job uses."
+  }
+}

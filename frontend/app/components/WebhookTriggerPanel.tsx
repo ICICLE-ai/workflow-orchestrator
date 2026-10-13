@@ -6,7 +6,6 @@ import {
   Badge,
   Button,
   Code,
-  CopyButton,
   Divider,
   Group,
   Loader,
@@ -24,6 +23,7 @@ import {
 } from "@tabler/icons-react";
 import { notifications } from "@mantine/notifications";
 import { apiFetch } from "../lib/api";
+import SafeCopyButton from "./SafeCopyButton";
 
 export interface WebhookTrigger {
   trigger_id: number;
@@ -279,7 +279,7 @@ export default function WebhookTriggerPanel({
           </Code>
 
           <Group gap="xs">
-            <CopyButton value={trigger.webhook_url} timeout={1500}>
+            <SafeCopyButton value={trigger.webhook_url} timeout={1500}>
               {({ copied, copy }) => (
                 <Button
                   size="xs"
@@ -291,8 +291,8 @@ export default function WebhookTriggerPanel({
                   {copied ? "Copied" : "Copy URL"}
                 </Button>
               )}
-            </CopyButton>
-            <CopyButton value={curl} timeout={1500}>
+            </SafeCopyButton>
+            <SafeCopyButton value={curl} timeout={1500}>
               {({ copied, copy }) => (
                 <Button
                   size="xs"
@@ -304,7 +304,7 @@ export default function WebhookTriggerPanel({
                   {copied ? "Copied" : "Copy curl"}
                 </Button>
               )}
-            </CopyButton>
+            </SafeCopyButton>
             <Tooltip label="Generate a new URL and invalidate this one" withArrow>
               <ActionIcon variant="subtle" color="gray" disabled={busy} onClick={rotate}>
                 <IconRefresh size={16} />

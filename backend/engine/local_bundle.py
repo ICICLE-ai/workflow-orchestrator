@@ -118,6 +118,21 @@ def _data_root_path(value: str) -> str:
     return f"{DATA_ROOT}/{stripped}"
 
 
+def _platform_source_path(node_config: dict) -> str:
+    """A node's configured location as the PLATFORM sees it — a full tapis:// URI.
+
+    Mirrors _source_node_outputs in workflows.py: a step whose config_schema has
+    a separate `system` field lets the user type a bare path and pick the system
+    beside it, and every consumer downstream expects the two joined back into one
+    URI. Returns "" when nothing is configured.
+    """
+    path = str((node_config or {}).get("path", "") or "")
+    system = str((node_config or {}).get("system", "") or "")
+    if system and path and "://" not in path:
+        return f"tapis://{system}/{path.lstrip('/')}"
+    return path
+
+
 def _placeholder_keys(template) -> set[str]:
     """Every ${key} referenced anywhere in a job template's string leaves."""
     found: set[str] = set()
@@ -479,6 +494,13 @@ def build_bundle(
                     # say) — re-root it under the data root like a source node.
                     "source": _data_root_path(source),
                     "target": target,
+                    # The pre-re-rooting value, kept so a consumer that runs the
+                    # plan ON the platform can stage the real thing. The runner
+                    # ignores it (it only ever reads `source`); engine/single_job.py
+                    # uses it to turn each {{DATA_ROOT}} path back into the
+                    # tapis:// URI a Tapis fileInput must name. Additive, so an
+                    # older runner reading a newer bundle is unaffected.
+                    "platform_source": source,
                 }
                 if _REMOTE_URL.match(source):
                     # Kept verbatim for the runner to download. `training` and
@@ -577,6 +599,12 @@ def build_bundle(
                 "kind": "sink",
                 "source": source if str(source).startswith("{{") else _data_root_path(str(source)),
                 "dest": _data_root_path(str(node_config.get("path", ""))),
+                # Where the user actually asked for this artifact. Off platform
+                # the data root IS that place, so the runner only needs `dest`;
+                # on platform a sink's destination is a real Tapis location the
+                # job dir can't be, so single_job.py copies there once the job
+                # has archived (see _sink_copies).
+                "platform_dest": _platform_source_path(node_config),
             })
             outputs_by_node[node_key] = {}
 
@@ -605,7 +633,14 @@ def build_bundle(
                 node_outputs[p["name"]] = (
                     str(bound) if isinstance(bound, str) and bound.startswith("{{") else own_path
                 )
-            entry.update({"kind": "source", "path": own_path})
+            # platform_path is the raw configured location (a tapis:// URI, or a
+            # bare path plus the node's own `system`); `path` is that re-rooted
+            # under {{DATA_ROOT}}. See platform_source above for why both.
+            entry.update({
+                "kind": "source",
+                "path": own_path,
+                "platform_path": _platform_source_path(node_config),
+            })
             outputs_by_node[node_key] = node_outputs
             if not own_path and not any(node_outputs.values()):
                 warnings.append(f"{label}: no path configured — downstream steps will have nothing to read.")

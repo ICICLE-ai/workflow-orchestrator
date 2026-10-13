@@ -44,9 +44,21 @@ export default function StepSettingsModal({
 
   // Reseed the working copy whenever the modal is (re)opened for this node, so
   // reopening after a cancel doesn't show stale edits.
+  //
+  // Done DURING render on the closed->open edge, not in an effect: this modal
+  // stays mounted between openings, so an effect would let the panel mount
+  // with the previous session's working copy first and only correct it a tick
+  // later. Panels that read their config once on mount (the image preprocess
+  // studio's uncontrolled playground) would keep that stale first value.
+  const [wasOpened, setWasOpened] = useState(opened);
+  if (opened !== wasOpened) {
+    setWasOpened(opened);
+    if (opened) setConfig(initialConfig || {});
+  }
   useEffect(() => {
     if (opened) setConfig(initialConfig || {});
-  }, [opened, initialConfig]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialConfig]);
 
   const Panel = getStepPanel(step.step_type_key) ?? GenericConfigForm;
 

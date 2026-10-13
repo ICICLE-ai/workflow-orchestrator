@@ -167,9 +167,12 @@ Click **Launch Run**. If the canvas differs from the last saved version (an
 to keep those edits as a new version or run them without recording one — either
 way **what runs is what's on screen**, never a stale saved graph.
 
-The drawer's **Trigger** section, below Launch Run, hands you a webhook URL that
-starts this same workflow from outside the Studio — see [Trigger a workflow from
-outside (webhook)](#trigger-a-workflow-from-outside-webhook).
+The drawer's **Execution** section chooses how the pipeline is submitted: one
+Tapis job per step (the default) or the whole thing as a single job — see [Run a
+whole pipeline as one Tapis job](#run-a-whole-pipeline-as-one-tapis-job). Below
+that, **Trigger** hands you a webhook URL that starts this same workflow from
+outside the Studio — see [Trigger a workflow from outside
+(webhook)](#trigger-a-workflow-from-outside-webhook).
 
 ### Watch it run
 
@@ -297,10 +300,83 @@ CPU steps on OSC still writes all its artifacts to one place.
 | **Work dir** | Derived automatically from the archive system, charge account and your Tapis username — read-only. |
 | **Archive system** | Where step outputs are archived, unless a sink node overrides it. |
 | **Archive dir** | Optional base directory on the archive system. Blank derives it from *Work dir*. |
+| **Execution** | One Tapis job per step (default), or the whole pipeline as a single job sized from the pipeline-wide maximum. See [Run a whole pipeline as one Tapis job](#run-a-whole-pipeline-as-one-tapis-job). |
 
 Whatever you choose, each step archives under
 `.../{run_id}/{step_type_key}/{node_id}`, so one run's artifacts never collide
 with another's.
+
+## Run a whole pipeline as one Tapis job
+
+By default each step is its own Tapis job. That gets every step exactly the
+resources it asks for and lets independent branches run at the same time — but it
+also means a five-step workflow queues five times, and on a busy allocation the
+queue wait is usually longer than the compute.
+
+**Run Settings → Execution → Single job** submits the entire pipeline as ONE Tapis
+job instead. The steps run one after another inside a single allocation, so there
+is one queue wait for the whole workflow.
+
+### How the one job is sized
+
+One job makes one resource request, so the per-step requests are merged into an
+envelope that fits every step. The panel shows the arithmetic, and hovering a row
+lists what each step asked for:
+
+| Field | Merged by | Why |
+| --- | --- | --- |
+| Nodes, Cores / node, Memory | **max** across steps | The job has to be able to host the hungriest step. |
+| GPUs | **max** across steps | As above — and only when a step actually wants one. |
+| Max runtime | **sum** across steps | They run one after another in this one allocation. A wall clock of only the longest step would have the scheduler kill the job partway through the pipeline. |
+
+Each number is taken from what the step would really have used on its own: the
+node's own **Run Configuration** if it has one, otherwise the step's own job
+definition. Sources, sinks and panel steps request no compute and are ignored.
+
+### GPUs
+
+GPU resources are requested **only when some step actually needs one**. A pipeline
+whose steps are all CPU-only goes to the run's CPU target with no `-G` request at
+all, so it is never queued behind GPU availability it has no use for. As soon as
+one step declares a GPU requirement, the whole job goes to the run's **GPU** target
+and asks for the largest GPU count any step wanted. The panel's badge says which
+target was chosen, and names the steps responsible.
+
+### What you give up
+
+- **Concurrency.** Independent branches that would have overlapped now run in
+  sequence. That is why runtime is summed.
+- **Per-step checkpoints.** *Resume* on a single-job run re-runs the whole
+  pipeline: the allocation it ran in is gone, so there is no mid-job state to pick
+  up from. Resuming from a specific step is refused rather than silently ignored.
+  Per-step mode still gives you checkpoints (see [Stop, resume, and recover](#stop-resume-and-recover)).
+- **Per-step exec systems.** One job has one exec system, so a node pinned to its
+  own is ignored — with a warning naming it.
+- **Steps that run inside the platform.** A step like *Annotation Format Adapter*
+  executes Python in the backend, not in a container, so there is nothing for the
+  one job to run. Those pipelines are refused up front, naming the step, and
+  **Launch Run** is disabled rather than offering a run that would fail.
+
+Everything else is unchanged: the same run page, the same per-step statuses and
+artifact paths, the same archive layout. The job's own report is read back out of
+the archive when it finishes, so a single job still fills in each step's outputs
+individually instead of showing one opaque bar.
+
+### Operator setup (required once)
+
+This mode submits one job of a **`wf-runner`** Tapis app — the same runner that
+powers *Deploy to my node*, registered as a ZIP-runtime app so it can invoke
+`apptainer` per step on the compute node. Until that app exists in your tenant,
+the panel will still show the merged job it *would* submit, but nothing can be
+launched.
+
+[`runner/tapis-app/README.md`](runner/tapis-app/README.md) has the app definition
+and the registration steps. Two backend settings matter:
+
+| Variable | Meaning |
+| --- | --- |
+| `WF_RUNNER_APP_ID` / `WF_RUNNER_APP_VERSION` | The registered app (defaults `wf-runner` / `1.0`). |
+| `WF_RUNNER_IMAGES_DIR` | Directory on the exec system holding the step `.sif` images. Strongly recommended: without it, images with a known URL are staged into the job on every run, and a pipeline using an image with no known source is refused. |
 
 ## Trigger a workflow from outside (webhook)
 
@@ -362,13 +438,13 @@ full surface.
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| **Execution system** | *inherit* | Pin this step to its own system. Empty = follow the run's CPU or GPU target. |
-| **Queue** | *system default* | Only selectable once a system is pinned. |
+| **Execution system** | `expanse-tapis-static` | Pin this step to its own system. Clear it to follow the run's CPU or GPU target. |
+| **Queue** | `tapisShared` (GPU steps: `tapisGPUShared`) | Only selectable once a system is pinned. |
 | **Node count** | 1 | Nodes requested. |
 | **Cores per node** | 8 | Cores per node requested. |
-| **Memory (MB)** | 64800 | Memory requested. |
-| **Max runtime (minutes)** | 210 | Wall-clock limit. |
-| **GPUs** | 0 | Becomes a `-G <n>` scheduler request. `0` on a GPU step removes it. |
+| **Memory (MB)** | 800 | Memory requested. |
+| **Max runtime (minutes)** | 30 | Wall-clock limit. |
+| **GPUs** | 0 (GPU steps: 1) | Becomes a `-G <n>` scheduler request. `0` on a GPU step removes it. |
 
 These override whatever the step type's own job template specifies. When a queue
 is pinned, over-requesting against its published limits is flagged here rather
