@@ -129,6 +129,42 @@ def _collapse_slashes(value):
     return value
 
 
+def resolve_already_rooted(value, token: str, data_root: Path, log_seen: set):
+    """Don't re-root a path that is already under the data root.
+
+    The bundle writes each source as {{DATA_ROOT}}/<platform path>, which is
+    right when the node mirrors the platform's layout beneath the data root.
+    But on the same cluster the data already sits AT its platform path, and
+    the natural move is to pick that dataset folder as the data root — which
+    then doubles it (/fs/ess/P/data/fs/ess/P/data). So when the platform path
+    already lies under the data root and the doubled path doesn't exist, the
+    platform path is used as-is — for outputs and not-yet-existing files too,
+    so every path in a step agrees. A node that really does mirror the layout
+    (doubled path exists) keeps the original behaviour.
+    """
+    if isinstance(value, list):
+        return [resolve_already_rooted(v, token, data_root, log_seen) for v in value]
+    if isinstance(value, dict):
+        return {k: resolve_already_rooted(v, token, data_root, log_seen) for k, v in value.items()}
+    if not isinstance(value, str) or token not in value or str(data_root) == "/":
+        return value
+    root = str(data_root)
+    pattern = re.compile(re.escape(token) + r"(/[^\s'\":,]*)")
+
+    def swap(m):
+        platform_path = "/" + m.group(1).lstrip("/")
+        under_root = platform_path == root or platform_path.startswith(root.rstrip("/") + "/")
+        doubled = Path(root + platform_path)
+        if under_root and not doubled.exists():
+            if platform_path not in log_seen:
+                log_seen.add(platform_path)
+                log(f"{platform_path} is already under --data-root {root}; using it as-is")
+            return platform_path
+        return m.group(0)
+
+    return pattern.sub(swap, value)
+
+
 # --- input staging --------------------------------------------------------
 
 def fetch_input(url: str, target: Path) -> None:
@@ -533,6 +569,7 @@ def execute(bundle: dict, args) -> dict:
         tokens["{{SECRET:" + key + "}}"] = os.environ[key]
         _REDACT.add(os.environ[key])
 
+    bundle = resolve_already_rooted(bundle, bundle["tokens"]["data_root"], data_root, set())
     bundle = substitute(bundle, tokens)
     # A '/' data root joins to '//fs/...'. Harmless on Linux but confusing
     # in logs, and POSIX leaves a leading '//' implementation-defined.
@@ -645,7 +682,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("bundle", help="Path to the exported bundle JSON")
     parser.add_argument("--data-root", default=None,
-                        help="Root of your input data; every source path in the bundle resolves beneath it")
+                        help="Where the platform's data paths live on this node. '/' (the default) reads "
+                             "every source at exactly the path the platform used; set a folder only when "
+                             "your data sits under a different root that mirrors the platform's layout")
     parser.add_argument("--workdir", default=None,
                         help="Where this run's job directories and outputs are written")
     parser.add_argument("--images-dir", default=None,
@@ -673,7 +712,7 @@ def main(argv: list[str] | None = None) -> int:
     # The bundle's own defaults apply to anything the user didn't override, so
     # a bundle exported with sensible paths runs with no flags at all.
     defaults = bundle.get("defaults", {})
-    args.data_root = args.data_root or os.environ.get("WF_DATA_ROOT") or defaults.get("data_root", "./data")
+    args.data_root = args.data_root or os.environ.get("WF_DATA_ROOT") or defaults.get("data_root", "/")
     args.workdir = args.workdir or os.environ.get("WF_WORKDIR") or defaults.get("workdir", "./wf-local")
     args.images_dir = args.images_dir or os.environ.get("WF_IMAGES_DIR") or defaults.get("images_dir", "./images")
 

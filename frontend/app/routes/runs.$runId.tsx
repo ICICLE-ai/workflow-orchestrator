@@ -473,7 +473,17 @@ function Flow({ runId, detail, stepTypes, template }: any) {
   );
 }
 
-export default function RunView({ loaderData }: Route.ComponentProps) {
+// Keyed on the run id. Navigating /runs/A -> /runs/B (Start over, Resume
+// into a new run) keeps the same route mounted, and this view seeds its state
+// from the loader ONCE (`useState(initialDetail)`) — so the URL changed while
+// the page kept showing run A, and the button stuck on "Starting…". A new key
+// gives each run a fresh view.
+export default function RunView(props: Route.ComponentProps) {
+  const { runId } = props.loaderData as any;
+  return <RunViewForRun key={String(runId)} {...props} />;
+}
+
+function RunViewForRun({ loaderData }: Route.ComponentProps) {
   const navigate = useNavigate();
   const { runId, detail: initialDetail, stepTypes, template } = loaderData as any;
 

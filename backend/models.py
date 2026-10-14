@@ -361,3 +361,23 @@ class RunArtifact(Base):
     tapis_system_id = Column(String)
     metadata_json = Column('metadata', JSON, default={})
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class DeployPreference(Base):
+    """One user's "Deploy to my node" settings for one workflow lineage.
+
+    Keyed by template_id (not a version) so a new version keeps the node and
+    paths the user already set, and per user because the same published
+    workflow is deployed by different people to different machines. Stored
+    server-side so the settings follow the user across browsers.
+    """
+    __tablename__ = 'deploy_preference'
+    __table_args__ = (UniqueConstraint('user_id', 'template_id', name='uq_deploy_pref_user_template'),)
+
+    pref_id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey('app_user.user_id', ondelete='CASCADE'), nullable=False)
+    template_id = Column(Integer, nullable=False, index=True)
+    # {node, nodeName, remap, data_root, workdir} — whatever the dialog sends,
+    # validated by DeploySettings in main.py.
+    settings = Column(JSON, nullable=False, default=dict)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

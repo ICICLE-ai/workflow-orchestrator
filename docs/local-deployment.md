@@ -45,19 +45,61 @@ node. This is deliberate: a bundle is a file that gets downloaded, copied and
 shared, so resolving secrets into it would leak them far more widely than the
 platform ever does.
 
+### Where it runs
+
+The dialog starts with **Where will it run?**. Pick the Tapis system your node
+belongs to and **Browse** lists its folders for the data root and work dir. For a
+machine that isn't on Tapis, pick **Other (my own machine)** and give it a name.
+Browsing is then off and you type the paths as they appear on that machine.
+**My data is at the same paths as on the platform** is on by default, so each
+input is read from its platform path. Turn it off to set a data root for a copy
+of the data laid out the same way. A live preview shows where each input will be
+read from: *same path*, or *mirrored* when it's placed beneath your data root. The dialog remembers your node and paths
+in this browser.
+
+### Data that's only on your node
+
+A path field's system dropdown also offers **My node (not on Tapis)**, for data
+that exists only on your own machine. The path is then stored as a plain path
+on the node (no `tapis://` system), Browse is off, and the exported bundle reads
+it exactly as typed, even with a data root set. The platform can't reach your
+machine, so **Launch Run** refuses such a workflow and names the steps involved;
+run it with Deploy to my node instead.
+
 ### Run instructions and the offline zip
 
 Below the bundle buttons, **Run it on your node** offers three tabs. The
 commands in them already use the paths you entered above:
 
-- **Docker:** the runner's Docker image name, how to get it (`docker pull`, or
-  `docker build` from `runner/` when no published image is configured), and the
-  exact `docker run` command. The container runs `--privileged` because each
-  step is an Apptainer container started inside it.
-- **Apptainer:** the same for the runner as a `.sif` (`apptainer pull`, or
-  `apptainer build` from `runner/wf_runner.def`).
+- **Docker:** step by step, built around the deployment zip:
+  1. **Generate curl command** mints a signed download link, so you can paste
+     `curl -fL -o <name>-deploy.zip '<link>'` straight onto a cluster node. Or
+     use **Download in browser** and copy the file over yourself. The link needs
+     no login, expires after `WF_DEPLOY_LINK_TTL_SECONDS` (default 1 h), and
+     anyone holding it can download the zip until then.
+  2. `unzip <name>-deploy.zip && cd <name>`. The folder has `bundle.json` and
+     every step image in `containers/`.
+  3. `docker pull ghcr.io/icicle-ai/workflow-runner:v0.1.2`. The runner image is
+     public, so there's nothing to build or log in to.
+  4. The full `docker run` command. It mounts the current folder, your data root
+     and your work dir, each at the same path inside the container, and points
+     `--images-dir` at `containers/`. It runs `--privileged` because each step is
+     an Apptainer container started inside the runner's container.
+- **Apptainer:** the same zip, then `./run.sh --data-root … --workdir …` from
+  inside it. This is the recommended route on HPC: the runner uses the node's own
+  `python3` (3.9+) and starts each step with the node's own `apptainer`, so
+  nothing is nested. Running the runner itself in Apptainer (`apptainer pull
+  wf-runner.sif docker://…`) is offered as a fallback, but many HPC nodes
+  refuse nested containers.
+
+Both tabs mount (or bind) only the folders a step actually reads on the node.
+A source wired to a port the node never uses, such as a step's platform
+`output_path` archive folder, is left out: on the node every step writes under
+the work dir. This matters for Apptainer, which won't start if a bind source
+doesn't exist. Your node, data-root choice and work dir are saved per workflow,
+for you, so they're filled in next time and carry over to new versions.
 - **Offline zip:** one file with `bundle.json`, every step image the server
-  can fetch (in `images/`), the runner source, `run.sh` / `run-docker.sh` /
+  can fetch (in `containers/`), the runner source, `run.sh` / `run-docker.sh` /
   `pull-images.sh`, and a README saying where each piece goes. It is streamed,
   because images make it gigabytes. Downloading it redeems each image's link
   once, so keep the zip rather than downloading it again.
@@ -110,23 +152,50 @@ A few steps (`training`, `inference`, `preprocessing`) need nothing here at
 all: they stage their real container as an input, and the Tapis app is only a
 wrapper that runs it. The runner executes the staged `.sif` directly.
 
-#### Registering a new image source
+#### Adding or updating an image link (developers)
 
-`backend/image_sources.json` maps Tapis app id → download URL:
+All image download links live in one file, **`backend/image_sources.json`**.
+To add a link, or replace one that has expired, edit its `images` map:
 
 ```json
-{ "images": { "few_shot_detection": "https://…/postits/redeem/…" } }
+{ "images": { "generate-flight-plan": "https://icicleai.tapis.io/v3/files/postits/redeem/…" } }
 ```
 
-Set `WF_IMAGE_SOURCES` to a path outside the repo if you'd rather not keep
-capability URLs in version control — anyone holding such a link can download
-that file, and it is copied into every exported bundle.
+- **Key:** the step's Tapis app id (`tapis_app_id` in its `step.json`) or its
+  step name. Case and `-`/`_` don't matter. Prefer the app id: steps that
+  share an app (custom_shapefile and heatmap) are then covered by one entry.
+- **No restart needed:** every export reads the file fresh.
+- **Steps that ship their container as an input** (training, inference,
+  preprocessing): a link here replaces the one in that step's `step.json` for
+  deployments. Platform runs still use `step.json`'s link, so update both when
+  it changes.
+- **Check your edit:** `cd backend && uv run python scripts/check_image_sources.py`.
+  It lists every step with the link it gets, flags keys that match no step (a
+  typo would otherwise be ignored), and exits non-zero on one, so it can run in
+  CI. It never downloads the links, since each download uses up one of a
+  postit's allowed uses.
+
+Wherever a workflow includes one of these steps, its link appears in the Deploy
+dialog's image table (with a copy button), in the zip's `README.md`, and in
+`pull-images.sh`. The image itself goes into the zip's `containers/`.
+
+Postit links are capability URLs: anyone holding one can download the file, and
+they're copied into every exported bundle. Create them with high (or unlimited)
+allowed uses and a long expiry. To keep them out of version control, set
+`WF_IMAGE_SOURCES` to the path of a file in the same format outside the repo.
 
 ### Data layout
 
-Your input data must mirror the platform's paths beneath one root. A source
-step reading `tapis://pitzer-tapis/users/you/farm/images` resolves, with
-`--data-root /data`, to `/data/users/you/farm/images`.
+By default every input is read from exactly the path the platform uses
+(`--data-root /`). A source step reading
+`tapis://pitzer-tapis/fs/ess/PAS123/farm/images` is read from
+`/fs/ess/PAS123/farm/images` on the node. That's right whenever the node sees the
+same folders, e.g. a node on the same cluster.
+
+If you've copied the data somewhere else, keep the platform's layout beneath one
+folder and pass it as `--data-root`. With `--data-root /data`, the same source
+is read from `/data/fs/ess/PAS123/farm/images`. A source whose platform path is
+already under the data root is read as-is rather than nested a second time.
 
 The runner checks every input a step will actually consume *before* running
 anything and lists all the missing ones at once, so a wrong `--data-root`

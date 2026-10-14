@@ -121,9 +121,13 @@ def _source_node_outputs(run_id: int, node_key: str, node_config: dict, resolved
     fileInputs, the geospatial resource's URI parser, ...) sees the same
     tapis://system/path shape a job step's own outputs use.
     """
+    from engine.local_bundle import NODE_LOCAL_SYSTEM
+
     path = (node_config or {}).get("path", "")
     system = (node_config or {}).get("system", "")
-    if system and path and "://" not in path:
+    # A "My node" path has no Tapis system to join it to. _launch_run refuses
+    # such a workflow before it gets here; this keeps the value honest anyway.
+    if system and system != NODE_LOCAL_SYSTEM and path and "://" not in path:
         path = f"tapis://{system}/{path.lstrip('/')}"
     outputs = {"path": path}
     for port in get_node_output_ports(node_key):

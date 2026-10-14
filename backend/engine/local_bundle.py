@@ -66,6 +66,13 @@ RUN_ID = "{{RUN_ID}}"
 
 BUNDLE_VERSION = 1
 
+# The `system` a path field stores when the data lives on the user's own node,
+# not on any Tapis system ("My node" in the Studio's system dropdown). Such a
+# path is a plain absolute path on the node: never joined into a tapis:// URI,
+# never re-rooted under a data root, and never runnable on the platform (Tapis
+# can't fetch from the user's machine — main._launch_run refuses it).
+NODE_LOCAL_SYSTEM = "node-local"
+
 _UNRESOLVED = re.compile(r"\$\{[a-zA-Z0-9_]+\}")
 # A step.json can hardcode a team secret as ${secrets.KEY} (job_spec.resolve_secret_refs
 # swaps in the real value at submit time). A bundle is a FILE the user downloads
@@ -97,12 +104,14 @@ def _strip_uri(value: str) -> str:
     return value.lstrip("/")
 
 
-def _data_root_path(value: str) -> str:
+def _data_root_path(value: str, node_local: frozenset[str] = frozenset()) -> str:
     """Re-root a platform path under {{DATA_ROOT}}.
 
     Passed through untouched: a token-rooted path (already resolved, e.g. an
-    upstream node's output) and an http(s) URL (a real remote resource the
-    runner fetches, not a location on the user's disk).
+    upstream node's output), an http(s) URL (a real remote resource the
+    runner fetches, not a location on the user's disk), and a path at or
+    under one of `node_local` — a "My node" source's own path, which is
+    already where the data lives on the node.
     """
     if not value:
         return ""
@@ -115,6 +124,9 @@ def _data_root_path(value: str) -> str:
     stripped = _strip_uri(value)
     if stripped.startswith("{{"):
         return stripped
+    absolute = "/" + stripped
+    if any(absolute == p or absolute.startswith(p.rstrip("/") + "/") for p in node_local):
+        return absolute
     return f"{DATA_ROOT}/{stripped}"
 
 
@@ -128,6 +140,8 @@ def _platform_source_path(node_config: dict) -> str:
     """
     path = str((node_config or {}).get("path", "") or "")
     system = str((node_config or {}).get("system", "") or "")
+    if system == NODE_LOCAL_SYSTEM:
+        return path
     if system and path and "://" not in path:
         return f"tapis://{system}/{path.lstrip('/')}"
     return path
@@ -275,8 +289,34 @@ def _schema_defaults(schema: dict | None) -> dict:
     return out
 
 
+def image_sources_path() -> str:
+    """Where the image links live: WF_IMAGE_SOURCES, else backend/image_sources.json."""
+    return os.environ.get("WF_IMAGE_SOURCES") or os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "image_sources.json"
+    )
+
+
+def _norm_key(key: str) -> str:
+    """Fold the differences that don't identify an image: case and -/_."""
+    return re.sub(r"[-_\s]+", "", str(key).strip().lower())
+
+
+def image_source_for(sources: dict[str, str], *keys: str | None) -> str | None:
+    """The link for the first of `keys` (app id, then step name) with one.
+
+    Keys in image_sources.json may be either, in any case and with - or _, so
+    a developer can write 'few-shot-detection' or 'training' without knowing
+    the exact internal spelling.
+    """
+    by_norm = {_norm_key(k): v for k, v in sources.items()}
+    for key in keys:
+        if key and _norm_key(key) in by_norm:
+            return by_norm[_norm_key(key)]
+    return None
+
+
 def _load_image_sources() -> dict[str, str]:
-    """Download URL per Tapis app id, from backend/image_sources.json.
+    """Download URL per Tapis app id or step name, from backend/image_sources.json.
 
     Steps whose container isn't built from this repo's jobs/*.def have to get
     it from somewhere; this is that somewhere. Missing or unreadable is not an
@@ -286,9 +326,7 @@ def _load_image_sources() -> dict[str, str]:
     WF_IMAGE_SOURCES points at an alternate file, for deployments that would
     rather not keep capability URLs in the repo.
     """
-    path = os.environ.get("WF_IMAGE_SOURCES") or os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "image_sources.json"
-    )
+    path = image_sources_path()
     try:
         with open(path) as f:
             return {str(k): str(v) for k, v in (json.load(f).get("images") or {}).items()}
@@ -346,7 +384,7 @@ def build_bundle(
     db: Session,
     template: WorkflowTemplate,
     *,
-    data_root: str = "./data",
+    data_root: str = "/",
     workdir: str = "./wf-local",
     images_dir: str = "./images",
 ) -> dict:
@@ -388,11 +426,16 @@ def build_bundle(
         })
 
     order = _topological_order(list(nodes_by_id), deps)
+    node_local = frozenset(
+        "/" + str((n.default_config or {}).get("path", "")).strip("/")
+        for n in nodes
+        if (n.default_config or {}).get("system") == NODE_LOCAL_SYSTEM and (n.default_config or {}).get("path")
+    )
     image_sources = _load_image_sources()
 
     warnings: list[str] = []
     secrets_required: set[str] = set()
-    image_app_ids: dict[str, str] = {}
+    image_app_ids: dict[str, tuple] = {}
     outputs_by_node: dict[str, dict[str, str]] = {}
     plan: list[dict] = []
     images: set[str] = set()
@@ -492,7 +535,7 @@ def build_bundle(
                     # node's output is a location the platform knew about but
                     # the node never declared as a port (a panel-saved path,
                     # say) — re-root it under the data root like a source node.
-                    "source": _data_root_path(source),
+                    "source": _data_root_path(source, node_local),
                     "target": target,
                     # The pre-re-rooting value, kept so a consumer that runs the
                     # plan ON the platform can stage the real thing. The runner
@@ -540,6 +583,13 @@ def build_bundle(
                 (item["target"] for item in stage_in if str(item.get("target", "")).endswith(".sif")),
                 None,
             )
+            if staged_image:
+                # A link in image_sources.json wins over the one baked into
+                # step.json, so refreshing an expired link is a one-place edit.
+                central = image_source_for(image_sources, registry.tapis_app_id, step_type)
+                for item in stage_in:
+                    if item.get("target") == staged_image and central and item.get("source") != central:
+                        item.update({"source": central, "fetch": True})
 
             entry.update({
                 "kind": "job",
@@ -565,7 +615,7 @@ def build_bundle(
             })
             if not staged_image:
                 images.add(entry["image"])
-                image_app_ids[entry["image"]] = registry.tapis_app_id or step_type
+                image_app_ids[entry["image"]] = (registry.tapis_app_id, step_type)
             outputs_by_node[node_key] = entry["outputs"]
 
             # A bind whose host side is an absolute path baked into the
@@ -597,8 +647,8 @@ def build_bundle(
             source = resolved.get("data") or resolved.get("path") or ""
             entry.update({
                 "kind": "sink",
-                "source": source if str(source).startswith("{{") else _data_root_path(str(source)),
-                "dest": _data_root_path(str(node_config.get("path", ""))),
+                "source": source if str(source).startswith("{{") else _data_root_path(str(source), node_local),
+                "dest": _data_root_path(str(node_config.get("path", "")), node_local),
                 # Where the user actually asked for this artifact. Off platform
                 # the data root IS that place, so the runner only needs `dest`;
                 # on platform a sink's destination is a real Tapis location the
@@ -626,7 +676,7 @@ def build_bundle(
             # upstream value passed straight through, e.g. smart_labeler's
             # 'images') keeps that value; every other port exposes this node's
             # own configured path.
-            own_path = _data_root_path(str(node_config.get("path", "")))
+            own_path = _data_root_path(str(node_config.get("path", "")), node_local)
             node_outputs = {}
             for p in out_ports:
                 bound = resolved.get(p["name"])
@@ -640,6 +690,9 @@ def build_bundle(
                 "kind": "source",
                 "path": own_path,
                 "platform_path": _platform_source_path(node_config),
+                # On the user's node already (see NODE_LOCAL_SYSTEM), so it's
+                # read as-is whatever the data root.
+                "node_local": node_config.get("system") == NODE_LOCAL_SYSTEM,
             })
             outputs_by_node[node_key] = node_outputs
             if not own_path and not any(node_outputs.values()):
@@ -664,9 +717,9 @@ def build_bundle(
         # Only images with a known source appear; anything absent here the
         # operator must place in --images-dir themselves.
         "image_sources": {
-            name: image_sources[image_app_ids[name]]
+            name: image_source_for(image_sources, *image_app_ids[name])
             for name in sorted(images)
-            if image_app_ids.get(name) in image_sources
+            if name in image_app_ids and image_source_for(image_sources, *image_app_ids[name])
         },
         # Env vars the RUNNER must supply on the node. Never the values —
         # see _rewrite_secrets for why a bundle carries only the names.

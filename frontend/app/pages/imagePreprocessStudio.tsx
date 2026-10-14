@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, Suspense, lazy } from "react";
-import { Group, TextInput, Button, Loader, Stack, Popover, Select, Paper, Text, Alert, CloseButton } from "@mantine/core";
+import { Group, TextInput, Button, Loader, Stack, Popover, Select, Paper, Text, Alert, CloseButton, Progress, Overlay, Center } from "@mantine/core";
 import { IconDeviceFloppy, IconSettings, IconAlertTriangle, IconCheck } from "@tabler/icons-react";
 import { notifications } from "@mantine/notifications";
 import type { StepPanelProps } from "./types";
@@ -99,12 +99,35 @@ export default function ImagePreprocessStudioPanel({ config, onChange, step, con
   const configRef = useRef(config);
   configRef.current = config;
 
-  const fetchImage = async (sys: string, path: string, mimeType?: string): Promise<File> => {
+  // onProgress reports bytes as they arrive (total is 0 when the response has
+  // no Content-Length). Note the backend pulls the whole file from Tapis before
+  // replying, so there's a silent wait before the first byte.
+  const fetchImage = async (
+    sys: string,
+    path: string,
+    mimeType?: string,
+    onProgress?: (loaded: number, total: number) => void
+  ): Promise<File> => {
     const res = await studioFetch(`/api/tapis-files/content?${qs(sys, path)}`);
     if (!res.ok) throw new Error(String(res.status));
-    const blob = await res.blob();
     const name = path.split("/").pop() || path;
-    return new File([blob], name, { type: blob.type || mimeType || "application/octet-stream" });
+    const type = res.headers.get("content-type") || mimeType || "application/octet-stream";
+    if (!onProgress || !res.body) {
+      const blob = await res.blob();
+      return new File([blob], name, { type: blob.type || type });
+    }
+    const total = Number(res.headers.get("content-length")) || 0;
+    const reader = res.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let loaded = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      loaded += value.length;
+      onProgress(loaded, total);
+    }
+    return new File(chunks as BlobPart[], name, { type });
   };
 
   // The image last worked on, remembered on the node config so reopening the
@@ -117,6 +140,17 @@ export default function ImagePreprocessStudioPanel({ config, onChange, step, con
       ? { system: String(config.last_image_system || system), path: String(config.last_image_path) }
       : null
   );
+
+  // Loading overlay for a restore, shown from mount until the remembered image
+  // is on screen: the playground bundle loading, the download, then decoding.
+  type RestoreStatus =
+    | { phase: "opening" }
+    | { phase: "downloading"; loaded: number; total: number }
+    | { phase: "rendering" };
+  const [restoreStatus, setRestoreStatus] = useState<RestoreStatus | null>(
+    restoreRef.current ? { phase: "opening" } : null
+  );
+  const restoreName = String(config.last_image_path ?? "").split("/").pop() || "image";
 
   // Custom FileSource: pickFile() opens the directory browser and resolves the
   // chosen image as a File (fetched from Tapis via the backend proxy). While a
@@ -133,10 +167,19 @@ export default function ImagePreprocessStudioPanel({ config, onChange, step, con
         const restore = restoreRef.current;
         if (restore) {
           restoreRef.current = null;
-          return fetchImage(restore.system, restore.path).catch(() => {
-            notifications.show({ color: "red", message: `Could not reopen last image ${restore.path}` });
-            return null;
-          });
+          setRestoreStatus({ phase: "downloading", loaded: 0, total: 0 });
+          return fetchImage(restore.system, restore.path, undefined, (loaded, total) =>
+            setRestoreStatus({ phase: "downloading", loaded, total })
+          )
+            .then((file) => {
+              setRestoreStatus({ phase: "rendering" });
+              return file;
+            })
+            .catch(() => {
+              setRestoreStatus(null);
+              notifications.show({ color: "red", message: `Could not reopen last image ${restore.path}` });
+              return null;
+            });
         }
         return new Promise<File | null>((resolve) => {
           resolverRef.current = resolve;
@@ -170,6 +213,33 @@ export default function ImagePreprocessStudioPanel({ config, onChange, step, con
     observer.observe(root, { childList: true, subtree: true });
     return () => observer.disconnect();
   }, []);
+
+  // The restore is done once the playground actually shows the image (an <img>
+  // appears after it decodes). Capped so a library change can never leave the
+  // overlay up for good.
+  const opening = restoreStatus?.phase === "opening";
+  useEffect(() => {
+    if (!opening) return;
+    const timer = setTimeout(() => setRestoreStatus(null), 30000);
+    return () => clearTimeout(timer);
+  }, [opening]);
+
+  const rendering = restoreStatus?.phase === "rendering";
+  useEffect(() => {
+    const root = containerRef.current;
+    if (!rendering || !root) return;
+    const done = () => setRestoreStatus(null);
+    if (root.querySelector("img")) return done();
+    const observer = new MutationObserver(() => {
+      if (root.querySelector("img")) done();
+    });
+    observer.observe(root, { childList: true, subtree: true });
+    const timer = setTimeout(done, 15000);
+    return () => {
+      observer.disconnect();
+      clearTimeout(timer);
+    };
+  }, [rendering]);
 
   const finishPick = async (remote: RemoteFile) => {
     setBrowserOpen(false);
@@ -287,6 +357,51 @@ export default function ImagePreprocessStudioPanel({ config, onChange, step, con
         </Suspense>
       ) : (
         <Group justify="center" p="xl"><Loader /></Group>
+      )}
+
+      {restoreStatus && (
+        <Overlay fixed zIndex={10000} backgroundOpacity={0.55} blur={2}>
+          <Center h="100%">
+            <Paper shadow="md" p="lg" radius="md" withBorder w={380}>
+              <Stack gap="sm">
+                <Group gap="xs" wrap="nowrap">
+                  <Loader size="sm" />
+                  <Text fw={600} size="sm">Restoring your last session</Text>
+                </Group>
+                {(() => {
+                  const st = restoreStatus;
+                  const pct =
+                    st.phase === "downloading" && st.total > 0
+                      ? Math.min(100, Math.round((st.loaded / st.total) * 100))
+                      : null;
+                  const mb = (n: number) => `${(n / 1048576).toFixed(1)} MB`;
+                  const message =
+                    st.phase === "opening"
+                      ? "Starting the image studio…"
+                      : st.phase === "rendering"
+                        ? `Applying your saved operations to ${restoreName}…`
+                        : st.loaded === 0
+                          ? `Fetching ${restoreName} from Tapis…`
+                          : `Downloading ${restoreName} — ${mb(st.loaded)}${st.total ? ` of ${mb(st.total)}` : ""}`;
+                  return (
+                    <>
+                      <Progress
+                        value={pct ?? 100}
+                        animated={pct === null}
+                        striped={pct === null}
+                        size="md"
+                      />
+                      <Text size="xs" c="dimmed" style={{ wordBreak: "break-word" }}>
+                        {message}
+                        {pct !== null ? ` (${pct}%)` : ""}
+                      </Text>
+                    </>
+                  );
+                })()}
+              </Stack>
+            </Paper>
+          </Center>
+        </Overlay>
       )}
 
       {/* Our own floating toolbar. Rendered by us on every state change, so the

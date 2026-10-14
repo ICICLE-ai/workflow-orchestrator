@@ -9,6 +9,18 @@ export const TAPIS_SYSTEMS = [
   "expanse-tapis-static",
 ];
 
+// The `system` a path field stores for data on the user's own node rather
+// than on a Tapis system. Never joined into a tapis:// URI; only runnable via
+// "Deploy to my node" (the backend refuses a platform launch). Mirrors
+// NODE_LOCAL_SYSTEM in backend/engine/local_bundle.py.
+export const NODE_LOCAL_SYSTEM = "node-local";
+
+// The system dropdown for a path field: the Tapis systems, plus "My node".
+export const PATH_SYSTEM_OPTIONS = [
+  { group: "Tapis systems", items: TAPIS_SYSTEMS },
+  { group: "Your own machine", items: [{ value: NODE_LOCAL_SYSTEM, label: "My node (not on Tapis)" }] },
+];
+
 // Default system for all steps. Override per-deployment with VITE_DEFAULT_TAPIS_SYSTEM
 // in frontend/.env; otherwise falls back to expanse-tapis-static. (A DB/config-sourced
 // default could replace this later.)
@@ -46,6 +58,8 @@ export function resolveWiredLocation(
   const fromUri = splitTapisUri(raw);
   if (fromUri) return fromUri;
   const system = String(input?.config?.system ?? "");
+  // A "My node" path isn't on any Tapis system, so there's nothing to browse.
+  if (system === NODE_LOCAL_SYSTEM) return null;
   return system && raw ? { system, path: raw } : null;
 }
 
@@ -58,7 +72,12 @@ const OSC_SCRATCH_SYSTEMS = ["pitzer-tapis", "cardinal-tapis", "ascend-tapis"];
 // username) is used for expanse-tapis's per-user scratch path.
 export function defaultWorkDir(system: string, ctx: { slurmAccount?: string; username?: string }): string {
   if (OSC_SCRATCH_SYSTEMS.includes(system)) {
-    return `/fs/scratch/${ctx.slurmAccount || ""}/jobs/`;
+    // harvest_jobs, not jobs: /fs/scratch/<acct>/jobs is a pre-existing folder
+    // owned by one project member (0755), so nobody else could create wf_runs/
+    // under it (FILES_CLIENT_SSH_PERM_DENIED at mkdir). harvest_jobs is
+    // world-writable and already holds the jobs' exec dirs (see the backend's
+    // _exec_system_dirs). Keep in sync with transactions._default_work_dir.
+    return `/fs/scratch/${ctx.slurmAccount || ""}/harvest_jobs/`;
   }
   if (system === "expanse-tapis-static") {
     return "/jobs/";

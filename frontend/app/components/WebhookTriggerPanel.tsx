@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type SyntheticEvent } from "react";
 import {
   ActionIcon,
   Alert,
@@ -15,7 +15,9 @@ import {
   Tooltip,
 } from "@mantine/core";
 import {
+  IconAlertTriangle,
   IconCheck,
+  IconDeviceFloppy,
   IconCopy,
   IconRefresh,
   IconTrash,
@@ -84,6 +86,9 @@ export default function WebhookTriggerPanel({
   opened,
   templateVersionId,
   runOptions,
+  unsaved = false,
+  onSaveRequest,
+  createIfMissing,
 }: {
   // Drives the load: the panel fetches (and if needed creates) the trigger when
   // the drawer holding it opens, not on mount — this lives inside a Drawer whose
@@ -93,8 +98,35 @@ export default function WebhookTriggerPanel({
   // The Run Settings currently on screen. Captured onto the trigger at creation,
   // and re-captured when the user presses "Use current run settings".
   runOptions: Record<string, any>;
+  // The canvas has edits that aren't saved. A fire always runs the LATEST SAVED
+  // version (see _trigger_target_version), so those edits won't be in it —
+  // warn before the user hands the URL to anything.
+  unsaved?: boolean;
+  // Opens the canvas's save flow. Omitted when the user can't save (a template
+  // they don't own), which hides the button.
+  onSaveRequest?: () => void;
+  // Whether a trigger may be CREATED now. `opened` alone only loads an existing
+  // one (and keeps its run settings in sync); RunSettingsDrawer sets this once
+  // the webhook section is expanded, so merely opening Run doesn't mint a URL.
+  // Defaults to `opened`.
+  createIfMissing?: boolean;
 }) {
+  const mayCreate = createIfMissing ?? opened;
   const [trigger, setTrigger] = useState<WebhookTrigger | null>(null);
+
+  const unsavedMessage =
+    "This template has unsaved changes. The webhook runs the last saved version" +
+    (trigger?.target_version ? ` (v${trigger.target_version})` : "") +
+    ", not what's on the canvas — save the template if your changes should be included.";
+
+  // Copy still happens; the red toast just makes sure the user knows WHAT the
+  // copied URL will run before they paste it somewhere.
+  const copyWithWarning = (copy: (e?: SyntheticEvent) => void, e: SyntheticEvent) => {
+    copy(e);
+    if (unsaved) {
+      notifications.show({ color: "red", title: "Template not saved", message: unsavedMessage, autoClose: 8000 });
+    }
+  };
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -128,6 +160,7 @@ export default function WebhookTriggerPanel({
           setTrigger(webhook);
           return;
         }
+        if (!mayCreate) return;
         const created: WebhookTrigger = await request(
           `/api/workflow-templates/${templateVersionId}/triggers`,
           {
@@ -150,8 +183,8 @@ export default function WebhookTriggerPanel({
     };
     // runOptions is deliberately not a dependency: it changes as the user edits
     // the fields above, and re-running this on every keystroke would re-POST.
-    // "Use current run settings" is how those edits reach an existing trigger.
-  }, [opened, templateVersionId]);
+    // The auto-sync below is how those edits reach an existing trigger.
+  }, [opened, templateVersionId, mayCreate]);
 
   const act = async (label: string, fn: () => Promise<WebhookTrigger | null>) => {
     setBusy(true);
@@ -177,16 +210,6 @@ export default function WebhookTriggerPanel({
       })
     );
 
-  const syncRunOptions = () =>
-    act("update the webhook's run settings", async () => {
-      const updated = await request(`/api/triggers/${trigger!.trigger_id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ run_options: runOptions }),
-      });
-      notifications.show({ color: "green", message: "Webhook now uses these run settings." });
-      return updated;
-    });
 
   const rotate = () =>
     act("regenerate the webhook", async () => {
@@ -220,6 +243,54 @@ export default function WebhookTriggerPanel({
 
   const optionsDiffer =
     !!trigger && normalizeOptions(trigger.run_options) !== normalizeOptions(runOptions);
+
+  // The webhook fires with the run settings STORED on the trigger. Those used to
+  // be a snapshot updated only by a "Use current run settings" button, so a
+  // webhook kept launching with whatever was on screen when it was created —
+  // e.g. an old charge account, whose derived scratch work_dir/archive dir the
+  // user could no longer write to (FILES_CLIENT_SSH_PERM_DENIED at mkdir). Now
+  // the settings shown in Run Settings ARE the webhook's: any difference is
+  // saved back (debounced, since queue lists settle a moment after opening).
+  const [syncing, setSyncing] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const optionsKey = normalizeOptions(runOptions);
+
+  const saveRunOptions = async () => {
+    if (!trigger) return;
+    setSyncing(true);
+    setSyncError(null);
+    try {
+      const updated: WebhookTrigger = await request(`/api/triggers/${trigger.trigger_id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ run_options: runOptions }),
+      });
+      setTrigger(updated);
+    } catch (e: any) {
+      // Kept on screen, not only as a toast: a failed sync means the webhook
+      // fires with settings that differ from what this drawer shows.
+      setSyncError(e?.message || "Unknown error");
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  // Sync straight away when the trigger first loads out of date, then debounce
+  // later edits (queue lists settle a moment after the drawer opens). An error
+  // stops the auto-retry until the settings change or "Save to webhook now".
+  const syncedOnceRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!opened || !trigger || !optionsDiffer || syncing) return;
+    const first = syncedOnceRef.current !== trigger.trigger_id;
+    if (!first && syncError) return;
+    syncedOnceRef.current = trigger.trigger_id;
+    const timer = setTimeout(saveRunOptions, first ? 0 : 600);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [opened, trigger?.trigger_id, optionsDiffer, optionsKey]);
+  // A change to the settings is a fresh attempt.
+  useEffect(() => setSyncError(null), [optionsKey]);
+
   const curl = trigger ? `curl -X POST "${trigger.webhook_url}"` : "";
 
   return (
@@ -269,6 +340,19 @@ export default function WebhookTriggerPanel({
         </Button>
       )}
 
+      {trigger && unsaved && (
+        <Alert color="red" variant="light" icon={<IconAlertTriangle size={16} />} title="Template not saved">
+          <Stack gap={6}>
+            <Text size="xs">{unsavedMessage}</Text>
+            {onSaveRequest && (
+              <Button size="xs" color="red" variant="light" leftSection={<IconDeviceFloppy size={14} />} onClick={onSaveRequest}>
+                Save template
+              </Button>
+            )}
+          </Stack>
+        </Alert>
+      )}
+
       {trigger && (
         <Stack gap={6}>
           <Code
@@ -286,7 +370,7 @@ export default function WebhookTriggerPanel({
                   variant="light"
                   color={copied ? "green" : undefined}
                   leftSection={copied ? <IconCheck size={14} /> : <IconCopy size={14} />}
-                  onClick={copy}
+                  onClick={(e) => copyWithWarning(copy, e)}
                 >
                   {copied ? "Copied" : "Copy URL"}
                 </Button>
@@ -299,7 +383,7 @@ export default function WebhookTriggerPanel({
                   variant="subtle"
                   color={copied ? "green" : "gray"}
                   leftSection={copied ? <IconCheck size={14} /> : <IconCopy size={14} />}
-                  onClick={copy}
+                  onClick={(e) => copyWithWarning(copy, e)}
                 >
                   {copied ? "Copied" : "Copy curl"}
                 </Button>
@@ -340,18 +424,33 @@ export default function WebhookTriggerPanel({
             </Text>
           )}
 
-          {optionsDiffer && (
-            <Alert color="yellow" variant="light" p="xs">
+          {syncError ? (
+            <Alert color="red" variant="light" p="xs" title="Webhook settings not updated">
               <Stack gap={6}>
                 <Text size="xs">
-                  This webhook launches with the run settings captured when it was last updated,
-                  which differ from the ones above.
+                  This webhook still fires with its OLD run settings (charged to{" "}
+                  {trigger.run_options?.slurm_account || "—"}, work dir {trigger.run_options?.work_dir || "—"}).
                 </Text>
-                <Button size="xs" variant="light" color="yellow" loading={busy} onClick={syncRunOptions}>
-                  Use current run settings
+                <Text size="xs" ff="monospace" style={{ wordBreak: "break-word" }}>{syncError}</Text>
+                <Button size="xs" color="red" variant="light" loading={syncing} onClick={saveRunOptions}>
+                  Save to webhook now
                 </Button>
               </Stack>
             </Alert>
+          ) : syncing || optionsDiffer ? (
+            <Group gap="xs" wrap="nowrap">
+              <Loader size={12} />
+              <Text size="xs" c="yellow.7" style={{ flex: 1 }}>Saving the run settings above to this webhook…</Text>
+              {!syncing && (
+                <Button size="compact-xs" variant="subtle" onClick={saveRunOptions}>Save now</Button>
+              )}
+            </Group>
+          ) : (
+            <Text size="xs" c="dimmed">
+              Fires with the run settings above — charged to {trigger.run_options?.slurm_account || "—"},
+              work dir {trigger.run_options?.work_dir || "—"}, outputs on {trigger.run_options?.archive_system || "—"}.
+              Kept in sync automatically.
+            </Text>
           )}
         </Stack>
       )}

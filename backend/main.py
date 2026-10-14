@@ -11,7 +11,7 @@ import uvicorn
 from datetime import datetime, timedelta, timezone
 
 from db import engine, SessionLocal, get_db, DATABASE_URL, DB_HOST, DB_PORT, DB_NAME, DB_USER
-from models import Base, StepTypeRegistry, StepTypePort, WorkflowTemplate, PipelineRun, RunStep, AppUser, WfNode, WfEdge, RunEdge, PortDataType, Secret, WorkflowTrigger
+from models import Base, StepTypeRegistry, StepTypePort, WorkflowTemplate, PipelineRun, RunStep, AppUser, WfNode, WfEdge, RunEdge, PortDataType, Secret, WorkflowTrigger, DeployPreference
 import auth
 import geospatial
 import annotation_adapter
@@ -1319,7 +1319,7 @@ def _build_dag_config(db: Session, template_version_id: int, user: AppUser) -> d
 @app.get("/api/workflow-templates/{template_version_id}/local-bundle")
 def export_local_bundle(
     template_version_id: int,
-    data_root: str = "./data",
+    data_root: str = "/",
     workdir: str = "./wf-local",
     images_dir: str = "./images",
     download: bool = True,
@@ -1388,16 +1388,62 @@ def _deployment_context(db: Session, user: AppUser, template_version_id: int,
     rows = deployment.step_images(bundle, registries, token, local_bundle._load_image_sources())
     safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", template.name or "workflow").strip("-") or "workflow"
     bundle_file = f"{safe_name}-v{template.version}-bundle.json"
+    sources = deployment.analyze_sources(bundle)
+    # Only what a step actually reads gets mounted; see analyze_sources.
     runner = deployment.runner_instructions(
-        data_root, workdir, images_dir, bundle_file, bundle.get("secrets_required") or []
+        data_root, workdir, images_dir, bundle_file, bundle.get("secrets_required") or [],
+        [src["platform_path"] for src in sources if src["used"]],
     )
-    return template, bundle, rows, runner, token, safe_name
+    return template, bundle, rows, runner, token, safe_name, sources
+
+
+class DeploySettings(BaseModel):
+    node: str = ""
+    nodeName: str = ""
+    remap: bool = False
+    data_root: str = "/"
+    workdir: str = ""
+
+
+@app.get("/api/workflow-templates/{template_version_id}/deploy-settings")
+def get_deploy_settings(template_version_id: int, db: Session = Depends(get_db),
+                        user: AppUser = Depends(get_current_user)):
+    """This user's saved Deploy-dialog settings for the workflow, or null."""
+    template = template_or_404(db, user, template_version_id)
+    row = db.query(DeployPreference).filter(
+        DeployPreference.user_id == user.user_id,
+        DeployPreference.template_id == template.template_id,
+    ).first()
+    return {"settings": row.settings if row else None}
+
+
+@app.put("/api/workflow-templates/{template_version_id}/deploy-settings")
+def put_deploy_settings(template_version_id: int, body: DeploySettings,
+                        db: Session = Depends(get_db),
+                        user: AppUser = Depends(get_current_user)):
+    """Save the Deploy-dialog settings for every version of this workflow.
+
+    Readable is enough (not owner-only): these are the caller's own settings
+    for where THEY run it, not a change to the template.
+    """
+    template = template_or_404(db, user, template_version_id)
+    row = db.query(DeployPreference).filter(
+        DeployPreference.user_id == user.user_id,
+        DeployPreference.template_id == template.template_id,
+    ).first()
+    if row:
+        row.settings = body.model_dump()
+    else:
+        db.add(DeployPreference(user_id=user.user_id, template_id=template.template_id,
+                                settings=body.model_dump()))
+    db.commit()
+    return {"settings": body.model_dump()}
 
 
 @app.get("/api/workflow-templates/{template_version_id}/deployment")
 def deployment_info(
     template_version_id: int,
-    data_root: str = "./data",
+    data_root: str = "/",
     workdir: str = "./wf-local",
     images_dir: str = "./images",
     db: Session = Depends(get_db),
@@ -1410,7 +1456,7 @@ def deployment_info(
     """
     from engine import deployment
 
-    _, bundle, rows, runner, _, _ = _deployment_context(
+    _, bundle, rows, runner, _, _, sources = _deployment_context(
         db, user, template_version_id, data_root, workdir, images_dir
     )
     for row in rows:
@@ -1418,6 +1464,11 @@ def deployment_info(
     return {
         "runner": runner,
         "images": rows,
+        # Each source's platform path, whether the node reads it, and what it
+        # feeds, so the dialog can preview where each input will be read from.
+        "sources": sources,
+        "steps": len([n for n in bundle["nodes"] if n.get("kind") == "job"]),
+        "unsupported": [n["label"] for n in bundle["nodes"] if n.get("kind") == "unsupported"],
         "secrets_required": bundle.get("secrets_required") or [],
         "warnings": bundle.get("warnings") or [],
     }
@@ -1426,7 +1477,7 @@ def deployment_info(
 @app.get("/api/workflow-templates/{template_version_id}/deployment.zip")
 def deployment_zip(
     template_version_id: int,
-    data_root: str = "./data",
+    data_root: str = "/",
     workdir: str = "./wf-local",
     images_dir: str = "./images",
     db: Session = Depends(get_db),
@@ -1440,10 +1491,15 @@ def deployment_zip(
     image's source link once — postit links are use-limited, so prefer keeping
     the zip over re-downloading it.
     """
+    return _deployment_zip_response(db, user, template_version_id, data_root, workdir, images_dir)
+
+
+def _deployment_zip_response(db: Session, user: AppUser, template_version_id: int,
+                             data_root: str, workdir: str, images_dir: str):
     from fastapi.responses import StreamingResponse
     from engine import deployment
 
-    template, bundle, rows, runner, token, safe_name = _deployment_context(
+    template, bundle, rows, runner, token, safe_name, _ = _deployment_context(
         db, user, template_version_id, data_root, workdir, images_dir
     )
     filename = f"{safe_name}-v{template.version}-deploy.zip"
@@ -1452,6 +1508,62 @@ def deployment_zip(
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@app.post("/api/workflow-templates/{template_version_id}/deployment-link")
+def deployment_link(
+    template_version_id: int,
+    request: Request,
+    data_root: str = "/",
+    workdir: str = "./wf-local",
+    images_dir: str = "./images",
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
+    """A short-lived, signed URL for the deployment zip that needs no login,
+    so the user can `curl` it straight onto a cluster node.
+
+    The link is a bearer credential until it expires (WF_DEPLOY_LINK_TTL_SECONDS,
+    default 1 h): whoever holds it gets the zip, built as this user. Access is
+    checked HERE, when it is minted, and again when it is redeemed — a template
+    the user can no longer see stops downloading even through a live link.
+    """
+    from engine import deployment
+
+    template = template_or_404(db, user, template_version_id)
+    args = (user.user_id, template_version_id, data_root, workdir, images_dir)
+    base = (os.getenv("APP_BASE_URL") or str(request.base_url)).rstrip("/")
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", template.name or "workflow").strip("-") or "workflow"
+    expires = datetime.now(timezone.utc) + timedelta(seconds=deployment.DOWNLOAD_LINK_TTL)
+    return {
+        "url": f"{base}/api/deployment-downloads/{deployment.make_download_token(*args, kind='zip')}",
+        # bundle.json alone, with these paths as its defaults — for a node that
+        # already unpacked the zip and only needs the paths changed.
+        "bundle_url": f"{base}/api/deployment-downloads/{deployment.make_download_token(*args, kind='bundle')}",
+        "filename": f"{safe_name}-v{template.version}-deploy.zip",
+        "folder": f"{safe_name}-v{template.version}",
+        "data_root": data_root,
+        "workdir": workdir,
+        "expires_at": expires.isoformat(),
+    }
+
+
+@app.get("/api/deployment-downloads/{token}")
+def deployment_download(token: str, db: Session = Depends(get_db)):
+    """Redeem a link from POST .../deployment-link. No session needed — the
+    signed token IS the authorization, and it names the user it acts as."""
+    from engine import deployment
+
+    payload = deployment.read_download_token(token)
+    if not payload:
+        raise HTTPException(status_code=403, detail="Download link is invalid or has expired — generate a new one.")
+    user = db.query(AppUser).filter(AppUser.user_id == payload["u"]).first()
+    if not user:
+        raise HTTPException(status_code=403, detail="Download link is invalid.")
+    if payload.get("k") == "bundle":
+        return export_local_bundle(payload["t"], payload["d"], payload["w"], payload["i"],
+                                   download=True, db=db, user=user)
+    return _deployment_zip_response(db, user, payload["t"], payload["d"], payload["w"], payload["i"])
 
 
 class RunOptions(BaseModel):
@@ -1486,6 +1598,34 @@ class RunOptions(BaseModel):
     # appended beneath it for isolation). Optional override — when omitted,
     # the base is derived from work_dir instead (see get_run_archive_context).
     archive_dir: Optional[str] = None
+
+
+@app.post("/api/workflow-templates/{template_version_id}/preflight", tags=["pipeline-runs"])
+def preflight_run(template_version_id: int, options: Optional[RunOptions] = None,
+                  db: Session = Depends(get_db),
+                  user: AppUser = Depends(get_current_user)):
+    """Verify a LIVE launch before it happens — the Tapis counterpart of the
+    local bundle's "Check workflow".
+
+    Checks, as the calling user and with the run settings given: the Tapis
+    session, each exec system / queue and whether every job fits the queue's
+    limits, that each Tapis app is registered, that source paths exist, and that
+    the archive location can be created (see engine/preflight.py for why that
+    one actually creates the base folder). Single-job blockers are included.
+
+    Returns {ok, checks: [{key, title, status: pass|warn|fail|skip, detail,
+    group}], archive}. Never launches anything.
+    """
+    from engine import preflight, tapis_auth
+
+    template = template_or_404(db, user, template_version_id)
+    # Same config a launch would freeze (see _launch_run): the options on top,
+    # the template's allocation as the default account, the caller's username.
+    cfg = {k: v for k, v in (options.model_dump(exclude_none=True) if options else {}).items()}
+    cfg.setdefault("slurm_account", template.allocation_account or "uot260")
+    cfg.setdefault("tapis_username", user.username)
+    token = tapis_auth.get_token_for_user(user, db)
+    return preflight.run(db, template, cfg, token)
 
 
 @app.post("/api/workflow-templates/{template_version_id}/single-job-preview",
@@ -1555,6 +1695,25 @@ def _launch_run(db: Session, template_version_id: int, user: AppUser,
     # unscoped template query exists in this file.
     template = template_or_404(db, user, template_version_id)
     dag_config.setdefault("slurm_account", template.allocation_account or "uot260")
+
+    # A path on the user's own node ("My node" in a path field's system list)
+    # can't be fetched by Tapis, so such a workflow only runs off-platform.
+    # Refused before anything is written, naming the nodes to change.
+    from engine.local_bundle import NODE_LOCAL_SYSTEM
+    node_local = [
+        n.node_label or n.step_type_key
+        for n in db.query(WfNode).filter(WfNode.template_version_id == template_version_id).all()
+        if (n.default_config or {}).get("system") == NODE_LOCAL_SYSTEM
+    ]
+    if node_local:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{', '.join(node_local)} read{'s' if len(node_local) == 1 else ''} data from your own node, "
+                "which the platform can't reach. Run this workflow with Deploy to my node, or pick a Tapis "
+                "system for those paths."
+            ),
+        )
 
     # Record the launching user so the run is owned by them and the engine can
     # resolve their Tapis token (get_token_for_run) when submitting jobs. The
@@ -2424,6 +2583,9 @@ def list_tapis_system_queues(system_id: str, db: Session = Depends(get_db),
     return {
         "system_id": system_id,
         "default_queue": result.get("batchDefaultLogicalQueueName"),
+        # Tapis file paths are relative to this; the Deploy dialog prefixes it
+        # to a browsed folder to get the real path on the node.
+        "root_dir": result.get("rootDir"),
         # Raw Tapis batchLogicalQueue objects (name, hpcQueueName, max/min node
         # count, cores per node, memory, minutes, ...) — passed through as-is
         # so the frontend can show whatever fields Tapis actually returns.
@@ -2624,6 +2786,9 @@ _PUBLIC_OPERATIONS = {
     # credential, and the run it starts belongs to the trigger's owner, not the
     # caller. See fire_webhook and models.WorkflowTrigger.
     ("/api/webhooks/{token}", "post"),
+    # Signed, expiring deployment-zip link for curl on a cluster node. The token
+    # IS the credential and names the user it acts as; see deployment_link.
+    ("/api/deployment-downloads/{token}", "get"),
 }
 
 # Path prefix -> tag, for operations declared on `app` itself. Longest prefix
@@ -2640,6 +2805,7 @@ _TAG_BY_PREFIX = [
     ("/api/tapis-files", "tapis"),
     ("/api/tapis-systems", "tapis"),
     ("/api/tapis", "tapis"),
+    ("/api/deployment-downloads", "workflow-templates"),
     ("/login", "auth"),
     ("/logout", "auth"),
     ("/oauth2", "auth"),

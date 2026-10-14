@@ -10,6 +10,9 @@ import {
 import type { Route } from "./+types/root";
 import "./app.css";
 import "@mantine/core/styles.css";
+// Without this, every notifications.show() renders unstyled and out of view —
+// errors (e.g. a failed webhook settings sync) happened silently.
+import "@mantine/notifications/styles.css";
 import "@xyflow/react/dist/style.css";
 import {
   MantineProvider,

@@ -83,6 +83,7 @@ export default function SingleJobPanel({
   mode,
   onModeChange,
   onPlanChange,
+  showModeSwitch = true,
 }: {
   opened: boolean;
   templateVersionId: number | null | undefined;
@@ -93,6 +94,8 @@ export default function SingleJobPanel({
   onModeChange: (mode: ExecutionMode) => void;
   // Lets the canvas refuse to launch a pipeline this mode can't express.
   onPlanChange?: (plan: SingleJobPlan | null) => void;
+  // Off when the host offers its own mode picker (RunSettingsDrawer's cards).
+  showModeSwitch?: boolean;
 }) {
   const [plan, setPlan] = useState<SingleJobPlan | null>(null);
   const [loading, setLoading] = useState(false);
@@ -146,21 +149,25 @@ export default function SingleJobPanel({
 
   return (
     <Stack gap="xs">
-      <SegmentedControl
-        fullWidth
-        size="xs"
-        value={mode}
-        onChange={(v) => onModeChange(v as ExecutionMode)}
-        data={[
-          { label: "One job per step", value: "per_step" },
-          { label: "Single job", value: "single_job" },
-        ]}
-      />
-      <Text size="xs" c="dimmed">
-        {mode === "per_step"
-          ? "Each step is its own Tapis job: it gets exactly the resources it asks for, and independent branches run at the same time. Each one queues separately."
-          : "The whole pipeline runs sequentially inside ONE Tapis job — one queue wait instead of one per step, sized to fit every step."}
-      </Text>
+      {showModeSwitch && (
+        <>
+          <SegmentedControl
+            fullWidth
+            size="xs"
+            value={mode}
+            onChange={(v) => onModeChange(v as ExecutionMode)}
+            data={[
+              { label: "One job per step", value: "per_step" },
+              { label: "Single job", value: "single_job" },
+            ]}
+          />
+          <Text size="xs" c="dimmed">
+            {mode === "per_step"
+              ? "Each step is its own Tapis job: it gets exactly the resources it asks for, and independent branches run at the same time. Each one queues separately."
+              : "The whole pipeline runs sequentially inside ONE Tapis job — one queue wait instead of one per step, sized to fit every step."}
+          </Text>
+        </>
+      )}
 
       {mode === "single_job" && (
         <>

@@ -25,7 +25,7 @@ From: python:3.12-slim-bookworm
 %labels
     Author WorkflowOrchestrator
     Description Executes a workflow bundle exported from the platform on a self-hosted node. Orchestrator only - each step runs in its own .sif image.
-    Version 0.1.0
+    Version 0.1.2
 
 %help
     Runs a workflow bundle (exported from the Workflow Orchestrator's canvas)

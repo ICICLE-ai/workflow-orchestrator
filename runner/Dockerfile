@@ -1,13 +1,16 @@
 # wf-runner as a Docker image — run an exported workflow bundle with Docker.
 #
-# Build from the runner/ directory:
-#   docker build -t wf-runner:0.1.0 runner/
+# Published (public) as ghcr.io/icicle-ai/workflow-runner — users just pull it:
+#   docker pull ghcr.io/icicle-ai/workflow-runner:v0.1.2
+#
+# Rebuilding (maintainers only; --platform because Apptainer's .deb is amd64):
+#   docker build --platform linux/amd64 -t ghcr.io/icicle-ai/workflow-runner:<tag> runner/
 #
 # Run (mount host paths at their OWN paths, so the bundle's absolute paths and
 # the run report mean the same thing inside and out):
 #   docker run --rm --privileged \
 #     -v "$PWD":"$PWD" -w "$PWD" -v /data:/data \
-#     wf-runner:0.1.0 bundle.json --data-root /data --workdir ./wf-local --images-dir /data/images
+#     ghcr.io/icicle-ai/workflow-runner:v0.1.2 bundle.json --data-root /data --workdir ./wf-local --images-dir /data/images
 #
 # Steps still run as Apptainer .sif images — that is the format every step
 # image is published in — so Apptainer is installed here and started once per
@@ -16,8 +19,8 @@
 # wf_runner.def (Apptainer) or run `python3 -m wf_runner` on the host instead;
 # all three execute the same code.
 #
-# Set WF_RUNNER_DOCKER_IMAGE on the backend to the pushed name of this image so
-# the Deploy dialog shows `docker pull <name>` instead of this build command.
+# After pushing a new tag, update the default in backend/engine/deployment.py
+# (or set WF_RUNNER_DOCKER_IMAGE) so the Deploy dialog points users at it.
 
 FROM python:3.12-slim-bookworm
 
@@ -45,6 +48,6 @@ RUN python3 -c "import wf_runner; print('runner OK', wf_runner.__version__)" \
 
 LABEL org.opencontainers.image.title="wf-runner" \
       org.opencontainers.image.description="Runs a Workflow Orchestrator bundle on a self-hosted node; each step runs as its own Apptainer image." \
-      org.opencontainers.image.version="0.1.0"
+      org.opencontainers.image.version="0.1.2"
 
 ENTRYPOINT ["python3", "-m", "wf_runner"]

@@ -5,6 +5,7 @@ import { IconSettings, IconTrash, IconCpu } from '@tabler/icons-react';
 import StepSettingsModal from './StepSettingsModal';
 import RunConfigModal from './RunConfigModal';
 import type { StepMeta, ConnectedInput } from '../pages/types';
+import { NODE_LOCAL_SYSTEM } from '../lib/tapis';
 
 // Resolve the actual path value a node's OUTPUT port exposes, for the
 // settings panel's design-time preview (e.g. fewShotAnnotation's read-only
@@ -55,7 +56,8 @@ function resolveOutputPath(
   // run exists) sees the same URI shape as the run-scoped resource does.
   const path = String(nodeConfigValues.path ?? '');
   const system = String(nodeConfigValues.system ?? '');
-  if (system && path && !path.includes('://')) {
+  // A "My node" path is a plain path on the user's machine, never a Tapis URI.
+  if (system && system !== NODE_LOCAL_SYSTEM && path && !path.includes('://')) {
     return `tapis://${system}/${path.replace(/^\/+/, '')}`;
   }
   return path;
