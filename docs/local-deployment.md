@@ -174,6 +174,10 @@ To add a link, or replace one that has expired, edit its `images` map:
   typo would otherwise be ignored), and exits non-zero on one, so it can run in
   CI. It never downloads the links, since each download uses up one of a
   postit's allowed uses.
+- **Allow it in the secret scan:** add the link's ID (the part after
+  `/redeem/`) to the allowlist in `.gitleaks.toml`. The secret scan treats every
+  Tapis postit link as a secret until it's listed there, and fails the PR
+  otherwise.
 
 Wherever a workflow includes one of these steps, its link appears in the Deploy
 dialog's image table (with a copy button), in the zip's `README.md`, and in

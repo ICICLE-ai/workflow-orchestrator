@@ -665,6 +665,10 @@ When a workflow runs on someone's own machine, each step's container image
    cd backend && uv run python scripts/check_image_sources.py
    ```
    It lists every step and its link, and flags keys that don't match a step.
+4. Add the link's ID (the part after `/redeem/`) to the allowlist in
+   `.gitleaks.toml`, next to the other image links. The PR's secret scan treats
+   every Tapis postit link as a secret until it's listed there, so skipping
+   this fails CI.
 
 No restart is needed. From then on, any workflow using that step includes the
 image in its deployment zip and shows the link in the Deploy dialog and the zip's

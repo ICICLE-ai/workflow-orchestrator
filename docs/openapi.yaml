@@ -1081,7 +1081,7 @@ paths:
         required: false
         schema:
           type: string
-          default: ./data
+          default: /
           title: Data Root
       - name: workdir
         in: query
@@ -1122,6 +1122,321 @@ paths:
           description: Not found, or not visible to the calling user.
       tags:
       - workflow-templates
+      security: *id001
+  /api/workflow-templates/{template_version_id}/deploy-settings:
+    get:
+      summary: Get Deploy Settings
+      description: This user's saved Deploy-dialog settings for the workflow, or null.
+      operationId: get_deploy_settings_api_workflow_templates__template_version_id__deploy_settings_get
+      parameters:
+      - name: template_version_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Template Version Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+        '404':
+          description: Not found, or not visible to the calling user.
+      tags:
+      - workflow-templates
+      security: *id001
+    put:
+      summary: Put Deploy Settings
+      description: 'Save the Deploy-dialog settings for every version of this workflow.
+
+
+        Readable is enough (not owner-only): these are the caller''s own settings
+
+        for where THEY run it, not a change to the template.'
+      operationId: put_deploy_settings_api_workflow_templates__template_version_id__deploy_settings_put
+      parameters:
+      - name: template_version_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Template Version Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeploySettings'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+        '404':
+          description: Not found, or not visible to the calling user.
+      tags:
+      - workflow-templates
+      security: *id001
+  /api/workflow-templates/{template_version_id}/deployment:
+    get:
+      summary: Deployment Info
+      description: 'How to run this template off-platform: the runner as a Docker or an
+
+        Apptainer image (with ready-to-paste commands), and every step''s container
+
+        image as named by its live Tapis app definition, with the command that
+
+        fetches it. See engine/deployment.py.'
+      operationId: deployment_info_api_workflow_templates__template_version_id__deployment_get
+      parameters:
+      - name: template_version_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Template Version Id
+      - name: data_root
+        in: query
+        required: false
+        schema:
+          type: string
+          default: /
+          title: Data Root
+      - name: workdir
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ./wf-local
+          title: Workdir
+      - name: images_dir
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ./images
+          title: Images Dir
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+        '404':
+          description: Not found, or not visible to the calling user.
+      tags:
+      - workflow-templates
+      security: *id001
+  /api/workflow-templates/{template_version_id}/deployment.zip:
+    get:
+      summary: Deployment Zip
+      description: "Everything to run this template on an offline node, as one zip: the\nbundle, every\
+        \ step image the server can fetch, the runner, run scripts and\na README saying where each piece\
+        \ goes.\n\nStreamed, since the images make it gigabytes. Downloading redeems each\nimage's source\
+        \ link once \u2014 postit links are use-limited, so prefer keeping\nthe zip over re-downloading\
+        \ it."
+      operationId: deployment_zip_api_workflow_templates__template_version_id__deployment_zip_get
+      parameters:
+      - name: template_version_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Template Version Id
+      - name: data_root
+        in: query
+        required: false
+        schema:
+          type: string
+          default: /
+          title: Data Root
+      - name: workdir
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ./wf-local
+          title: Workdir
+      - name: images_dir
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ./images
+          title: Images Dir
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+        '404':
+          description: Not found, or not visible to the calling user.
+      tags:
+      - workflow-templates
+      security: *id001
+  /api/workflow-templates/{template_version_id}/deployment-link:
+    post:
+      summary: Deployment Link
+      description: "A short-lived, signed URL for the deployment zip that needs no login,\nso the user\
+        \ can `curl` it straight onto a cluster node.\n\nThe link is a bearer credential until it expires\
+        \ (WF_DEPLOY_LINK_TTL_SECONDS,\ndefault 1 h): whoever holds it gets the zip, built as this user.\
+        \ Access is\nchecked HERE, when it is minted, and again when it is redeemed \u2014 a template\n\
+        the user can no longer see stops downloading even through a live link."
+      operationId: deployment_link_api_workflow_templates__template_version_id__deployment_link_post
+      parameters:
+      - name: template_version_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Template Version Id
+      - name: data_root
+        in: query
+        required: false
+        schema:
+          type: string
+          default: /
+          title: Data Root
+      - name: workdir
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ./wf-local
+          title: Workdir
+      - name: images_dir
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ./images
+          title: Images Dir
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+        '404':
+          description: Not found, or not visible to the calling user.
+      tags:
+      - workflow-templates
+      security: *id001
+  /api/deployment-downloads/{token}:
+    get:
+      summary: Deployment Download
+      description: "Redeem a link from POST .../deployment-link. No session needed \u2014 the\nsigned\
+        \ token IS the authorization, and it names the user it acts as."
+      operationId: deployment_download_api_deployment_downloads__token__get
+      parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Token
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      tags:
+      - workflow-templates
+      security: []
+  /api/workflow-templates/{template_version_id}/preflight:
+    post:
+      tags:
+      - pipeline-runs
+      summary: Preflight Run
+      description: "Verify a LIVE launch before it happens \u2014 the Tapis counterpart of the\nlocal\
+        \ bundle's \"Check workflow\".\n\nChecks, as the calling user and with the run settings given:\
+        \ the Tapis\nsession, each exec system / queue and whether every job fits the queue's\nlimits,\
+        \ that each Tapis app is registered, that source paths exist, and that\nthe archive location can\
+        \ be created (see engine/preflight.py for why that\none actually creates the base folder). Single-job\
+        \ blockers are included.\n\nReturns {ok, checks: [{key, title, status: pass|warn|fail|skip, detail,\n\
+        group}], archive}. Never launches anything."
+      operationId: preflight_run_api_workflow_templates__template_version_id__preflight_post
+      parameters:
+      - name: template_version_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Template Version Id
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/RunOptions'
+              - type: 'null'
+              title: Options
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+        '404':
+          description: Not found, or not visible to the calling user.
       security: *id001
   /api/workflow-templates/{template_version_id}/single-job-preview:
     post:
@@ -1960,6 +2275,30 @@ components:
       - to_format
       - dest
       title: ConvertRequest
+    DeploySettings:
+      properties:
+        node:
+          type: string
+          title: Node
+          default: ''
+        nodeName:
+          type: string
+          title: Nodename
+          default: ''
+        remap:
+          type: boolean
+          title: Remap
+          default: false
+        data_root:
+          type: string
+          title: Data Root
+          default: /
+        workdir:
+          type: string
+          title: Workdir
+          default: ''
+      type: object
+      title: DeploySettings
     EdgeModel:
       properties:
         id:
