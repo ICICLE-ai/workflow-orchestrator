@@ -388,7 +388,10 @@ def _default_work_dir(exec_system: str, slurm_account: str, username: str = "") 
     which get_run_archive_context treats the same as an unset work_dir.
     """
     if exec_system in _OSC_EXEC_SYSTEMS:
-        return f"/fs/scratch/{slurm_account}/jobs/"
+        # harvest_jobs, not jobs — see defaultWorkDir in frontend/app/lib/tapis.ts:
+        # the shared /fs/scratch/<acct>/jobs is owned by a single member (0755),
+        # so archiving under it failed for everyone else at mkdir.
+        return f"/fs/scratch/{slurm_account}/harvest_jobs/"
     if exec_system == "expanse-tapis-static":
         return "/jobs/"
     if exec_system == "expanse-tapis":
@@ -443,6 +446,41 @@ def resolve_node_exec_target(cfg: dict, node_config: dict, step_resources: dict)
     return exec_system, exec_queue
 
 
+def resolve_archive_base(cfg: dict, exec_system: str) -> tuple:
+    """(archive_system, work_dir, ws_base) for a run config — the directory every
+    run's per-run workspace (<ws_base>/<run_id>) is created under.
+
+    Pure (no run row needed) so the pre-launch check (engine.preflight) tests
+    exactly the location a launch will write to, rather than a re-derivation.
+    """
+    slurm_account = cfg.get("slurm_account", "")
+    username = cfg.get("tapis_username", "")
+    # Archive stays RUN-level (one home for every artifact) even though exec
+    # target varies per node: a downstream step's inputs are then always on the
+    # same system, so no edge in the DAG turns into a cross-site transfer of a
+    # full image directory. Only compute moves.
+    archive_system = cfg.get("archive_system") or cfg.get("exec_system") or exec_system
+    # work_dir therefore belongs to the ARCHIVE system, not this node's exec
+    # system — it's only ever used as the archive base below. Derived from
+    # archive_system when the run didn't set one, since a run spanning two
+    # sites has no single correct scratch path to inherit.
+    work_dir = cfg.get("work_dir", "") or _default_work_dir(archive_system, slurm_account, username)
+
+    # Per-run workspace, then per-node archive dir within it — /run_id/node_id
+    # is always appended (never taken from run options) so every step's output
+    # stays isolated and downstream steps can find it deterministically. The
+    # base it's appended to is archive_dir when the run set one, else derived
+    # from work_dir as before.
+    archive_dir_override = cfg.get("archive_dir", "")
+    if archive_dir_override:
+        ws_base = archive_dir_override.rstrip("/")
+    elif work_dir:
+        ws_base = work_dir.rstrip("/") + "/wf_runs"
+    else:
+        ws_base = "wf_runs"
+    return archive_system, work_dir, ws_base
+
+
 @ds.transaction(isolation_level="READ COMMITTED")
 def get_run_archive_context(run_id: int, node_key: str = None) -> dict:
     """Return substitution values for a step's Tapis job spec.
@@ -486,7 +524,6 @@ def get_run_archive_context(run_id: int, node_key: str = None) -> dict:
 
     slurm_account = cfg.get("slurm_account", "")
     username = cfg.get("tapis_username", "")
-    archive_dir_override = cfg.get("archive_dir", "")
 
     # The node being rendered, plus its step's declared compute requirement —
     # both needed before exec_system can be picked, since exec target is now
@@ -507,28 +544,7 @@ def get_run_archive_context(run_id: int, node_key: str = None) -> dict:
         cfg, (node.default_config if node is not None else {}) or {}, step_resources
     )
 
-    # Archive stays RUN-level (one home for every artifact) even though exec
-    # target varies per node: a downstream step's inputs are then always on the
-    # same system, so no edge in the DAG turns into a cross-site transfer of a
-    # full image directory. Only compute moves.
-    archive_system = cfg.get("archive_system") or cfg.get("exec_system") or exec_system
-    # work_dir therefore belongs to the ARCHIVE system, not this node's exec
-    # system — it's only ever used as the archive base below. Derived from
-    # archive_system when the run didn't set one, since a run spanning two
-    # sites has no single correct scratch path to inherit.
-    work_dir = cfg.get("work_dir", "") or _default_work_dir(archive_system, slurm_account, username)
-
-    # Per-run workspace, then per-node archive dir within it — /run_id/node_id
-    # is always appended (never taken from run options) so every step's output
-    # stays isolated and downstream steps can find it deterministically. The
-    # base it's appended to is archive_dir when the run set one, else derived
-    # from work_dir as before.
-    if archive_dir_override:
-        ws_base = archive_dir_override.rstrip("/")
-    elif work_dir:
-        ws_base = work_dir.rstrip("/") + "/wf_runs"
-    else:
-        ws_base = "wf_runs"
+    archive_system, work_dir, ws_base = resolve_archive_base(cfg, exec_system)
     workspace = f"{ws_base}/{run_id}"
     # Per-node dir for a specific step, grouped by step type; the workspace
     # root when no node is given (e.g. the run-level archive base). `node` was

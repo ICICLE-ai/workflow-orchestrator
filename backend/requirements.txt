@@ -13,7 +13,7 @@ pydantic-settings>=2.0
 # The durable-execution engine (engine/workflows.py, engine/transactions.py).
 # Was missing here, so an environment built from this file could not import
 # main.py at all — it failed on `from dbos import DBOS`.
-dbos>=2.23.0
+dbos>=2.23.0,<3  # 3.x removed DBOS(fastapi=...), which main.py uses
 geopandas>=1.1.4
 # geopandas' vector I/O engine; required to read/write the GeoPackage and
 # shapefile artifacts the geospatial steps produce.

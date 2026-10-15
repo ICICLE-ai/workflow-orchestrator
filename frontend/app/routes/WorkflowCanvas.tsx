@@ -1,12 +1,17 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { ReactFlow, ReactFlowProvider, addEdge, useNodesState, useEdgesState, Background, Controls } from '@xyflow/react';
 import { AppShell, Group, Button, Text, ActionIcon, Stack, Title, Drawer, TextInput, Textarea, Select, Notification, Loader, Alert, List, Accordion, Divider, Modal, Badge, Tooltip } from '@mantine/core';
-import { IconArrowLeft, IconDeviceFloppy, IconX, IconPlayerPlay, IconAlertTriangle, IconEye } from '@tabler/icons-react';
+import { IconArrowLeft, IconDeviceFloppy, IconX, IconPlayerPlay, IconAlertTriangle, IconEye, IconServerBolt } from '@tabler/icons-react';
 import { useNavigate, useParams, useLoaderData } from 'react-router';
+import { notifications } from '@mantine/notifications';
 import CustomNode from '../components/CustomNode';
 import { apiFetch, fetchCurrentUser } from '../lib/api';
 import { TAPIS_SYSTEMS, defaultWorkDir } from '../lib/tapis';
 import TopNav from '../components/TopNav';
+import ThemeToggle from '../components/ThemeToggle';
+import RunSettingsDrawer, { type RunOptions, type JobSteps } from '../components/RunSettingsDrawer';
+import { type ExecutionMode, type SingleJobPlan } from '../components/SingleJobPanel';
+import DeployDialog from '../components/DeployDialog';
 
 const nodeTypes = { customNode: CustomNode };
 
@@ -183,6 +188,12 @@ function Flow() {
   // /runs/:runId, which we navigate to as soon as launch succeeds.
   const [running, setRunning] = useState(false);
 
+  // The merged single-job plan the backend would submit, when that mode is
+  // selected. Held here (not just inside the panel) because its `blockers` decide
+  // whether Launch is allowed at all — the same list the launch endpoint would
+  // refuse with, so the button doesn't offer a run that is going to 400.
+  const [singleJobPlan, setSingleJobPlan] = useState<SingleJobPlan | null>(null);
+
   // The graph as of the last load/save (see graphSnapshot). `null` until a
   // template is loaded, and for a brand-new unsaved canvas.
   const [savedSnapshot, setSavedSnapshot] = useState<string | null>(null);
@@ -191,7 +202,12 @@ function Flow() {
   // Its counterpart for a template the user doesn't own, where neither "save a
   // version" nor "save a draft" is available — see handleRun.
   const [readOnlyRunPromptOpen, setReadOnlyRunPromptOpen] = useState(false);
-  const isDirty = savedSnapshot !== null && graphSnapshot(nodes, edges) !== savedSnapshot;
+  // The allocation account counts too: it's saved on the version, and a run of
+  // the last-saved version would otherwise silently ignore an edited one.
+  const isDirty =
+    savedSnapshot !== null &&
+    (graphSnapshot(nodes, edges) !== savedSnapshot ||
+      (templateData?.allocation_account || 'uot260') !== formData.allocation_account);
 
   // Run settings — where/how the workflow's Tapis jobs execute. Defaults target
   // OSC Pitzer (the working exec system); the user can edit before launching.
@@ -204,6 +220,10 @@ function Flow() {
     // flight_plan/geospatial go to a CPU queue in the SAME run — previously
     // impossible, since every step either followed one run-level pair or
     // hardcoded its own site in step.json.
+    // Per-step (one Tapis job per node) or single_job (the whole pipeline in one).
+    // Part of runOptions because it IS a run option — it rides to /execute with
+    // the rest, and the backend freezes the merged plan onto the run.
+    execution_mode: 'per_step' as ExecutionMode,
     exec_system: 'pitzer-tapis',
     exec_queue: 'cpu',
     // Blank inherits the CPU pair above, preserving single-target behaviour for
@@ -218,6 +238,14 @@ function Flow() {
     archive_dir: '',
     slurm_account: 'PAS2699',
   });
+
+  // Derived from the two above, so it lives after both: a blocked single-job plan
+  // is what disables Launch.
+  const singleJobMode = runOptions.execution_mode === 'single_job';
+  const singleJobBlocked = singleJobMode && !!singleJobPlan && singleJobPlan.blockers.length > 0;
+
+  // "Deploy to my node" — see components/DeployDialog.tsx.
+  const [deployOpened, setDeployOpened] = useState(false);
 
   // Tapis username — needed for expanse-tapis's per-user scratch path.
   const [tapisUsername, setTapisUsername] = useState('');
@@ -276,6 +304,16 @@ function Flow() {
       .filter(Boolean)
   )) as string[];
 
+  // The nodes that will submit a Tapis job (not sources/sinks or design-time
+  // steps), split by the target they follow — drives what Run Settings shows.
+  const jobSteps: JobSteps = { cpu: [], gpu: [] };
+  for (const n of nodes as any[]) {
+    const cfg = n.data?.fullStepConfig;
+    if (!cfg || cfg.category === 'source' || cfg.category === 'sink' || cfg.submits_job === false) continue;
+    const label = cfg.display_name || n.data?.nodeType;
+    (cfg.resources?.gpu ? jobSteps.gpu : jobSteps.cpu).push(label);
+  }
+
   // Human-readable limits for a selected queue, shown as the Select's
   // description once queues have loaded.
   const queueDetail = (qs: any[], name: string) => {
@@ -297,6 +335,17 @@ function Flow() {
     [portDataTypes]
   );
 
+  // The run's charge account FOLLOWS the template's allocation account — on
+  // load, and whenever it's edited in the save drawer. Previously it was copied
+  // once at load only, so after changing the allocation account Run Settings
+  // kept offering (and launching with) the old one until a full reload. A
+  // manual edit in Run Settings still sticks until the allocation changes again.
+  useEffect(() => {
+    const account = formData.allocation_account;
+    if (!account) return;
+    setRunOptions((prev) => (prev.slurm_account === account ? prev : { ...prev, slurm_account: account }));
+  }, [formData.allocation_account]);
+
   useEffect(() => {
     if (templateData) {
       setFormData({
@@ -305,10 +354,6 @@ function Flow() {
         category: templateData.category,
         allocation_account: templateData.allocation_account || 'uot260',
       });
-      // Prefill the run's charge account from the template's allocation account.
-      if (templateData.allocation_account) {
-        setRunOptions((prev) => ({ ...prev, slurm_account: templateData.allocation_account }));
-      }
 
       const hydratedNodes = templateData.nodes.map((n: any) => {
         const stepConfig = stepTypes.find((s: any) => s.step_type_key === n.data.nodeType);
@@ -510,8 +555,15 @@ function Flow() {
         return;
       }
       const data = await res.json();
-      alert(data.message);
-      navigate('/templates');
+      // Stay on the canvas — saving is usually followed by running. Swap the
+      // URL to the version just saved (replace, so Back doesn't land on the
+      // pre-save one): the loader refetches it, which re-hydrates the graph,
+      // resets the unsaved-changes snapshot, and points Run / the webhook panel
+      // at the new template_version_id. A brand-new template gets its first
+      // /templates/:id/edit URL the same way.
+      setDrawerOpened(false);
+      notifications.show({ color: 'green', title: 'Workflow saved', message: data.message });
+      navigate(`/templates/${data.template_version_id}/edit`, { replace: true });
     } catch (err) {
       setSaveError(['Failed to save template (network error).']);
     }
@@ -520,8 +572,8 @@ function Flow() {
   // Persist the current canvas as a new version and return its
   // template_version_id. `draft` marks it as a "run without saving" snapshot —
   // same rows, but hidden from the template list (see WorkflowTemplate.is_draft).
-  // Unlike handleSave this doesn't navigate away, because the run flow needs to
-  // keep going with the id it returns.
+  // Unlike handleSave this doesn't move to the new version's URL, because the
+  // run flow keeps going with the id it returns.
   const persistVersion = async (draft: boolean): Promise<number> => {
     const payload = {
       ...formData,
@@ -648,6 +700,23 @@ function Flow() {
                 {running ? 'Running…' : 'Run Workflow'}
               </Button>
             )}
+            {templateData && (
+              // Exports this version as a portable plan that runs on hardware
+              // the user owns, with no Tapis involved — see
+              // backend/engine/local_bundle.py and docs/local-deployment.md.
+              // Deliberately exports the SAVED version, not the canvas: the
+              // bundle must correspond to something reproducible, and the
+              // "Unsaved changes" badge beside it already says when those
+              // differ.
+              <Button
+                variant="default"
+                leftSection={<IconServerBolt size={16} />}
+                onClick={() => setDeployOpened(true)}
+                title="Export this workflow to run on your own node"
+              >
+                Deploy to my node
+              </Button>
+            )}
             {/* Standing indicator, so the state that changes what Run does is
                 visible before Run is pressed rather than only in the prompt. */}
             {isDirty && (
@@ -682,6 +751,7 @@ function Flow() {
                 {templateData ? 'Save New Version' : 'Save Template'}
               </Button>
             )}
+            <ThemeToggle />
           </Group>
         </Group>
       </AppShell.Header>
@@ -870,104 +940,39 @@ function Flow() {
         </Stack>
       </Drawer>
 
-      {/* Run Settings — where/how the workflow's Tapis jobs execute. Prefilled
-          with OSC Pitzer defaults; user reviews/edits, then launches. */}
-      <Drawer opened={runSettingsOpened} onClose={() => setRunSettingsOpened(false)} title="Run Settings" position="right">
-        <Stack>
-          <Text size="sm" c="dimmed">
-            Where this workflow's jobs run on Tapis. Each step declares whether it needs a GPU, and is routed
-            to the matching target below — so GPU steps (zero-shot, training) and CPU steps (flight plan,
-            geospatial) can run on different systems and queues within one run. A step can still pin its own
-            system via its Run Configuration.
-          </Text>
+      {/* Run Settings — how and where the workflow's Tapis jobs execute.
+          Organised around the run type; see RunSettingsDrawer. */}
+      <RunSettingsDrawer
+        opened={runSettingsOpened}
+        onClose={() => setRunSettingsOpened(false)}
+        title={templateData ? `${templateData.name} · v${templateData.version}` : undefined}
+        runOptions={runOptions as RunOptions}
+        setRunOptions={(fn) => setRunOptions((prev) => fn(prev as RunOptions) as typeof prev)}
+        cpuQueues={{ queues, loading: queuesLoading, detail: selectedQueueDetail }}
+        gpuQueues={{ queues: gpuQueues.queues, loading: gpuQueues.loading, detail: gpuQueueDetail }}
+        jobSteps={jobSteps}
+        templateVersionId={templateData?.template_version_id}
+        onPlanChange={setSingleJobPlan}
+        singleJobBlocked={singleJobBlocked}
+        running={running}
+        unsaved={isDirty}
+        onLaunch={handleRun}
+        onSaveRequest={
+          isReadOnly
+            ? undefined
+            : () => {
+                setRunSettingsOpened(false);
+                setDrawerOpened(true);
+              }
+        }
+      />
 
-          <Divider label="CPU target" labelPosition="left" />
-          <Select
-            label="Exec system"
-            description="Where steps with no GPU requirement run"
-            data={TAPIS_SYSTEMS}
-            value={runOptions.exec_system}
-            allowDeselect={false}
-            onChange={(v) => setRunOptions((prev) => ({
-              ...prev,
-              exec_system: v ?? prev.exec_system,
-              // Default the archive system to match; the field below still
-              // lets it be pointed elsewhere afterward.
-              archive_system: v ?? prev.archive_system,
-            }))}
-          />
-          <Select
-            label="Queue"
-            description={
-              queuesLoading
-                ? "Loading queues from the exec system…"
-                : selectedQueueDetail || "Scheduler queue offered by the exec system"
-            }
-            data={queues.map((q: any) => q.name).filter(Boolean)}
-            value={runOptions.exec_queue}
-            onChange={(v) => setRunOptions((prev) => ({ ...prev, exec_queue: v ?? prev.exec_queue }))}
-            disabled={queuesLoading}
-            placeholder={queuesLoading ? "Loading…" : "Select a queue"}
-            allowDeselect={false}
-          />
-
-          <Divider label="GPU target" labelPosition="left" />
-          <Select
-            label="Exec system"
-            description={`Where steps declaring a GPU requirement run${gpuStepNames.length ? ` — ${gpuStepNames.join(', ')} on this canvas` : ' (none on this canvas yet)'}`}
-            data={TAPIS_SYSTEMS}
-            value={runOptions.gpu_exec_system}
-            allowDeselect={false}
-            onChange={(v) => setRunOptions((prev) => ({ ...prev, gpu_exec_system: v ?? prev.gpu_exec_system }))}
-          />
-          <Select
-            label="Queue"
-            description={
-              gpuQueues.loading
-                ? "Loading queues from the GPU exec system…"
-                : gpuQueueDetail || "Scheduler queue offered by the GPU exec system"
-            }
-            data={gpuQueues.queues.map((q: any) => q.name).filter(Boolean)}
-            value={runOptions.gpu_exec_queue}
-            onChange={(v) => setRunOptions((prev) => ({ ...prev, gpu_exec_queue: v ?? prev.gpu_exec_queue }))}
-            disabled={gpuQueues.loading}
-            placeholder={gpuQueues.loading ? "Loading…" : "Select a queue"}
-            allowDeselect={false}
-          />
-
-          <Divider label="Shared" labelPosition="left" />
-          <TextInput
-            label="Slurm account"
-            description="Allocation to charge (e.g. PAS2699)"
-            value={runOptions.slurm_account}
-            onChange={(e) => setRunOptions({ ...runOptions, slurm_account: e.currentTarget.value })}
-          />
-          <TextInput
-            label="Work dir"
-            description="Derived automatically from the exec system (and charge account / Tapis username)"
-            value={runOptions.work_dir}
-            disabled
-          />
-          <Select
-            label="Archive system"
-            description="Where step outputs are archived (unless a sink node overrides it)"
-            data={TAPIS_SYSTEMS}
-            value={runOptions.archive_system}
-            allowDeselect={false}
-            onChange={(v) => setRunOptions((prev) => ({ ...prev, archive_system: v ?? prev.archive_system }))}
-          />
-          <TextInput
-            label="Archive dir (optional)"
-            description="Base archive directory on the archive system. Leave blank to derive it from Work dir instead — either way, each step still archives under .../{run_id}/{step_type_key}/{node_id}."
-            placeholder={runOptions.work_dir ? `${runOptions.work_dir.replace(/\/$/, '')}/wf_runs` : 'wf_runs'}
-            value={runOptions.archive_dir}
-            onChange={(e) => setRunOptions({ ...runOptions, archive_dir: e.currentTarget.value })}
-          />
-          <Button color="green" fullWidth mt="md" leftSection={<IconPlayerPlay size={16} />} onClick={handleRun}>
-            Launch Run
-          </Button>
-        </Stack>
-      </Drawer>
+      <DeployDialog
+        opened={deployOpened}
+        onClose={() => setDeployOpened(false)}
+        templateData={templateData}
+        isDirty={isDirty}
+      />
 
       {/* Unsaved changes at launch time. The run has NOT started at this point —
           whichever option is taken, what executes is the graph currently on the

@@ -1,10 +1,12 @@
 import type { Route } from "./+types/runs";
-import { AppShell, Container, Title, Text, Button, Group, Card, ThemeIcon, ActionIcon, Badge, Stack, Collapse, Loader, Modal, Code, ScrollArea } from "@mantine/core";
-import { IconActivity, IconArrowLeft, IconRefresh, IconChevronDown, IconChevronRight, IconPlayerStop, IconFileText } from "@tabler/icons-react";
+import { AppShell, Container, Title, Text, Button, Group, Card, ThemeIcon, ActionIcon, Badge, Stack, Collapse, Loader, Modal, Code, ScrollArea, TextInput, Select, Tooltip } from "@mantine/core";
+import { IconActivity, IconArrowLeft, IconRefresh, IconChevronDown, IconChevronRight, IconPlayerStop, IconFileText, IconSearch, IconPlayerPlay } from "@tabler/icons-react";
+import { notifications } from "@mantine/notifications";
 import { useNavigate } from "react-router";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { apiFetch } from "../lib/api";
 import TopNav from "../components/TopNav";
+import ThemeToggle from "../components/ThemeToggle";
 
 export async function clientLoader() {
   const res = await apiFetch("/api/pipeline-runs");
@@ -28,6 +30,14 @@ const stepColor = (s: string) => {
   if (s === "cancelled") return "orange";
   return "gray";
 };
+
+const STATUS_OPTIONS = ["RUNNING", "COMPLETED", "FAILED", "CANCELLED"];
+const SORT_OPTIONS = [
+  { value: "created_desc", label: "Newest first" },
+  { value: "created_asc", label: "Oldest first" },
+  { value: "name_asc", label: "Name (A–Z)" },
+  { value: "name_desc", label: "Name (Z–A)" },
+];
 
 // Modal that fetches and shows a step's failure detail: our recorded error,
 // Tapis' outcome summary, and the container's stdout/stderr (tapisjob.out).
@@ -161,6 +171,31 @@ export default function Runs({ loaderData }: Route.ComponentProps) {
   const [refreshing, setRefreshing] = useState(false);
 
   const [stopping, setStopping] = useState<number | null>(null);
+  const [resuming, setResuming] = useState<number | null>(null);
+
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<string | null>(null);
+  const [sortBy, setSortBy] = useState<string>("created_desc");
+
+  const visibleRuns = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    let result = runs.filter((r: any) => {
+      if (statusFilter && (r.status || "").toUpperCase() !== statusFilter) return false;
+      if (!q) return true;
+      const name = r.template_name || r.name || "";
+      return name.toLowerCase().includes(q) || String(r.run_id).includes(q);
+    });
+    result = [...result].sort((a: any, b: any) => {
+      switch (sortBy) {
+        case "name_asc": return (a.template_name || a.name || "").localeCompare(b.template_name || b.name || "");
+        case "name_desc": return (b.template_name || b.name || "").localeCompare(a.template_name || a.name || "");
+        case "created_asc": return new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime();
+        case "created_desc":
+        default: return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime();
+      }
+    });
+    return result;
+  }, [runs, search, statusFilter, sortBy]);
 
   const refresh = useCallback(async () => {
     setRefreshing(true);
@@ -170,6 +205,40 @@ export default function Runs({ loaderData }: Route.ComponentProps) {
     } catch { /* ignore */ }
     setRefreshing(false);
   }, []);
+
+  // One-click "carry on from where it stopped" — no checkpoint, so nothing that
+  // already succeeded is redone. Choosing a checkpoint (and changing a step's
+  // config along with it) needs the graph for context, so that lives on the run
+  // page's Resume modal rather than here.
+  const handleResume = useCallback(async (runId: number) => {
+    setResuming(runId);
+    try {
+      const r = await apiFetch(`/api/pipeline-runs/${runId}/resume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err.detail || `Could not resume the run (HTTP ${r.status}).`);
+      }
+      const result = await r.json();
+      notifications.show({
+        color: "blue",
+        title: `Run #${runId} resumed`,
+        message: `${result.steps_rerunning.length} step(s) re-running, `
+          + `${result.steps_preserved.length} preserved.`,
+      });
+    } catch (e: any) {
+      notifications.show({
+        color: "red",
+        title: "Could not resume",
+        message: e?.message || "Unknown error",
+      });
+    }
+    setResuming(null);
+    refresh();
+  }, [refresh]);
 
   const handleStop = useCallback(async (runId: number) => {
     if (!window.confirm(`Stop run #${runId}? This cancels the workflow and any running Tapis job. This cannot be undone.`)) return;
@@ -205,6 +274,7 @@ export default function Runs({ loaderData }: Route.ComponentProps) {
             <Text fw={700} style={{ whiteSpace: 'nowrap' }}>No-Code Workflow Studio</Text>
             <TopNav />
           </Group>
+          <ThemeToggle />
         </Group>
       </AppShell.Header>
 
@@ -220,9 +290,39 @@ export default function Runs({ loaderData }: Route.ComponentProps) {
           {runs.length === 0 ? (
             <Text c="dimmed" ta="center" py="xl">No runs yet. Execute a workflow to see it here.</Text>
           ) : (
-            <Stack gap="sm">
-              {runs.map((r: any) => {
+            <>
+              <Group mb="lg" gap="sm" wrap="wrap">
+                <TextInput
+                  placeholder="Search runs..."
+                  leftSection={<IconSearch size={16} />}
+                  value={search}
+                  onChange={(e) => setSearch(e.currentTarget.value)}
+                  style={{ flex: 1, minWidth: 200 }}
+                />
+                <Select
+                  placeholder="All statuses"
+                  data={STATUS_OPTIONS}
+                  value={statusFilter}
+                  onChange={setStatusFilter}
+                  clearable
+                  w={160}
+                />
+                <Select
+                  data={SORT_OPTIONS}
+                  value={sortBy}
+                  onChange={(v) => setSortBy(v || "created_desc")}
+                  allowDeselect={false}
+                  w={170}
+                />
+              </Group>
+
+              {visibleRuns.length === 0 ? (
+                <Text c="dimmed" ta="center" py="xl">No runs match your filters.</Text>
+              ) : (
+                <Stack gap="sm">
+                  {visibleRuns.map((r: any) => {
                 const isRunning = (r.status || '').toUpperCase() === 'RUNNING';
+                const canResume = ['FAILED', 'CANCELLED'].includes((r.status || '').toUpperCase());
                 return (
                 <Card key={r.run_id} shadow="sm" padding="md" radius="md" withBorder
                   style={isRunning ? { borderColor: '#3b82f6' } : undefined}>
@@ -249,6 +349,16 @@ export default function Runs({ loaderData }: Route.ComponentProps) {
                           {stopping === r.run_id ? 'Stopping…' : 'Stop'}
                         </Button>
                       )}
+                      {canResume && (
+                        <Tooltip label="Carry on from where it stopped, keeping completed steps">
+                          <Button size="xs" color="blue" variant="light"
+                            leftSection={resuming === r.run_id ? <Loader size={12} /> : <IconPlayerPlay size={14} />}
+                            disabled={resuming === r.run_id}
+                            onClick={() => handleResume(r.run_id)}>
+                            {resuming === r.run_id ? 'Resuming…' : 'Resume'}
+                          </Button>
+                        </Tooltip>
+                      )}
                       <Button size="xs" variant={isRunning ? 'filled' : 'light'}
                         color={isRunning ? 'blue' : 'gray'}
                         onClick={() => navigate(`/runs/${r.run_id}`)}>
@@ -263,9 +373,11 @@ export default function Runs({ loaderData }: Route.ComponentProps) {
                     </Collapse>
                   )}
                 </Card>
-                );
-              })}
-            </Stack>
+                    );
+                  })}
+                </Stack>
+              )}
+            </>
           )}
         </Container>
       </AppShell.Main>

@@ -116,7 +116,7 @@
         { "name": "score threshold", "arg": "--score-threshold" },
         { "name": "score threshold value", "arg": "${score_threshold}" },
         { "name": "class filter", "arg": "--class-filter", "if": "class_filter" },
-        { "name": "class filter value", "arg": "${class_filter}", "if": "class_filter" }
+        { "name": "class filter value", "arg": "'${class_filter}'", "if": "class_filter" }
       ],
       "schedulerOptions": [
         { "name": "slurm account", "arg": "-A ${slurm_account}" },

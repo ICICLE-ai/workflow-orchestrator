@@ -414,7 +414,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "dbos", specifier = ">=2.23.0" },
+    { name = "dbos", specifier = ">=2.23.0,<3" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.136.3" },
     { name = "geopandas", specifier = ">=1.1.4" },
     { name = "httpx", specifier = ">=0.27" },

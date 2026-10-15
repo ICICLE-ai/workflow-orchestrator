@@ -1,23 +1,57 @@
 {
   "step_type_key": "mission_export",
-  "resources": { "gpu": false },
-  "display_name": "📤 Mission Export Adapter",
-  "description": "Converts a platform-agnostic flight_plan.json (from the 'flight_plan' step) into drone/GCS-specific mission files, one file per battery/tank-limited charge cycle, via the export-flight-mission Tapis app. Sprayer control is emitted as MAV_CMD_DO_SET_SERVO toggling a configurable servo/relay channel — portable across ArduPilot and PX4. The DJI (.kmz) output's spray-action tag and drone/payload enum values are unverified placeholders (DJI's public docs cover camera/gimbal actions, not Agras spray control) — see the drone_enum_value/payload_enum_value/spray_action_tag/spray_param_tag fields below; swap in real values once confirmed against an actual DJI Pilot 2 / Agras export.",
+  "resources": {
+    "gpu": false
+  },
+  "display_name": "\ud83d\udce4 Mission Export Adapter",
+  "description": "Converts a platform-agnostic flight_plan.json (from the 'flight_plan' step) into drone/GCS-specific mission files, one file per battery/tank-limited charge cycle, via the export-flight-mission Tapis app. Sprayer control is emitted as MAV_CMD_DO_SET_SERVO toggling a configurable servo/relay channel \u2014 portable across ArduPilot and PX4. The DJI (.kmz) output's spray-action tag and drone/payload enum values are unverified placeholders (DJI's public docs cover camera/gimbal actions, not Agras spray control) \u2014 see the drone_enum_value/payload_enum_value/spray_action_tag/spray_param_tag fields below; swap in real values once confirmed against an actual DJI Pilot 2 / Agras export.",
   "category": "Post-processing",
   "icon": "send",
   "tapis_app_id": "export-flight-mission",
   "inputs": [
-    { "name": "flight_plan", "type": "json_results" }
+    {
+      "name": "flight_plan",
+      "type": "json_results"
+    }
   ],
   "outputs": [
-    { "name": "missions_dir", "type": "mission_files_dir" }
+    {
+      "name": "missions_dir",
+      "type": "mission_files_dir"
+    }
   ],
   "config_schema": {
     "format": {
       "type": "select",
-      "options": ["all", "ardupilot", "px4", "generic_csv", "dji"],
+      "options": [
+        "all",
+        "ardupilot",
+        "px4",
+        "generic_csv",
+        "dji"
+      ],
       "description": "Which mission format(s) to export. 'all' produces every format at once, each in its own subfolder.",
       "default": "all"
+    },
+    "waypoint_hold_s": {
+      "type": "float",
+      "description": "ArduPilot only: seconds the aircraft holds at each waypoint (NAV_WAYPOINT param1). 1.0 makes it pause briefly at every point, which is what a survey/camera flight wants; 0 flies straight through.",
+      "default": 1.0
+    },
+    "takeoff_pitch": {
+      "type": "float",
+      "description": "ArduPilot only: minimum pitch in degrees for the NAV_TAKEOFF item that now starts every mission file.",
+      "default": 15.0
+    },
+    "cam_trigger_dist_m": {
+      "type": "float",
+      "description": "ArduPilot only: trigger the camera every N metres (MAV_CMD_DO_SET_CAM_TRIGG_DIST), for flying a plan as a survey. 0 omits the command entirely.",
+      "default": 0.0
+    },
+    "emit_sprayer_servo": {
+      "type": "boolean",
+      "description": "ArduPilot only: include the DO_SET_SERVO sprayer on/off items. Off by default - an airframe with no sprayer should not carry servo commands for an unwired channel.",
+      "default": false
     },
     "sprayer_servo_channel": {
       "type": "int",
@@ -36,36 +70,36 @@
     },
     "hover_speed_mps": {
       "type": "float",
-      "description": "PX4 .plan only: the hoverSpeed field — speed PX4 uses for vertical/hovering maneuvers, separate from horizontal cruise speed. Has no effect on ArduPilot or DJI output.",
+      "description": "PX4 .plan only: the hoverSpeed field \u2014 speed PX4 uses for vertical/hovering maneuvers, separate from horizontal cruise speed. Has no effect on ArduPilot or DJI output.",
       "default": 5.0
     },
     "cruise_speed_mps": {
       "type": "float",
-      "description": "PX4 .plan only: horizontal cruise speed, in meters per second. Optional — leave blank to derive it automatically from flight_plan.json's meta.speed_mph instead."
+      "description": "PX4 .plan only: horizontal cruise speed, in meters per second. Optional \u2014 leave blank to derive it automatically from flight_plan.json's meta.speed_mph instead."
     },
     "drone_enum_value": {
       "type": "int",
-      "description": "DJI WPML drone model enum value. UNVERIFIED PLACEHOLDER — only affects the 'dji' output; DJI's spray-control schema isn't publicly documented. Confirm against a real DJI Pilot 2 / Agras export before relying on this.",
+      "description": "DJI WPML drone model enum value. UNVERIFIED PLACEHOLDER \u2014 only affects the 'dji' output; DJI's spray-control schema isn't publicly documented. Confirm against a real DJI Pilot 2 / Agras export before relying on this.",
       "default": 0
     },
     "drone_sub_enum_value": {
       "type": "int",
-      "description": "DJI WPML drone sub-model enum value. UNVERIFIED PLACEHOLDER — same caveat as drone_enum_value.",
+      "description": "DJI WPML drone sub-model enum value. UNVERIFIED PLACEHOLDER \u2014 same caveat as drone_enum_value.",
       "default": 0
     },
     "payload_enum_value": {
       "type": "int",
-      "description": "DJI WPML payload (sprayer) enum value. UNVERIFIED PLACEHOLDER — same caveat as drone_enum_value.",
+      "description": "DJI WPML payload (sprayer) enum value. UNVERIFIED PLACEHOLDER \u2014 same caveat as drone_enum_value.",
       "default": 0
     },
     "spray_action_tag": {
       "type": "string",
-      "description": "DJI WPML action tag name used to enable the sprayer. UNVERIFIED PLACEHOLDER — same caveat as drone_enum_value.",
+      "description": "DJI WPML action tag name used to enable the sprayer. UNVERIFIED PLACEHOLDER \u2014 same caveat as drone_enum_value.",
       "default": "sprayerEnable"
     },
     "spray_param_tag": {
       "type": "string",
-      "description": "DJI WPML action parameter tag name for the sprayer. UNVERIFIED PLACEHOLDER — same caveat as drone_enum_value.",
+      "description": "DJI WPML action parameter tag name for the sprayer. UNVERIFIED PLACEHOLDER \u2014 same caveat as drone_enum_value.",
       "default": "sprayerEnable"
     }
   },
@@ -83,47 +117,176 @@
     "memoryMB": 2048,
     "maxMinutes": 30,
     "fileInputs": [
-      { "name": "flight_plan", "envKey": "flight_plan", "autoMountLocal": true, "sourceUrl": "${flight_plan}", "targetPath": "input/flight_plan.json" }
+      {
+        "name": "flight_plan",
+        "envKey": "flight_plan",
+        "autoMountLocal": true,
+        "sourceUrl": "${flight_plan}",
+        "targetPath": "input/flight_plan.json"
+      }
     ],
     "parameterSet": {
       "appArgs": [
-        { "name": "json", "arg": "--json" },
-        { "name": "json value", "arg": "/input/flight_plan.json" },
-        { "name": "outdir", "arg": "--outdir" },
-        { "name": "outdir value", "arg": "/output" },
-        { "name": "format", "arg": "--format" },
-        { "name": "format value", "arg": "${format}" },
-        { "name": "sprayer servo channel", "arg": "--sprayer-servo-channel" },
-        { "name": "sprayer servo channel value", "arg": "${sprayer_servo_channel}" },
-        { "name": "sprayer pwm on", "arg": "--sprayer-pwm-on" },
-        { "name": "sprayer pwm on value", "arg": "${sprayer_pwm_on}" },
-        { "name": "sprayer pwm off", "arg": "--sprayer-pwm-off" },
-        { "name": "sprayer pwm off value", "arg": "${sprayer_pwm_off}" },
-        { "name": "hover speed", "arg": "--hover-speed-mps" },
-        { "name": "hover speed value", "arg": "${hover_speed_mps}" },
-        { "name": "cruise speed", "arg": "--cruise-speed-mps", "if": "cruise_speed_mps" },
-        { "name": "cruise speed value", "arg": "${cruise_speed_mps}", "if": "cruise_speed_mps" },
-        { "name": "drone enum value", "arg": "--drone-enum-value" },
-        { "name": "drone enum value value", "arg": "${drone_enum_value}" },
-        { "name": "drone sub enum value", "arg": "--drone-sub-enum-value" },
-        { "name": "drone sub enum value value", "arg": "${drone_sub_enum_value}" },
-        { "name": "payload enum value", "arg": "--payload-enum-value" },
-        { "name": "payload enum value value", "arg": "${payload_enum_value}" },
-        { "name": "spray action tag", "arg": "--spray-action-tag" },
-        { "name": "spray action tag value", "arg": "${spray_action_tag}" },
-        { "name": "spray param tag", "arg": "--spray-param-tag" },
-        { "name": "spray param tag value", "arg": "${spray_param_tag}" }
+        {
+          "name": "json",
+          "arg": "--json"
+        },
+        {
+          "name": "json value",
+          "arg": "/input/flight_plan.json"
+        },
+        {
+          "name": "outdir",
+          "arg": "--outdir"
+        },
+        {
+          "name": "outdir value",
+          "arg": "/output"
+        },
+        {
+          "name": "format",
+          "arg": "--format"
+        },
+        {
+          "name": "format value",
+          "arg": "${format}"
+        },
+        {
+          "name": "waypoint hold",
+          "arg": "--waypoint-hold-s"
+        },
+        {
+          "name": "waypoint hold value",
+          "arg": "${waypoint_hold_s}"
+        },
+        {
+          "name": "takeoff pitch",
+          "arg": "--takeoff-pitch"
+        },
+        {
+          "name": "takeoff pitch value",
+          "arg": "${takeoff_pitch}"
+        },
+        {
+          "name": "cam trigger dist",
+          "arg": "--cam-trigger-dist-m"
+        },
+        {
+          "name": "cam trigger dist value",
+          "arg": "${cam_trigger_dist_m}"
+        },
+        {
+          "name": "emit sprayer servo",
+          "arg": "--emit-sprayer-servo",
+          "if": "emit_sprayer_servo"
+        },
+        {
+          "name": "sprayer servo channel",
+          "arg": "--sprayer-servo-channel"
+        },
+        {
+          "name": "sprayer servo channel value",
+          "arg": "${sprayer_servo_channel}"
+        },
+        {
+          "name": "sprayer pwm on",
+          "arg": "--sprayer-pwm-on"
+        },
+        {
+          "name": "sprayer pwm on value",
+          "arg": "${sprayer_pwm_on}"
+        },
+        {
+          "name": "sprayer pwm off",
+          "arg": "--sprayer-pwm-off"
+        },
+        {
+          "name": "sprayer pwm off value",
+          "arg": "${sprayer_pwm_off}"
+        },
+        {
+          "name": "hover speed",
+          "arg": "--hover-speed-mps"
+        },
+        {
+          "name": "hover speed value",
+          "arg": "${hover_speed_mps}"
+        },
+        {
+          "name": "cruise speed",
+          "arg": "--cruise-speed-mps",
+          "if": "cruise_speed_mps"
+        },
+        {
+          "name": "cruise speed value",
+          "arg": "${cruise_speed_mps}",
+          "if": "cruise_speed_mps"
+        },
+        {
+          "name": "drone enum value",
+          "arg": "--drone-enum-value"
+        },
+        {
+          "name": "drone enum value value",
+          "arg": "${drone_enum_value}"
+        },
+        {
+          "name": "drone sub enum value",
+          "arg": "--drone-sub-enum-value"
+        },
+        {
+          "name": "drone sub enum value value",
+          "arg": "${drone_sub_enum_value}"
+        },
+        {
+          "name": "payload enum value",
+          "arg": "--payload-enum-value"
+        },
+        {
+          "name": "payload enum value value",
+          "arg": "${payload_enum_value}"
+        },
+        {
+          "name": "spray action tag",
+          "arg": "--spray-action-tag"
+        },
+        {
+          "name": "spray action tag value",
+          "arg": "${spray_action_tag}"
+        },
+        {
+          "name": "spray param tag",
+          "arg": "--spray-param-tag"
+        },
+        {
+          "name": "spray param tag value",
+          "arg": "${spray_param_tag}"
+        }
       ],
       "schedulerOptions": [
-        { "name": "slurm account", "arg": "-A ${slurm_account}" },
-        { "name": "job name", "arg": "--job-name=mission-export" },
-        { "name": "cpu cores", "arg": "--cpus-per-task=2" }
+        {
+          "name": "slurm account",
+          "arg": "-A ${slurm_account}"
+        },
+        {
+          "name": "job name",
+          "arg": "--job-name=mission-export"
+        },
+        {
+          "name": "cpu cores",
+          "arg": "--cpus-per-task=2"
+        }
       ],
       "containerArgs": [
-        { "name": "binding", "arg": "--bind $PWD/input:/input,$PWD/output:/output" }
+        {
+          "name": "binding",
+          "arg": "--bind $PWD/input:/input,$PWD/output:/output"
+        }
       ],
       "envVariables": [],
-      "archiveFilter": { "includeLaunchFiles": false }
+      "archiveFilter": {
+        "includeLaunchFiles": false
+      }
     }
   }
 }

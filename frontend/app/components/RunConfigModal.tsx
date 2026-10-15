@@ -8,32 +8,44 @@ import { apiFetch } from "../lib/api";
 // memoryMB/maxMinutes fields (and a `-G <n>` schedulerOption for GPUs),
 // overriding whatever the step type's own job template specifies.
 //
-// execSystem/execQueue are different in kind: they're EMPTY by default, and
-// empty means "inherit the run's target" (its GPU pair when the step's
-// step.json declares resources.gpu, else its CPU pair — see
-// engine/transactions.py's resolve_node_exec_target). Most nodes should stay
-// empty; this is the escape hatch for the odd step that needs its own site.
+// execSystem/execQueue default to the shared Expanse static system. Clearing
+// the system in the modal still means "inherit the run's target" (its GPU pair
+// when the step's step.json declares resources.gpu, else its CPU pair — see
+// engine/transactions.py's resolve_node_exec_target).
 export const RUN_CONFIG_DEFAULTS = {
   nodeCount: 1,
   coresPerNode: 8,
-  memoryMB: 64800,
-  maxMinutes: 210,
+  memoryMB: 800,
+  maxMinutes: 30,
   gpus: 0,
-  execSystem: "",
-  execQueue: "",
+  execSystem: "expanse-tapis-static",
+  execQueue: "tapisShared",
+};
+
+// A step declaring resources.gpu in its step.json starts on the shared GPU
+// queue with one GPU requested.
+export const GPU_RUN_CONFIG_DEFAULTS = {
+  ...RUN_CONFIG_DEFAULTS,
+  gpus: 1,
+  execQueue: "tapisGPUShared",
 };
 
 export type RunConfigValues = typeof RUN_CONFIG_DEFAULTS;
 
-export function readRunConfig(config: Record<string, any>): RunConfigValues {
+export function runConfigDefaults(gpu?: boolean): RunConfigValues {
+  return gpu ? GPU_RUN_CONFIG_DEFAULTS : RUN_CONFIG_DEFAULTS;
+}
+
+export function readRunConfig(config: Record<string, any>, gpu?: boolean): RunConfigValues {
+  const defaults = runConfigDefaults(gpu);
   return {
-    nodeCount: config?.nodeCount ?? RUN_CONFIG_DEFAULTS.nodeCount,
-    coresPerNode: config?.coresPerNode ?? RUN_CONFIG_DEFAULTS.coresPerNode,
-    memoryMB: config?.memoryMB ?? RUN_CONFIG_DEFAULTS.memoryMB,
-    maxMinutes: config?.maxMinutes ?? RUN_CONFIG_DEFAULTS.maxMinutes,
-    gpus: config?.gpus ?? RUN_CONFIG_DEFAULTS.gpus,
-    execSystem: config?.execSystem ?? RUN_CONFIG_DEFAULTS.execSystem,
-    execQueue: config?.execQueue ?? RUN_CONFIG_DEFAULTS.execQueue,
+    nodeCount: config?.nodeCount ?? defaults.nodeCount,
+    coresPerNode: config?.coresPerNode ?? defaults.coresPerNode,
+    memoryMB: config?.memoryMB ?? defaults.memoryMB,
+    maxMinutes: config?.maxMinutes ?? defaults.maxMinutes,
+    gpus: config?.gpus ?? defaults.gpus,
+    execSystem: config?.execSystem ?? defaults.execSystem,
+    execQueue: config?.execQueue ?? defaults.execQueue,
   };
 }
 
@@ -63,12 +75,12 @@ export default function RunConfigModal({
   // inherits the GPU target rather than the CPU one.
   stepResources?: { gpu?: boolean };
 }) {
-  const [values, setValues] = useState<RunConfigValues>(RUN_CONFIG_DEFAULTS);
+  const [values, setValues] = useState<RunConfigValues>(() => runConfigDefaults(stepResources?.gpu));
 
   // Reseed the working copy whenever the modal is (re)opened for this node.
   useEffect(() => {
-    if (opened) setValues(readRunConfig(initialConfig));
-  }, [opened, initialConfig]);
+    if (opened) setValues(readRunConfig(initialConfig, stepResources?.gpu));
+  }, [opened, initialConfig, stepResources?.gpu]);
 
   // Queues belong to a specific system, so the list is fetched for whichever
   // system this NODE overrode to — not the run's. Skipped entirely while
@@ -157,7 +169,12 @@ export default function RunConfigModal({
                 ? "Loading queues from the system…"
                 : "Leave empty to use the system's own default queue."
           }
-          data={queues.map((q: any) => q.name).filter(Boolean)}
+          data={Array.from(new Set([
+            ...queues.map((q: any) => q.name).filter(Boolean),
+            // A default queue (e.g. tapisShared) must still show while the
+            // list loads or if the system doesn't publish it.
+            ...(values.execQueue ? [values.execQueue] : []),
+          ]))}
           value={values.execQueue || null}
           placeholder={inheriting ? "—" : queuesLoading ? "Loading…" : "System default"}
           clearable

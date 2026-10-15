@@ -609,6 +609,16 @@ export default function SmartLabelerPanel({ config, onChange, step, nodeId, conn
           lockScroll={false}
           zIndex={1000}
           className="nokey"
+          // Mantine unmounts a Drawer's content when closed by default, which
+          // made toggling this drawer remount FileExplorer from scratch every
+          // time: a fresh instance re-fetches the directory listing from
+          // Tapis (the "file APIs are called again" symptom) AND re-runs
+          // whatever auto-selects its first file on mount, firing
+          // onFileSelect and silently swapping the canvas back to image #1
+          // even mid-edit. keepMounted keeps it alive in the DOM the whole
+          // time — closing just hides it, so both its file list and this
+          // panel's own `current` selection survive.
+          keepMounted
         >
           <FileExplorer
             token={tapisToken}
@@ -702,6 +712,11 @@ export default function SmartLabelerPanel({ config, onChange, step, nodeId, conn
           lockScroll={false}
           zIndex={1000}
           className="nokey"
+          // See the fileDrawerOpen Drawer's comment above — same remount
+          // issue applies here without keepMounted, just without the
+          // symptom being as visible (no auto-select side effect on this
+          // one, but no reason to remount it either).
+          keepMounted
         >
           <AnnotationDetails
             variant={annotationType}

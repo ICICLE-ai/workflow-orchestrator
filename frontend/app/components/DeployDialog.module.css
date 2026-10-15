@@ -1,0 +1,295 @@
+/* "Deploy to my node" dialog. Colors come from Mantine's CSS variables so the
+   light/dark toggle (data-mantine-color-scheme) restyles everything here too. */
+
+/* ---- entrance ----------------------------------------------------------- */
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: none; }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes flash {
+  0%   { box-shadow: 0 0 0 2px var(--mantine-color-teal-filled); background: var(--mantine-color-teal-light); }
+  100% { box-shadow: 0 0 0 0 transparent; background: transparent; }
+}
+
+@keyframes pop {
+  0%   { transform: scale(1); }
+  40%  { transform: scale(1.25); }
+  100% { transform: scale(1); }
+}
+
+@keyframes pulse {
+  0%   { box-shadow: 0 0 0 0 var(--mantine-primary-color-light); }
+  70%  { box-shadow: 0 0 0 8px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+/* ---- header ------------------------------------------------------------- */
+
+.hero {
+  display: flex;
+  gap: var(--mantine-spacing-md);
+  align-items: flex-start;
+  padding: var(--mantine-spacing-md);
+  border-radius: var(--mantine-radius-md);
+  background: linear-gradient(
+    135deg,
+    var(--mantine-primary-color-light) 0%,
+    var(--mantine-color-teal-light) 100%
+  );
+  animation: fadeIn 0.3s ease both;
+}
+
+.heroIcon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  color: white;
+  background: linear-gradient(135deg, var(--mantine-primary-color-filled), var(--mantine-color-teal-filled));
+}
+
+.flow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: var(--mantine-font-size-xs);
+  color: var(--mantine-color-dimmed);
+}
+
+.flowChip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--mantine-color-body);
+  border: 1px solid var(--mantine-color-default-border);
+  color: var(--mantine-color-text);
+}
+
+/* ---- numbered sections --------------------------------------------------- */
+
+.section {
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: var(--mantine-radius-md);
+  padding: var(--mantine-spacing-md);
+  background: var(--mantine-color-body);
+  animation: rise 0.35s ease both;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.section:focus-within {
+  border-color: var(--mantine-primary-color-filled);
+  box-shadow: 0 0 0 3px var(--mantine-primary-color-light);
+}
+
+.sectionHead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: var(--mantine-spacing-sm);
+}
+
+.num {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  font-size: 13px;
+  font-weight: 700;
+  color: white;
+  background: var(--mantine-primary-color-filled);
+}
+
+.section:focus-within .num {
+  animation: pulse 1.2s ease-out;
+}
+
+/* ---- where-it-runs ------------------------------------------------------- */
+
+.reveal {
+  animation: rise 0.25s ease both;
+}
+
+.pathPreview {
+  margin-top: 4px;
+  border-radius: var(--mantine-radius-sm);
+  background: var(--mantine-color-default-hover);
+  padding: 8px 10px;
+  font-size: var(--mantine-font-size-xs);
+}
+
+.pathRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  padding: 3px 0;
+  animation: fadeIn 0.25s ease both;
+}
+
+.pathRow code {
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+
+.arrow {
+  color: var(--mantine-color-dimmed);
+}
+
+/* ---- check summary ------------------------------------------------------- */
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+}
+
+.stat {
+  border-radius: var(--mantine-radius-sm);
+  border: 1px solid var(--mantine-color-default-border);
+  padding: 8px 10px;
+  animation: rise 0.3s ease both;
+  transition: transform 0.15s ease;
+}
+
+.stat:hover {
+  transform: translateY(-2px);
+}
+
+.statValue {
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+/* ---- run-it timeline ----------------------------------------------------- */
+
+.tabPanel {
+  animation: fadeIn 0.25s ease both;
+}
+
+.timeline {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--mantine-spacing-md);
+  padding-left: 38px;
+}
+
+.timeline::before {
+  content: "";
+  position: absolute;
+  left: 13px;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 2px;
+  background: linear-gradient(var(--mantine-primary-color-filled), var(--mantine-color-teal-filled));
+  opacity: 0.35;
+}
+
+.step {
+  position: relative;
+  animation: rise 0.35s ease both;
+}
+
+.stepDot {
+  position: absolute;
+  left: -38px;
+  top: -2px;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--mantine-primary-color-filled);
+  background: var(--mantine-color-body);
+  border: 2px solid var(--mantine-primary-color-filled);
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.step:hover .stepDot {
+  color: white;
+  background: var(--mantine-primary-color-filled);
+}
+
+.stepTitle {
+  font-weight: 600;
+  font-size: var(--mantine-font-size-sm);
+  margin-bottom: 4px;
+}
+
+/* ---- code snippets ------------------------------------------------------- */
+
+.snippet {
+  position: relative;
+  border-radius: var(--mantine-radius-sm);
+}
+
+/* Replayed (via a changing key) whenever the snippet's text changes, so an
+   updated command visibly lights up instead of silently swapping. */
+.flash {
+  animation: flash 1.2s ease-out;
+  border-radius: var(--mantine-radius-sm);
+}
+
+.copyBtn {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+}
+
+.copied {
+  animation: pop 0.3s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero, .section, .reveal, .pathRow, .stat, .tabPanel, .step, .flash, .copied,
+  .section:focus-within .num {
+    animation: none;
+  }
+  .stat:hover { transform: none; }
+}
+
+/* ---- source preview cards (appended) ------------------------------------ */
+
+.sourceCard {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  border-radius: var(--mantine-radius-sm);
+  border: 1px solid var(--mantine-color-default-border);
+  background: var(--mantine-color-body);
+  animation: rise 0.25s ease both;
+}
+
+.sourcePath {
+  display: block;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.saveState {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sourceCard { animation: none; }
+}

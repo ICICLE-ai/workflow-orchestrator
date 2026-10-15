@@ -440,11 +440,11 @@ config:
 | --- | --- | --- |
 | `nodeCount` | 1 | Overrides the rendered job spec |
 | `coresPerNode` | 8 | ” |
-| `memoryMB` | 64800 | ” |
-| `maxMinutes` | 210 | ” |
-| `gpus` | 0 | Becomes a `-G <n>` schedulerOption; `0` drops it |
-| `execSystem` | `""` | Empty = inherit the run's target |
-| `execQueue` | `""` | ” |
+| `memoryMB` | 800 | ” |
+| `maxMinutes` | 30 | ” |
+| `gpus` | 0 (1 for a `resources.gpu` step) | Becomes a `-G <n>` schedulerOption; `0` drops it |
+| `execSystem` | `"expanse-tapis-static"` | Empty = inherit the run's target |
+| `execQueue` | `"tapisShared"` (`"tapisGPUShared"` for a `resources.gpu` step) | ” |
 
 Applied by `apply_resource_overrides` **after** rendering, so they override
 whatever your template hardcoded. A key the user never set leaves your

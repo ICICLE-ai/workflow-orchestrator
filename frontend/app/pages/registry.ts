@@ -11,6 +11,7 @@ import SmartLabelerPanel from "./smartLabeler";
 import FewShotAnnotationPanel from "./fewShotAnnotation";
 import GeospatialMapPanel from "./geospatialMap";
 import FlightPlanPanel from "./flightPlan";
+import ScoutingMissionPanel from "./scoutingMission";
 import MissionExportPanel from "./missionExport";
 import ZeroShotAnnotationPanel from "./zeroShotAnnotation";
 import AnnotationFormatAdapterPanel from "./annotationFormatAdapter";
@@ -33,6 +34,7 @@ export const stepPanels: Record<string, ComponentType<StepPanelProps>> = {
   few_shot_annotation: FewShotAnnotationPanel,
   geospatial_map: GeospatialMapPanel,
   flight_plan: FlightPlanPanel,
+  scouting_mission: ScoutingMissionPanel,
   mission_export: MissionExportPanel,
   zero_shot_annotation: ZeroShotAnnotationPanel,
   annotation_format_adapter: AnnotationFormatAdapterPanel,

@@ -1,4 +1,4 @@
-- id: NoCodeWorkflowStudio:0.1.0
+- id: NoCodeWorkflowStudio:0.2.0
   name: No-Code Workflow Studio
   owner: Hari Subramoni
   primaryThrust: core/AI4CI
@@ -6,7 +6,7 @@
   hasDependentComponents:
     - related_to: icicleai-tapisui-extension:0.1.0
       relationship_type: DependsOn
-  componentVersion: 0.1.0
+  componentVersion: 0.2.0
   publicAccess: true
   usageDocumentationAvailable: true
   usageDocumentationUrl: https://icicle-ai.github.io/training-catalog/docs/category/no-code-workflow-studio
