@@ -63,7 +63,7 @@ A path field's system dropdown also offers **My node (not on Tapis)**, for data
 that exists only on your own machine. The path is then stored as a plain path
 on the node (no `tapis://` system), Browse is off, and the exported bundle reads
 it exactly as typed, even with a data root set. The platform can't reach your
-machine, so **Launch Run** refuses such a workflow and names the steps involved;
+machine, so launching such a workflow on Tapis is refused and names the steps involved;
 run it with Deploy to my node instead.
 
 ### Run instructions and the offline zip
