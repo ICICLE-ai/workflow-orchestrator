@@ -1,5 +1,5 @@
 Bootstrap: docker
-From: python:3.12-bullseye
+From: python:3.12-slim-bookworm
 
 %files
     extract_frames.py /app/extract_frames.py
@@ -37,6 +37,6 @@ From: python:3.12-bullseye
 
 %labels
     Maintainer "Shyama Arunachalam <arunachalam.31@osu.edu>"
-    Version "1.0"
+    Version "1.0.0"
     Appname "Extract Frames"
     Description "Decode a video (file, public link, or RTSP stream) into sampled frames; paths passed as args"
