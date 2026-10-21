@@ -2,7 +2,7 @@
   name: No-Code Workflow Studio
   owner: Hari Subramoni
   primaryThrust: core/AI4CI
-  targetIcicleRelease: 2026-08
+  targetIcicleRelease: 2026-10
   hasDependentComponents:
     - related_to: icicleai-tapisui-extension:0.1.0
       relationship_type: DependsOn
