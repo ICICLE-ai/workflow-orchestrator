@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Modal, Stack, Group, Button, NumberInput, Text, Select, Badge, Divider, Loader } from "@mantine/core";
+import { Modal, Stack, Group, Button, NumberInput, Text, TextInput, Select, Badge, Divider, Loader } from "@mantine/core";
 import { TAPIS_SYSTEMS } from "../lib/tapis";
 import { apiFetch } from "../lib/api";
 
@@ -11,7 +11,8 @@ import { apiFetch } from "../lib/api";
 // execSystem/execQueue default to the shared Expanse static system. Clearing
 // the system in the modal still means "inherit the run's target" (its GPU pair
 // when the step's step.json declares resources.gpu, else its CPU pair — see
-// engine/transactions.py's resolve_node_exec_target).
+// engine/transactions.py's resolve_node_exec_target). execWorkDir empty means
+// the system's own derived job directory (transactions._exec_system_dirs).
 export const RUN_CONFIG_DEFAULTS = {
   nodeCount: 1,
   coresPerNode: 8,
@@ -20,6 +21,7 @@ export const RUN_CONFIG_DEFAULTS = {
   gpus: 0,
   execSystem: "expanse-tapis-static",
   execQueue: "tapisShared",
+  execWorkDir: "",
 };
 
 // A step declaring resources.gpu in its step.json starts on the shared GPU
@@ -46,6 +48,7 @@ export function readRunConfig(config: Record<string, any>, gpu?: boolean): RunCo
     gpus: config?.gpus ?? defaults.gpus,
     execSystem: config?.execSystem ?? defaults.execSystem,
     execQueue: config?.execQueue ?? defaults.execQueue,
+    execWorkDir: config?.execWorkDir ?? defaults.execWorkDir,
   };
 }
 
@@ -156,8 +159,9 @@ export default function RunConfigModal({
             // Clearing the system must clear the queue too: a queue name only
             // exists on the system it belongs to, so keeping e.g. OSC's "gpu"
             // while inheriting an Expanse target submits a queue that isn't
-            // there.
-            setValues((p) => ({ ...p, execSystem: v ?? "", execQueue: "" }))
+            // there. The same goes for the job directory: a path only means
+            // something on the system it was written for.
+            setValues((p) => ({ ...p, execSystem: v ?? "", execQueue: "", execWorkDir: "" }))
           }
         />
         <Select
@@ -181,6 +185,21 @@ export default function RunConfigModal({
           disabled={inheriting || queuesLoading}
           rightSection={queuesLoading ? <Loader size={14} /> : undefined}
           onChange={(v) => setValues((p) => ({ ...p, execQueue: v ?? "" }))}
+        />
+        <TextInput
+          label="Job working directory"
+          description={
+            inheriting
+              ? "Available once this step is pinned to a system."
+              : "Where the job runs, on the execution system (relative to its root dir). Each job gets its own subfolder. Leave empty for the system's default."
+          }
+          placeholder={inheriting ? "—" : "System default"}
+          disabled={inheriting}
+          value={values.execWorkDir}
+          onChange={(e) => {
+            const v = e.currentTarget.value;
+            setValues((p) => ({ ...p, execWorkDir: v }));
+          }}
         />
 
         <Divider label="Compute" labelPosition="left" />

@@ -23,6 +23,7 @@ import json
 import torch
 from pathlib import Path
 from datetime import datetime
+from PIL import Image  # used by every _hf_* helper, not just run_hf_inference
 
 
 # ─────────────────────────────────────────────
@@ -81,11 +82,13 @@ def run_yolo_inference(args, output_dir: Path):
     model = YOLO(args.model)
 
     print(f"INFO: Running YOLO {args.task} inference on {args.data}...")
+    # Ultralytics wants a GPU index rather than "cuda" on older releases.
+    device = 0 if args.device == "cuda" else args.device
     results = model.predict(
         source=args.data,
         conf=args.conf,
         imgsz=args.imgsz,
-        device=args.device,
+        device=device,
         save=True,
         save_json=True,
         project=str(output_dir),
@@ -132,7 +135,6 @@ def run_yolo_inference(args, output_dir: Path):
 def run_hf_inference(args, output_dir: Path):
     """Run HuggingFace inference on an image directory."""
     from transformers import AutoImageProcessor
-    from PIL import Image
     import torch
 
     data_path = Path(args.data)

@@ -32,7 +32,7 @@
   ],
   "images": {
     "export-flight-mission": "https://icicleai.tapis.io/v3/files/postits/redeem/8d2f6836-8bb9-4796-b3e3-0354fa634cc5-010",
-    "extract_frames": "https://icicleai.tapis.io/v3/files/postits/redeem/17772bec-0a2d-476e-a212-b65adabfacdb-010",
+    "extract_frames": "https://icicleai.tapis.io/v3/files/postits/redeem/639d5124-1c6b-4c1b-b8f0-870630ff99d7-010",
     "few_shot_detection": "https://icicleai.tapis.io/v3/files/postits/redeem/457c3311-cf84-4828-b0e5-9661ee7ab0f3-010",
     "generate-flight-plan": "https://icicleai.tapis.io/v3/files/postits/redeem/13157e55-7514-481e-966b-ff4cc091dd75-010",
     "generate-geopackage": "https://icicleai.tapis.io/v3/files/postits/redeem/0ed4e6d4-d290-4ce7-bd33-950dc2584b4a-010",

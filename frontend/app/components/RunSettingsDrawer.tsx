@@ -520,10 +520,9 @@ export default function RunSettingsDrawer({
                 <TextInput
                   size="xs"
                   label="Work dir"
-                  description="Derived from the CPU system, charge account and Tapis username."
+                  description="Base dir on the archive system: steps running there execute under it, and outputs archive to …/wf_runs. Reset to the default when the archive system, charge account or user changes."
                   value={runOptions.work_dir}
-                  readOnly
-                  variant="filled"
+                  onChange={(e) => set({ work_dir: e.currentTarget.value })}
                 />
                 <Select
                   size="xs"

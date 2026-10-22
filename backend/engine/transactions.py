@@ -338,11 +338,18 @@ def get_downstream_sink_path(run_id: int, node_key: str) -> str:
 # mirrors frontend/app/lib/tapis.ts's OSC_SCRATCH_SYSTEMS grouping.
 _OSC_EXEC_SYSTEMS = {"pitzer-tapis", "cardinal-tapis", "ascend-tapis"}
 
-def _exec_system_dirs(exec_system: str, slurm_account: str, username: str = "") -> tuple:
+def _exec_system_dirs(exec_system: str, slurm_account: str, username: str = "",
+                      work_dir: str = "") -> tuple:
     """Return (execSystemExecDir, execSystemInputDir, execSystemOutputDir) for a
     Tapis job targeting `exec_system`, or (None, None, None) when we have no
     site-appropriate value — job_spec.render() drops a field entirely when its
     context value is falsy, rather than rendering a broken/empty path.
+
+    `work_dir` is a node's own execWorkDir override (Run Configuration modal):
+    the base the job's ${JobUUID} dir is created under, in place of the
+    system's derived default. Needed when that default isn't writable by the
+    account Tapis logs in as — e.g. expanse-tapis's path is built from the
+    TAPIS username, which need not be the user's Expanse login.
 
     OMITTING THESE IS NOT NEUTRAL. Tapis fills any field the submitted job
     leaves out from the APP definition's own jobAttributes, and several of the
@@ -358,6 +365,11 @@ def _exec_system_dirs(exec_system: str, slurm_account: str, username: str = "") 
     us) — left as literal text here since our own ${...} substitution only
     replaces keys actually present in the context dict, and "JobUUID" never is.
     """
+    if work_dir.strip():
+        base = f"{work_dir.strip().rstrip('/')}/${{JobUUID}}"
+        # Same layout as the system's default, just rooted elsewhere.
+        output = f"{base}/output" if exec_system in _OSC_EXEC_SYSTEMS else base
+        return (base, base, output)
     if exec_system in _OSC_EXEC_SYSTEMS:
         base = f"/fs/scratch/{slurm_account}/harvest_jobs/${{JobUUID}}"
         return (base, base, f"{base}/output")
@@ -411,6 +423,7 @@ def _default_work_dir(exec_system: str, slurm_account: str, username: str = "") 
 # reserved keys, which are camelCase for the same "not a placeholder" reason.
 _NODE_EXEC_SYSTEM_KEY = "execSystem"
 _NODE_EXEC_QUEUE_KEY = "execQueue"
+_NODE_EXEC_WORK_DIR_KEY = "execWorkDir"
 
 
 def resolve_node_exec_target(cfg: dict, node_config: dict, step_resources: dict) -> tuple:
@@ -444,6 +457,24 @@ def resolve_node_exec_target(cfg: dict, node_config: dict, step_resources: dict)
     elif node_config.get(_NODE_EXEC_QUEUE_KEY):
         exec_queue = node_config[_NODE_EXEC_QUEUE_KEY]
     return exec_system, exec_queue
+
+
+def exec_work_dir(cfg: dict, node_config: dict, exec_system: str, archive_system: str) -> str:
+    """The base a job's ${JobUUID} exec dir goes under, or "" for the system's
+    derived default (see _exec_system_dirs).
+
+    A node's own execWorkDir wins. Otherwise the run's work_dir is used, but only
+    when this node runs on the archive system: work_dir is a path on THAT system
+    (see resolve_archive_base), meaningless anywhere else. Its default is the
+    same derived path _exec_system_dirs would pick, so an unedited run behaves
+    exactly as before; an edited one runs where the user pointed it.
+    """
+    node_dir = str((node_config or {}).get(_NODE_EXEC_WORK_DIR_KEY) or "").strip()
+    if node_dir:
+        return node_dir
+    if exec_system == archive_system:
+        return str(cfg.get("work_dir") or "").strip()
+    return ""
 
 
 def resolve_archive_base(cfg: dict, exec_system: str) -> tuple:
@@ -540,9 +571,8 @@ def get_run_archive_context(run_id: int, node_key: str = None) -> dict:
         ).scalars().first()
         step_resources = (registry and registry.resources) or {}
 
-    exec_system, exec_queue = resolve_node_exec_target(
-        cfg, (node.default_config if node is not None else {}) or {}, step_resources
-    )
+    node_config = (node.default_config if node is not None else {}) or {}
+    exec_system, exec_queue = resolve_node_exec_target(cfg, node_config, step_resources)
 
     archive_system, work_dir, ws_base = resolve_archive_base(cfg, exec_system)
     workspace = f"{ws_base}/{run_id}"
@@ -556,7 +586,9 @@ def get_run_archive_context(run_id: int, node_key: str = None) -> dict:
 
     # username matters for expanse-tapis, whose scratch is per-user rather than
     # per-allocation (unlike OSC's, which is keyed by slurm_account).
-    exec_dir, input_dir, output_dir = _exec_system_dirs(exec_system, slurm_account, username)
+    exec_dir, input_dir, output_dir = _exec_system_dirs(
+        exec_system, slurm_account, username, exec_work_dir(cfg, node_config, exec_system, archive_system)
+    )
 
     return {
         "run_id": run_id,
