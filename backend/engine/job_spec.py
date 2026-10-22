@@ -15,8 +15,11 @@ A dict inside a list (appArgs, envVariables, schedulerOptions, containerArgs,
 fileInputs, ...) may carry an "if": "config_key" entry — the whole item is
 dropped unless context[config_key] is truthy, letting a step conditionally
 include an arg/env var based on a boolean config field (e.g. only pass
---is_sahi, --tile-size, --overlap-ratio when a "use_sahi" toggle is on). The
-"if" key itself is stripped from the rendered output either way.
+--is_sahi, --tile-size, --overlap-ratio when a "use_sahi" toggle is on).
+"if": "config_key=value" instead keeps the item only when context[config_key]
+equals value (compared as strings) — for an item that depends on which of
+several choices is selected (e.g. "framework=yolo"). The "if" key itself is
+stripped from the rendered output either way.
 
 Separately, ${secrets.KEY} is a step-AUTHOR-hardcoded reference to a team
 secret (see backend/engine/secrets.py) — resolved by resolve_secret_refs()
@@ -42,6 +45,23 @@ def _sub_string(s: str, context: dict) -> str:
     return _PLACEHOLDER.sub(repl, s)
 
 
+def render_path(template: str, context: dict) -> str:
+    """Substitute ${...} placeholders in an output port's output_path, so a
+    step whose tool writes to a config-dependent subdirectory (the trainer's
+    <task>/<name>/, say) can still declare exact port paths. Same rules as
+    render(): unknown placeholders are left as-is."""
+    return _sub_string(template, context) if template else template
+
+
+def condition_met(cond: str, context: dict) -> bool:
+    """Evaluate an item's "if": truthy context[key], or context[key] == value
+    for the "key=value" form. See the module docstring."""
+    key, sep, expected = cond.partition("=")
+    if sep:
+        return str(context.get(key.strip(), "")) == expected.strip()
+    return bool(context.get(cond))
+
+
 def _render_value(template, context: dict):
     """Recursively substitute ${...} placeholders throughout a template value."""
     if isinstance(template, str):
@@ -51,8 +71,8 @@ def _render_value(template, context: dict):
     if isinstance(template, list):
         result = []
         for item in template:
-            if isinstance(item, dict) and "if" in item and not context.get(item["if"]):
-                continue  # condition key is falsy/missing — drop this item entirely
+            if isinstance(item, dict) and "if" in item and not condition_met(item["if"], context):
+                continue  # condition not met — drop this item entirely
             result.append(_render_value(item, context))
         return result
     return template

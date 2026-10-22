@@ -217,7 +217,7 @@ def _derive_outputs(run_id: int, node_key: str, ctx: dict, job_uuid: str) -> dic
     archive_uri = (ctx.get("archive_uri") or "").rstrip("/")
     outputs = {"archive_uri": archive_uri, "job_uuid": job_uuid}
     for port in get_node_output_ports(node_key):
-        sub = port.get("output_path")
+        sub = job_spec.render_path(port.get("output_path"), ctx)
         dir_uri = f"{archive_uri}/{sub}" if sub else archive_uri
         pattern = port.get("file_glob")
         if pattern:

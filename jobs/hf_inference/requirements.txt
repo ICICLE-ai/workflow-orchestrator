@@ -1,0 +1,13 @@
+# torch / torchvision come from the base image (pytorch/pytorch:2.4.1-cuda12.1),
+# whose CUDA 12.1 build covers the cluster's V100s (sm_70) through H100s.
+# Don't list them here: pip would replace them with a default PyPI wheel.
+
+# YOLO backend
+ultralytics>=8.3.0
+opencv-python-headless>=4.9.0
+
+# HuggingFace backend. transformers 4.x still supports torch 2.4.
+transformers>=4.44,<5
+timm          # DETR's default ResNet backbone loads through timm
+Pillow
+numpy

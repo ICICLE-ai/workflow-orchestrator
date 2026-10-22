@@ -1,88 +1,158 @@
 {
   "step_type_key": "training",
-  "resources": { "gpu": true },
+  "resources": {
+    "gpu": true
+  },
   "display_name": "Model Training",
-  "description": "Trains YOLO or HuggingFace models for classification, detection and segmentation.",
+  "description": "Trains a YOLO (detect, segment, classify) or HuggingFace (classify, detect) model and writes a standard metrics.json.",
   "category": "Training",
   "tapis_app_id": "workflow-orchestrator-trainer-v2",
   "inputs": [
-    { "name": "dataset", "type": "image_dir" }
+    {
+      "name": "dataset",
+      "type": "image_dir",
+      "required": false,
+      "description": "The training dataset folder on a Tapis file system. It is copied into the job and passed to the trainer as --data (plus `data_file` when set). Leave unwired only for a HuggingFace detection run that uses `hub_dataset`."
+    }
   ],
   "outputs": [
-    { "name": "model",   "type": "pytorch_model", "output_path": "model" },
-    { "name": "metrics", "type": "json_results",  "output_path": "metrics.json" }
+    {
+      "name": "model",
+      "type": "pytorch_model",
+      "output_path": "${task}/${name}/${model_artifact}",
+      "description": "The trained model: weights/best.pt for YOLO (a file, as yolo_inference expects), best_model/ for HuggingFace (model + image processor)."
+    },
+    { "name": "metrics", "type": "json_results", "output_path": "${task}/${name}/metrics.json" }
   ],
   "config_schema": {
     "framework": {
-      "type": "str",
-      "description": "Training framework: yolo or huggingface",
-      "default": "huggingface"
-    },
-    "model": {
-      "type": "str",
-      "description": "Model name e.g. google/vit-base-patch16-224 or yolov8n.pt",
-      "default": "google/vit-base-patch16-224"
+      "type": "select",
+      "description": "Training backend. 'yolo' = Ultralytics YOLO v8–v11 (detect, segment, classify). 'huggingface' = Transformers Auto models (classify, detect; no segmentation).",
+      "default": "huggingface",
+      "options": ["yolo", "huggingface"]
     },
     "task": {
-      "type": "str",
-      "description": "Task type: classify, detect or segment",
-      "default": "classify"
+      "type": "select",
+      "description": "What the model predicts: 'classify' (one label per image), 'detect' (boxes), 'segment' (masks; YOLO only).",
+      "default": "classify",
+      "options": ["classify", "detect", "segment"]
     },
-    "epochs": {
+    "model": {
+      "type": "string",
+      "description": "YOLO: a checkpoint name (yolov8n.pt, yolo11m-seg.pt, …; auto-downloaded) or a path to your own .pt to fine-tune. HuggingFace: a Hub model ID or local directory compatible with the task's Auto class.",
+      "default": "google/vit-base-patch16-224"
+    },
+    "name": {
+      "type": "string",
+      "default": "train",
+      "description": "Experiment folder name; outputs go to <task>/<name>/ in the run's archive folder, and the model/metrics outputs point there. Each run has its own archive folder, so the default never collides."
+    },
+    "model_artifact": {
+      "type": "select",
+      "description": "Which file or folder inside the experiment folder the `model` output points at: weights/best.pt for YOLO, best_model for HuggingFace. The settings page keeps this matched to the framework.",
+      "default": "best_model",
+      "options": ["best_model", "weights/best.pt"]
+    },
+    "data_file": {
+      "type": "string",
+      "default": "",
+      "description": "File inside the dataset folder to pass as --data, e.g. data.yaml for YOLO detection/segmentation. Empty passes the folder itself (classification, HuggingFace detection). Keep the yaml's `path:` relative (or omit it) so it resolves inside the job."
+    },
+    "hub_dataset": {
+      "type": "string",
+      "default": "",
+      "description": "HuggingFace detection only: a Hub dataset ID (e.g. detection-datasets/coco) to download instead of a wired dataset. A slice of train_samples/val_samples images is used."
+    },
+    "epochs": { "type": "int", "description": "Full passes over the training set.", "default": 10 },
+    "batch_size": { "type": "int", "description": "Images per step, per device. Lower it if the GPU runs out of memory.", "default": 16 },
+    "device": {
+      "type": "select",
+      "description": "Compute device. 'cuda' needs a GPU node.",
+      "default": "cuda",
+      "options": ["cuda", "cpu"]
+    },
+    "seed": { "type": "int", "description": "Random seed, for reproducible runs.", "default": 42 },
+    "patience": { "type": "int", "description": "Early stopping: stop after this many epochs without improvement.", "default": 3 },
+    "workers": { "type": "int", "description": "Dataloader worker processes (YOLO only; HuggingFace always uses 0).", "default": 4 },
+    "imgsz": { "type": "int", "description": "YOLO: training image size in pixels; rounded to the nearest multiple of 32.", "default": 640 },
+    "lr0": { "type": "float", "description": "YOLO: initial learning rate.", "default": 0.01 },
+    "lrf": { "type": "float", "description": "YOLO: final learning rate as a fraction of lr0 (final LR = lr0 × lrf).", "default": 0.01 },
+    "momentum": { "type": "float", "description": "YOLO: SGD momentum / Adam beta1.", "default": 0.937 },
+    "weight_decay": { "type": "float", "description": "YOLO: optimizer weight decay (L2 regularization).", "default": 0.0005 },
+    "optimizer": {
+      "type": "select",
+      "description": "YOLO: optimizer. 'auto' picks SGD or AdamW from the dataset size and epochs.",
+      "default": "auto",
+      "options": ["auto", "SGD", "Adam", "AdamW", "NAdam", "RAdam", "RMSProp"]
+    },
+    "cos_lr": { "type": "boolean", "description": "YOLO: use a cosine learning-rate schedule instead of linear decay.", "default": false },
+    "warmup_epochs": { "type": "float", "description": "YOLO: epochs of learning-rate warmup (fractions allowed).", "default": 3.0 },
+    "warmup_momentum": { "type": "float", "description": "YOLO: momentum at the start of warmup.", "default": 0.8 },
+    "warmup_bias_lr": { "type": "float", "description": "YOLO: bias learning rate at the start of warmup.", "default": 0.1 },
+    "dropout": { "type": "float", "description": "YOLO: dropout rate (classification models only).", "default": 0.0 },
+    "fraction": { "type": "float", "description": "YOLO: fraction of the training set to use (1.0 = all). Handy for quick trial runs.", "default": 1.0 },
+    "freeze": {
       "type": "int",
-      "description": "Number of full passes through the training dataset.",
-      "default": 50
-    },
-    "batch_size": {
-      "type": "int",
-      "description": "Number of training examples utilized in one iteration.",
-      "default": 16
-    },
-    "learning_rate": {
-      "type": "float",
-      "description": "Step size at each iteration while moving toward a minimum of a loss function.",
-      "default": 0.001
-    },
-    "warmup_steps": {
-      "type": "int",
-      "description": "Number of warmup steps",
+      "description": "YOLO: freeze the first N layers (0 = train all layers). Freezing the backbone speeds up fine-tuning on small datasets.",
       "default": 0
     },
-    "seed": {
+    "close_mosaic": { "type": "int", "description": "YOLO: turn off mosaic augmentation for the last N epochs.", "default": 10 },
+    "save_period": { "type": "int", "description": "YOLO: save a checkpoint every N epochs (-1 = only best.pt and last.pt).", "default": -1 },
+    "resume": { "type": "boolean", "description": "YOLO: resume an interrupted run. Set the model to that run's weights/last.pt.", "default": false },
+    "profile": { "type": "boolean", "description": "YOLO: profile ONNX/TensorRT speeds during training (slower).", "default": false },
+    "learning_rate": { "type": "float", "description": "HuggingFace: learning rate.", "default": 2e-05 },
+    "hf_weight_decay": { "type": "float", "description": "HuggingFace: weight decay.", "default": 0.01 },
+    "warmup_steps": { "type": "int", "description": "HuggingFace: learning-rate warmup steps.", "default": 500 },
+    "lr_scheduler": {
+      "type": "select",
+      "description": "HuggingFace: learning-rate schedule after warmup.",
+      "default": "linear",
+      "options": ["linear", "cosine", "cosine_with_restarts", "polynomial", "constant"]
+    },
+    "hf_optimizer": {
+      "type": "string",
+      "description": "HuggingFace: optimizer (any TrainingArguments.optim value, e.g. adamw_torch, adamw_torch_fused, adafactor, sgd).",
+      "default": "adamw_torch"
+    },
+    "gradient_accumulation_steps": { "type": "int", "description": "HuggingFace: accumulate gradients over N steps; effective batch = batch size × N.", "default": 1 },
+    "fp16": { "type": "boolean", "description": "HuggingFace: mixed precision (faster, less memory). Ignored on CPU.", "default": false },
+    "eval_strategy": {
+      "type": "select",
+      "description": "HuggingFace: when to evaluate on the validation set.",
+      "default": "epoch",
+      "options": ["epoch", "steps", "no"]
+    },
+    "save_strategy": {
+      "type": "select",
+      "description": "HuggingFace: when to save checkpoints.",
+      "default": "epoch",
+      "options": ["epoch", "steps", "no"]
+    },
+    "save_total_limit": { "type": "int", "description": "HuggingFace: checkpoints to keep on disk (older ones are deleted).", "default": 2 },
+    "logging_steps": { "type": "int", "description": "HuggingFace: log training loss every N steps.", "default": 50 },
+    "train_samples": { "type": "int", "description": "HuggingFace: train images to download when the dataset is a Hub dataset ID (detection only).", "default": 100 },
+    "val_samples": {
       "type": "int",
-      "description": "Random seed for reproducibility",
-      "default": 42
+      "description": "HuggingFace: validation images to download when the dataset is a Hub dataset ID (detection only).",
+      "default": 20
     },
-    "patience": {
-      "type": "int",
-      "description": "Early stopping patience in epochs.",
-      "default": 3
-    },
-    "device": {
-      "type": "str",
-      "description": "Device: cuda or cpu",
-      "default": "cuda"
-    },
-    "wandb_key": {
-      "type": "str",
-      "description": "W&B API key for live experiment tracking (optional)",
+    "hf_token": {
+      "type": "secret",
+      "description": "Team secret with a HuggingFace access token, for gated or private Hub models/datasets. Passed to the job as HF_TOKEN.",
       "default": ""
     },
+    "wandb_key": { "type": "secret", "description": "Team secret with a Weights & Biases API key. Passed to the job as WANDB_API_KEY.", "default": "" },
     "wandb_project": {
-      "type": "str",
-      "description": "W&B project name",
+      "type": "string",
+      "description": "W&B project the run is logged under (WANDB_PROJECT). Only used when a W&B key is set.",
       "default": "workflow-orchestrator"
     },
-    "extra_args": {
-      "type": "str",
-      "description": "Extra CLI arguments passed to train_main.py e.g. --lr 0.001 --seed 42",
-      "default": ""
+    "hf_cache_dir": {
+      "type": "string",
+      "default": "",
+      "description": "Optional folder on the execution system to keep downloaded HuggingFace models between runs (mounted at /app/hf_cache). It must already exist. Empty caches inside the job folder instead."
     },
-    "checkpoint": {
-      "type": "str",
-      "description": "Path to checkpoint directory to resume training from (optional)",
-      "default": ""
-    }
+    "extra_args": { "type": "string", "description": "Any other train_main.py flags, appended as-is (e.g. --nproc_per_node 2).", "default": "" }
   },
   "tapis_job": {
     "name": "workflow-orchestrator-training",
@@ -104,34 +174,79 @@
         "autoMountLocal": true,
         "sourceUrl": "https://icicleai.tapis.io/v3/files/postits/redeem/48caa51f-8cbb-49e7-a7c7-349d9ce6f4ab-010",
         "targetPath": "trainer.sif"
+      },
+      {
+        "name": "dataset",
+        "if": "dataset",
+        "autoMountLocal": true,
+        "sourceUrl": "${dataset}",
+        "targetPath": "dataset",
+        "description": "The whole dataset folder, copied into the job dir. Dropped when the port is unwired (Hub dataset runs)."
       }
     ],
     "parameterSet": {
       "appArgs": [
-        { "name": "framework",      "arg": "--framework ${framework}"                           },
-        { "name": "model",          "arg": "--model ${model}"                                   },
-        { "name": "task",           "arg": "--task ${task}"                                     },
-        { "name": "data",           "arg": "--data ${dataset}"                                  },
-        { "name": "output_path",    "arg": "--output_path ${archive_dir}"                       },
-        { "name": "epochs",         "arg": "--epochs ${epochs}"                                 },
-        { "name": "batch",          "arg": "--batch ${batch_size}"                              },
-        { "name": "device",         "arg": "--device ${device}"                                 },
-        { "name": "lr",             "arg": "--lr ${learning_rate}"                              },
-        { "name": "warmup_steps",   "arg": "--warmup_steps ${warmup_steps}"                     },
-        { "name": "seed",           "arg": "--seed ${seed}"                                     },
-        { "name": "patience",       "arg": "--patience ${patience}"                             },
-        { "name": "wandb_key",      "arg": "--wandb_key ${wandb_key}",    "if": "wandb_key"     },
-        { "name": "wandb_project",  "arg": "--wandb_project ${wandb_project}"                   },
-        { "name": "extra_args",     "arg": "${extra_args}"                                      },
-        { "name": "checkpoint",     "arg": "--checkpoint ${checkpoint}",  "if": "checkpoint"    }
+        { "name": "framework", "arg": "--framework ${framework}" },
+        { "name": "model", "arg": "--model ${model}" },
+        { "name": "task", "arg": "--task ${task}" },
+        { "name": "data", "arg": "--data /job/dataset/${data_file}", "if": "dataset" },
+        { "name": "hub data", "arg": "--data ${hub_dataset}", "if": "hub_dataset" },
+        { "name": "output_path", "arg": "--output_path /job/output" },
+        { "name": "name", "arg": "--name ${name}", "if": "name" },
+        { "name": "epochs", "arg": "--epochs ${epochs}" },
+        { "name": "batch", "arg": "--batch ${batch_size}" },
+        { "name": "device", "arg": "--device ${device}" },
+        { "name": "seed", "arg": "--seed ${seed}" },
+        { "name": "patience", "arg": "--patience ${patience}" },
+        { "name": "workers", "arg": "--workers ${workers}" },
+        { "name": "imgsz", "arg": "--imgsz ${imgsz}" },
+        { "name": "lr0", "arg": "--lr0 ${lr0}" },
+        { "name": "lrf", "arg": "--lrf ${lrf}" },
+        { "name": "momentum", "arg": "--momentum ${momentum}" },
+        { "name": "weight_decay", "arg": "--weight_decay ${weight_decay}" },
+        { "name": "optimizer", "arg": "--optimizer ${optimizer}" },
+        { "name": "cos_lr", "arg": "--cos_lr", "if": "cos_lr" },
+        { "name": "warmup_epochs", "arg": "--warmup_epochs ${warmup_epochs}" },
+        { "name": "warmup_momentum", "arg": "--warmup_momentum ${warmup_momentum}" },
+        { "name": "warmup_bias_lr", "arg": "--warmup_bias_lr ${warmup_bias_lr}" },
+        { "name": "dropout", "arg": "--dropout ${dropout}" },
+        { "name": "fraction", "arg": "--fraction ${fraction}" },
+        { "name": "freeze", "arg": "--freeze ${freeze}", "if": "freeze" },
+        { "name": "close_mosaic", "arg": "--close_mosaic ${close_mosaic}" },
+        { "name": "save_period", "arg": "--save_period ${save_period}" },
+        { "name": "resume", "arg": "--resume", "if": "resume" },
+        { "name": "profile", "arg": "--profile", "if": "profile" },
+        { "name": "lr", "arg": "--lr ${learning_rate}" },
+        { "name": "hf_weight_decay", "arg": "--hf_weight_decay ${hf_weight_decay}" },
+        { "name": "warmup_steps", "arg": "--warmup_steps ${warmup_steps}" },
+        { "name": "lr_scheduler", "arg": "--lr_scheduler ${lr_scheduler}" },
+        { "name": "hf_optimizer", "arg": "--hf_optimizer ${hf_optimizer}" },
+        { "name": "gradient_accumulation_steps", "arg": "--gradient_accumulation_steps ${gradient_accumulation_steps}" },
+        { "name": "fp16", "arg": "--fp16", "if": "fp16" },
+        { "name": "eval_strategy", "arg": "--eval_strategy ${eval_strategy}" },
+        { "name": "save_strategy", "arg": "--save_strategy ${save_strategy}" },
+        { "name": "save_total_limit", "arg": "--save_total_limit ${save_total_limit}" },
+        { "name": "logging_steps", "arg": "--logging_steps ${logging_steps}" },
+        { "name": "train_samples", "arg": "--train_samples ${train_samples}" },
+        { "name": "val_samples", "arg": "--val_samples ${val_samples}" },
+        { "name": "extra_args", "arg": "${extra_args}", "if": "extra_args" }
+      ],
+      "envVariables": [
+        { "key": "HF_TOKEN", "value": "${hf_token}", "if": "hf_token" },
+        { "key": "WANDB_API_KEY", "value": "${wandb_key}", "if": "wandb_key" },
+        { "key": "WANDB_PROJECT", "value": "${wandb_project}", "if": "wandb_key" },
+        { "key": "HF_HOME", "value": "/job/hf_cache", "if": "hf_cache_dir=" }
       ],
       "containerArgs": [
-        { "name": "hf_cache", "arg": "--bind /fs/scratch/PAS2699/yolo_training/mod/hf_cache:/app/hf_cache" }
+        { "name": "binding", "arg": "--bind $PWD:/job" },
+        { "name": "workdir", "arg": "--pwd /job" },
+        { "name": "gpu", "arg": "--nv" },
+        { "name": "hf_cache", "arg": "--bind ${hf_cache_dir}:/app/hf_cache", "if": "hf_cache_dir" }
       ],
       "schedulerOptions": [
-        { "name": "account",  "arg": "-A ${slurm_account}" },
+        { "name": "account", "arg": "-A ${slurm_account}" },
         { "name": "job name", "arg": "--job-name=workflow-orchestrator-training" },
-        { "name": "gpu",      "arg": "-G 1" }
+        { "name": "gpu", "arg": "-G 1" }
       ],
       "archiveFilter": { "includeLaunchFiles": false }
     }

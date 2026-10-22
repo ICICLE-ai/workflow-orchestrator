@@ -1,93 +1,119 @@
 {
   "step_type_key": "hf_inference",
-  "display_name": "HuggingFace Inference",
-  "description": "Runs a trained HuggingFace or YOLO model on new images to generate predictions.",
+  "display_name": "Model Inference",
+  "description": "Runs a model from the Model Training step (YOLO or HuggingFace) over a folder of images and writes predictions.json and summary.json.",
   "category": "Inference",
   "resources": { "gpu": true },
+  "tapis_app_id": "hf_inference",
   "inputs": [
-    { "name": "model", "type": "pytorch_model" },
-    { "name": "images", "type": "image_dir" }
+    {
+      "name": "model",
+      "type": "pytorch_model",
+      "description": "The trained model: a YOLO .pt file (Model Training's `model` output for YOLO is weights/best.pt) or a HuggingFace model folder (best_model/). Copied into the job before it runs."
+    },
+    {
+      "name": "images",
+      "type": "image_dir",
+      "description": "Folder of images to run on. Searched recursively for .jpg, .jpeg, .png, .bmp, .tiff and .webp files."
+    }
   ],
   "outputs": [
     { "name": "predictions", "type": "json_results", "output_path": "predictions.json" },
-    { "name": "summary",     "type": "json_results", "output_path": "summary.json" }
+    { "name": "summary", "type": "json_results", "output_path": "summary.json" }
   ],
   "config_schema": {
     "framework": {
-      "type": "str",
-      "description": "Inference framework: yolo or huggingface",
+      "type": "select",
+      "options": ["yolo", "huggingface"],
+      "description": "Framework the model was trained with. Must match the model input: 'yolo' for a .pt file, 'huggingface' for a saved model folder.",
       "default": "huggingface"
     },
     "task": {
-      "type": "str",
-      "description": "Task type: classify, detect, or segment",
+      "type": "select",
+      "options": ["classify", "detect", "segment"],
+      "description": "What the model predicts. Must match the task it was trained for.",
       "default": "classify"
     },
     "conf": {
       "type": "float",
-      "description": "Minimum confidence threshold for predictions (0-1)",
+      "description": "Minimum confidence (0–1) for a prediction to be kept. Lower it to see more, less certain predictions.",
       "default": 0.25
     },
     "batch": {
       "type": "int",
-      "description": "Batch size for HuggingFace inference",
+      "description": "HuggingFace only: images per forward pass. Lower it if the GPU runs out of memory.",
       "default": 16
     },
     "imgsz": {
       "type": "int",
-      "description": "Inference image size in pixels (YOLO only)",
+      "description": "YOLO only: inference image size in pixels. Use the size the model was trained at (Model Training's image size, 640 by default).",
       "default": 640
     },
     "device": {
-      "type": "str",
-      "description": "Compute device: cpu or cuda",
+      "type": "select",
+      "options": ["cuda", "cpu"],
+      "description": "Compute device. 'cuda' needs a GPU node; the job falls back to CPU if none is visible.",
       "default": "cuda"
     }
   },
   "tapis_job": {
     "name": "hf-inference",
-    "appId": "workflow-orchestrator-infer-v1",
-    "appVersion": "1.0",
-    "description": "HuggingFace/YOLO inference via Workflow Orchestrator",
+    "appId": "hf_inference",
+    "appVersion": "1.0.0",
+    "description": "YOLO / HuggingFace inference over an image directory",
     "execSystemId": "${exec_system}",
     "execSystemLogicalQueue": "${exec_queue}",
     "archiveSystemId": "${archive_system}",
     "archiveSystemDir": "${archive_dir}",
     "nodeCount": 1,
     "coresPerNode": 4,
-    "memoryMB": 64000,
+    "memoryMB": 32000,
     "maxMinutes": 30,
     "fileInputs": [
       {
-        "name": "hf_cache",
-        "envKey": "HF_HOME",
+        "name": "model",
+        "if": "framework=yolo",
         "autoMountLocal": true,
-        "sourceUrl": "tapis://pitzer-tapis/fs/scratch/PAS2699/yolo_training/mod/hf_cache",
-        "targetPath": "hf_cache"
+        "sourceUrl": "${model}",
+        "targetPath": "model.pt",
+        "description": "Ultralytics picks the loader from the file extension, so a YOLO model must keep its .pt name."
+      },
+      {
+        "name": "model",
+        "if": "framework=huggingface",
+        "autoMountLocal": true,
+        "sourceUrl": "${model}",
+        "targetPath": "model",
+        "description": "A HuggingFace model is a folder (config, weights, image processor)."
+      },
+      {
+        "name": "images",
+        "autoMountLocal": true,
+        "sourceUrl": "${images}",
+        "targetPath": "images"
       }
     ],
     "parameterSet": {
       "appArgs": [
-        { "name": "script",    "arg": "infer_main.py" },
         { "name": "framework", "arg": "--framework ${framework}" },
-        { "name": "model",     "arg": "--model ${model}" },
-        { "name": "task",      "arg": "--task ${task}" },
-        { "name": "data",      "arg": "--data ${images}" },
-        { "name": "output",    "arg": "--output_path ${JobWorkingDir}/output" },
-        { "name": "device",    "arg": "--device ${device}" },
-        { "name": "conf",      "arg": "--conf ${conf}" },
-        { "name": "batch",     "arg": "--batch ${batch}" },
-        { "name": "imgsz",     "arg": "--imgsz ${imgsz}" }
+        { "name": "model", "arg": "--model /job/model.pt", "if": "framework=yolo" },
+        { "name": "model", "arg": "--model /job/model", "if": "framework=huggingface" },
+        { "name": "task", "arg": "--task ${task}" },
+        { "name": "data", "arg": "--data /job/images" },
+        { "name": "output", "arg": "--output_path /job --name output", "description": "infer_main.py writes to <output_path>/<name>/, so this lands in /job/output: the job's output dir, which Tapis archives to the run folder." },
+        { "name": "device", "arg": "--device ${device}" },
+        { "name": "conf", "arg": "--conf ${conf}" },
+        { "name": "batch", "arg": "--batch ${batch}" },
+        { "name": "imgsz", "arg": "--imgsz ${imgsz}" }
       ],
       "containerArgs": [
-        {
-          "name": "hf_cache_bind",
-          "arg": "--bind ${JobWorkingDir}/hf_cache:/root/.cache/huggingface"
-        }
+        { "name": "binding", "arg": "--bind $PWD:/job" },
+        { "name": "gpu", "arg": "--nv" }
       ],
       "schedulerOptions": [
-        { "arg": "-G 1",                   "name": "gpu_per_node" },
-        { "arg": "-A ${slurm_account}",    "name": "slurm_account" }
+        { "name": "gpu_per_node", "arg": "-G 1" },
+        { "name": "slurm_account", "arg": "-A ${slurm_account}" },
+        { "name": "job name", "arg": "--job-name=hf-inference" }
       ],
       "archiveFilter": {
         "includeLaunchFiles": false,

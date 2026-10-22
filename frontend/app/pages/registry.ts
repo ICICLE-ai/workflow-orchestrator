@@ -3,6 +3,7 @@ import type { StepPanelProps } from "./types";
 //import HeatmapPanel from "./heatmap";
 //import ImagePlayground from "./imagePreprocessStudio";
 import TrainingPanel from "./TrainingPanel";
+import InferencePanel from "./inferencePanel";
 import VisualizationPanel from "./VisualizationPanel";
 import PatraPanel from "./PatraPanel";
 import HeatmapPanel from "./heatmap";
@@ -26,6 +27,7 @@ export const stepPanels: Record<string, ComponentType<StepPanelProps>> = {
   //heatmap: HeatmapPanel,
   //"image-preprocess-studio": ImagePlayground,
   training: TrainingPanel,
+  hf_inference: InferencePanel,
   visualization: VisualizationPanel,
   patra_upload: PatraPanel,
   heatmap: HeatmapPanel,

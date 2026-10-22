@@ -70,7 +70,7 @@ from sqlalchemy.orm import Session
 
 from models import StepTypeRegistry, WfNode, WorkflowTemplate
 from engine import local_bundle
-from engine.transactions import _default_work_dir, _exec_system_dirs
+from engine.transactions import _default_work_dir, _exec_system_dirs, exec_work_dir
 
 # The Tapis app that executes a bundle. Not a container app: it must be able to
 # launch apptainer itself for each step, so it is registered as a ZIP-runtime app
@@ -600,7 +600,10 @@ def plan(db: Session, template: WorkflowTemplate, cfg: dict, *, run_id=None) -> 
     }
     if exec_target["exec_queue"]:
         job["execSystemLogicalQueue"] = exec_target["exec_queue"]
-    exec_dir, input_dir, output_dir = _exec_system_dirs(exec_target["exec_system"], slurm_account, username)
+    exec_dir, input_dir, output_dir = _exec_system_dirs(
+        exec_target["exec_system"], slurm_account, username,
+        exec_work_dir(cfg, {}, exec_target["exec_system"], archive_system),
+    )
     for field, value in (("execSystemExecDir", exec_dir),
                          ("execSystemInputDir", input_dir),
                          ("execSystemOutputDir", output_dir)):
