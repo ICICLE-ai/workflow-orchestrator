@@ -50,7 +50,7 @@ tags = ["tapis", "capability-url", "pre-authenticated"]
     '''13157e55-7514-481e-966b-ff4cc091dd75-010''',  # generate-flight-plan
     '''0ed4e6d4-d290-4ce7-bd33-950dc2584b4a-010''',  # generate-geopackage
     '''8d2f6836-8bb9-4796-b3e3-0354fa634cc5-010''',  # export-flight-mission
-    '''af9d5b30-a6d8-4efd-bc83-71991410c42f-010''',  # zero-shot-annotation
+    '''653515ea-77c2-4374-af26-58a0b087ec61-010''',  # zero-shot-annotation
     '''639d5124-1c6b-4c1b-b8f0-870630ff99d7-010''',  # extract_frames
     '''78bf9754-a7c2-4e86-85c1-d594c1a515d1-010''',  # wf_inference
   ]

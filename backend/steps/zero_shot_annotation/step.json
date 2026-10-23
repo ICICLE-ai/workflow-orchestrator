@@ -33,7 +33,7 @@
     },
     "text_prompts": {
       "type": "string",
-      "description": "Free-text concepts to detect, applied to every image (e.g. tree, \"parked car\", \"solar panel\"). Each detection is labelled with the prompt that found it. At least one of text_prompts or annotation_file is required.",
+      "description": "Free-text concepts to detect, applied to every image (e.g. tree, \"parked car\", \"solar panel\"). Each detection is labelled with the prompt that found it, or with the label you give it: dog -> german shepherd prompts the model with 'dog' and writes 'german shepherd' to the annotations (stored as \"dog=german shepherd\"). Several prompts can share one label. At least one of text_prompts or annotation_file is required.",
       "default": ""
     },
     "annotation_file": {

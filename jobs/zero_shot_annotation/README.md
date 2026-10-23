@@ -87,6 +87,17 @@ Free-text concepts applied to every image. Each detection is labelled with the p
 --text_prompts "tree" "parked car" "solar panel"
 ```
 
+To label detections with a different name than the prompt, write the prompt as `prompt=label`. The model is prompted with the left side, and the right side goes into the annotations' `class`:
+
+```bash
+--text_prompts "dog=german shepherd" "cat=siamese" "puppy=german shepherd" tree
+```
+
+- Several prompts can share one label (`dog` and `puppy` above). Their detections are one class, so overlapping boxes from the two prompts are merged by the class-aware NMS.
+- A prompt without `=` is its own label (`tree`).
+- The output's top-level `text_prompt_labels` records the mapping used, e.g. `{"dog": "german shepherd", "tree": "tree"}`.
+- The same `prompt=label` form works in a prompt file's `text_prompts`.
+
 ### Exemplar prompts
 
 Visual exemplars — SAM3 geometry prompts. You draw a box around one instance and the model finds the rest. Positive exemplars mean "more like this"; negative exemplars mean "not like this".

@@ -1,0 +1,35 @@
+Bootstrap: docker
+From: python:3.12-slim
+
+%files
+    wf_utils.py /app/wf_utils.py
+    annotations_io.py /app/annotations_io.py
+    merge_folders.py /app/merge_folders.py
+    merge_annotations.py /app/merge_annotations.py
+    zero_shot_to_yolo.py /app/zero_shot_to_yolo.py
+    split_dataset.py /app/split_dataset.py
+    requirements.txt /app/requirements.txt
+
+%environment
+    export PATH="/usr/local/bin:/app:$PATH"
+    export LC_ALL=C.UTF-8
+    export LANG=C.UTF-8
+    export PYTHONUNBUFFERED=1
+
+%post
+    echo "Setting up the wf-utils tools"
+    cd /app
+    python3 -m pip install --upgrade pip
+    pip install --no-cache-dir -r requirements.txt
+    chmod 755 /app/*.py
+    echo "Setup complete."
+
+%runscript
+    # Not `cd /app`: tools take paths relative to where they're run from.
+    exec python3 /app/wf_utils.py "$@"
+
+%labels
+    Maintainer "Brijesh Nanda <brundayogananda.1@osu.edu>"
+    Version "1.0.0"
+    Appname "wf-utils"
+    Description "Small CPU-only data tools for Workflow Orchestrator steps (merge_folders, merge_annotations, zero_shot_to_yolo, split_dataset); the first argument picks the tool"

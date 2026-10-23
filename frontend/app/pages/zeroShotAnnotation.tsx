@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  Stack, Group, Text, Title, NumberInput, TextInput, TagsInput, Select, Switch,
-  SegmentedControl, ScrollArea, Divider, Badge, Button, Tooltip,
+  Stack, Group, Text, Title, NumberInput, TextInput, Select, Switch,
+  SegmentedControl, ScrollArea, Divider, Badge, Button, Tooltip, ActionIcon,
 } from "@mantine/core";
-import { IconLink } from "@tabler/icons-react";
+import { IconArrowRight, IconLink, IconPlus, IconTrash } from "@tabler/icons-react";
 import type { StepPanelProps } from "./types";
 import { apiFetch } from "../lib/api";
 import { resolveWiredLocation, splitTapisUri } from "../lib/tapis";
@@ -16,7 +16,8 @@ import TapisPathField from "../components/TapisPathField";
 // exemplar boxes (or both).
 //
 // text_prompts is stored in config as a single CLI-ready string (each prompt
-// individually double-quoted and space-joined, e.g. `"tree" "parked car"`) —
+// individually double-quoted and space-joined, e.g. `tree "parked car"`, and
+// `"dog=german shepherd"` for a prompt with its own label) —
 // see backend/engine/job_spec.py, which does plain ${...} substitution with
 // no argv-list awareness, so the quoting has to already be baked in. The tag
 // list below is just an editing convenience over that string.
@@ -182,11 +183,10 @@ export default function ZeroShotAnnotationPanel({ config, onChange, step, connec
 
             {promptMode === "text" ? (
               <Stack gap="xs">
-                <TagsInput
+                <PromptLabelEditor
                   label="Text prompts"
                   description={tip("text_prompts")}
-                  placeholder="Type a concept and press Enter (e.g. tree, parked car)"
-                  value={parsePromptTags(textPrompts)}
+                  value={textPrompts}
                   onChange={setTextPromptTags}
                 />
                 {/* The Prompt file field lives only in the other mode, so a
@@ -257,11 +257,10 @@ export default function ZeroShotAnnotationPanel({ config, onChange, step, connec
                     prompt file from wired annotation_file input
                   </Badge>
                 )}
-                <TagsInput
+                <PromptLabelEditor
                   label="Additional text prompts (optional)"
                   description="Text concepts to run alongside the exemplars — not a substitute for text paired with an exemplar in the prompt file itself."
-                  placeholder="Type a concept and press Enter"
-                  value={parsePromptTags(textPrompts)}
+                  value={textPrompts}
                   onChange={setTextPromptTags}
                 />
                 {!hasExemplars && (
@@ -466,9 +465,121 @@ export default function ZeroShotAnnotationPanel({ config, onChange, step, connec
 // StepSettingsModal host honors via this static flag.
 (ZeroShotAnnotationPanel as any).fullScreen = true;
 
+// One text prompt: what the model is asked to find, and the class written to
+// the annotations ("" = the prompt itself). Stored inside text_prompts as a
+// `prompt=label` token, which the job splits on the first "=".
+interface PromptRow {
+  prompt: string;
+  label: string;
+}
+
+function toRows(value: string): PromptRow[] {
+  const rows = parsePromptTags(value).map((tag) => {
+    const i = tag.indexOf("=");
+    return i > 0 ? { prompt: tag.slice(0, i).trim(), label: tag.slice(i + 1).trim() } : { prompt: tag, label: "" };
+  });
+  return rows.length ? rows : [{ prompt: "", label: "" }];
+}
+
+function toTags(rows: PromptRow[]): string[] {
+  return rows
+    .filter((r) => r.prompt.trim())
+    .map((r) => {
+      const prompt = r.prompt.trim();
+      const label = r.label.trim();
+      return label && label !== prompt ? `${prompt}=${label}` : prompt;
+    });
+}
+
+// Rows of prompt -> label. Rows live in local state so a half-typed or blank
+// row survives (the stored string drops empty prompts), and are re-read from
+// `value` only when it changes from outside this editor.
+function PromptLabelEditor({ value, onChange, label, description }: {
+  value: string;
+  onChange: (tags: string[]) => void;
+  label: string;
+  description?: string;
+}) {
+  const [rows, setRows] = useState<PromptRow[]>(() => toRows(value));
+  const lastSent = useRef(value);
+  useEffect(() => {
+    if (value !== lastSent.current) {
+      lastSent.current = value;
+      setRows(toRows(value));
+    }
+  }, [value]);
+
+  const update = (next: PromptRow[]) => {
+    setRows(next);
+    const tags = toTags(next);
+    lastSent.current = tags.map((t) => (t.includes(" ") ? `"${t}"` : t)).join(" ");
+    onChange(tags);
+  };
+  // A double quote would break the CLI quoting; "=" in a prompt would be read
+  // as the start of its label.
+  const edit = (i: number, patch: Partial<PromptRow>) =>
+    update(rows.map((r, j) => (j === i ? {
+      prompt: (patch.prompt ?? r.prompt).replace(/["=]/g, ""),
+      label: (patch.label ?? r.label).replace(/"/g, ""),
+    } : r)));
+
+  return (
+    <Stack gap={6}>
+      <div>
+        <Text size="sm" fw={500}>{label}</Text>
+        {description && <Text size="xs" c="dimmed">{description}</Text>}
+      </div>
+      <Group gap="xs" wrap="nowrap">
+        <Text size="xs" c="dimmed" style={{ flex: 1 }}>Prompt (sent to the model)</Text>
+        <span style={{ width: 14 }} />
+        <Text size="xs" c="dimmed" style={{ flex: 1 }}>Label (written to the annotations)</Text>
+        <span style={{ width: 28 }} />
+      </Group>
+      {rows.map((row, i) => (
+        <Group key={i} gap="xs" wrap="nowrap">
+          <TextInput
+            style={{ flex: 1 }}
+            size="sm"
+            placeholder="e.g. dog"
+            value={row.prompt}
+            onChange={(e) => edit(i, { prompt: e.currentTarget.value })}
+          />
+          <IconArrowRight size={14} style={{ opacity: 0.5, flexShrink: 0 }} />
+          <TextInput
+            style={{ flex: 1 }}
+            size="sm"
+            placeholder={row.prompt.trim() ? `${row.prompt.trim()} (same as prompt)` : "e.g. german shepherd"}
+            value={row.label}
+            onChange={(e) => edit(i, { label: e.currentTarget.value })}
+          />
+          <Tooltip label="Remove this prompt">
+            <ActionIcon
+              variant="subtle"
+              color="gray"
+              onClick={() => update(rows.length > 1 ? rows.filter((_, j) => j !== i) : [{ prompt: "", label: "" }])}
+            >
+              <IconTrash size={14} />
+            </ActionIcon>
+          </Tooltip>
+        </Group>
+      ))}
+      <Group>
+        <Button
+          size="compact-xs"
+          variant="subtle"
+          leftSection={<IconPlus size={12} />}
+          onClick={() => setRows([...rows, { prompt: "", label: "" }])}
+        >
+          Add prompt
+        </Button>
+      </Group>
+    </Stack>
+  );
+}
+
 // Reverse of setTextPromptTags: split a CLI-ready string (individually
 // double-quoted multi-word prompts, space-joined) back into an editable tag
-// list for TagsInput's initial value.
+// list (and from there, the prompt -> label rows).
 function parsePromptTags(value: string): string[] {
   const tags: string[] = [];
   const re = /"([^"]*)"|(\S+)/g;

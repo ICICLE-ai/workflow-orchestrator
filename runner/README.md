@@ -69,6 +69,7 @@ Useful flags:
 |---|---|
 | `--dry-run` | Print the plan and the exact `apptainer` command for every step, run nothing. |
 | `--run-id LABEL` | Name this run's workspace (default: a timestamp). |
+| `--log-lines N` | Lines of a running step's output shown live under it, in a window that slides (default 10, or `WF_LOG_LINES`; `0` hides it). Off a terminal, e.g. in a batch job, the newest line is printed every 30 s instead. The full output is always in the step's `runner.log`. |
 | `--copy-inputs` | Copy staged inputs instead of symlinking them. |
 | `--skip-unsupported` | Continue past steps that can only run on the platform. |
 | `--runtime PATH` | Use a different container runtime binary (e.g. `singularity`). |

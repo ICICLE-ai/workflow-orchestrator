@@ -1,0 +1,168 @@
+{
+  "step_type_key": "zero_shot_to_yolo",
+  "resources": {
+    "gpu": false
+  },
+  "display_name": "Annotations to YOLO Dataset",
+  "description": "Turns Zero-Shot Annotation output (or a Smart Labeler annotations.json) into a ready-to-train YOLO dataset: images and labels split into train/val, plus data.yaml. Wire its dataset output to Model Training's dataset input and set Model Training's data file to data.yaml.",
+  "category": "Data Pre-processing",
+  "icon": "replace",
+  "tapis_app_id": "wf-utils",
+  "inputs": [
+    {
+      "name": "annotations",
+      "type": "json_results",
+      "description": "Zero-Shot Annotation's annotations output, or any Smart Labeler-format annotations.json (Smart Labeler, Model Inference)."
+    },
+    {
+      "name": "images",
+      "type": "image_dir",
+      "description": "The image folder the annotations were made on: the same folder wired into Zero-Shot Annotation's images input. Images are copied into the dataset."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "dataset",
+      "type": "image_dir",
+      "output_path": "dataset",
+      "description": "The YOLO dataset folder: data.yaml, classes.txt, images/{train,val}, labels/{train,val}."
+    },
+    {
+      "name": "summary",
+      "type": "json_results",
+      "output_path": "conversion_summary.json",
+      "description": "Classes, images per split, labels per class, and anything dropped (low score, unknown class, unmatched image)."
+    }
+  ],
+  "config_schema": {
+    "task": {
+      "type": "select",
+      "options": [
+        "detect",
+        "segment"
+      ],
+      "description": "'detect' writes boxes. 'segment' writes polygons from the zero-shot masks (needs masks in its output; a box-only annotation becomes a rectangle). Match Model Training's task.",
+      "default": "detect"
+    },
+    "val_split": {
+      "type": "float",
+      "description": "Fraction of images held out for validation (0–1). At 0, validation reuses the training images.",
+      "default": 0.2
+    },
+    "seed": {
+      "type": "int",
+      "description": "Random seed for the train/val split, so the same inputs always split the same way.",
+      "default": 42
+    },
+    "min_score": {
+      "type": "float",
+      "description": "Drop annotations whose confidence is below this (0–1). 0 keeps everything the zero-shot step kept.",
+      "default": 0.0
+    },
+    "classes": {
+      "type": "string",
+      "description": "Optional comma-separated class names, in the index order the model should use (e.g. 'spot, rust'). Labels not listed are dropped. Empty uses every label found, sorted alphabetically.",
+      "default": ""
+    },
+    "drop_empty": {
+      "type": "boolean",
+      "description": "Leave out images with no annotations. Off by default: they're kept as background images, which helps the model learn what isn't an object.",
+      "default": false
+    },
+    "exec_queue": {
+      "type": "string",
+      "description": "Scheduler queue. This is a CPU-only job, so it defaults to a CPU queue (overrides the run-level queue).",
+      "default": "cpu"
+    }
+  },
+  "tapis_job": {
+    "name": "zero-shot-to-yolo",
+    "appId": "wf-utils",
+    "appVersion": "1.0.0",
+    "description": "Convert annotations to a YOLO dataset",
+    "execSystemId": "${exec_system}",
+    "execSystemLogicalQueue": "${exec_queue}",
+    "archiveSystemId": "${archive_system}",
+    "archiveSystemDir": "${archive_dir}",
+    "nodeCount": 1,
+    "coresPerNode": 2,
+    "memoryMB": 8000,
+    "maxMinutes": 60,
+    "fileInputs": [
+      {
+        "name": "annotations",
+        "autoMountLocal": true,
+        "sourceUrl": "${annotations}",
+        "targetPath": "input/annotations.json"
+      },
+      {
+        "name": "images",
+        "autoMountLocal": true,
+        "sourceUrl": "${images}",
+        "targetPath": "input/images"
+      }
+    ],
+    "parameterSet": {
+      "appArgs": [
+        {
+          "name": "tool",
+          "arg": "zero_shot_to_yolo",
+          "description": "The shared wf-utils container runs several small tools; this picks which one (jobs/wf_utils/)."
+        },
+        {
+          "name": "annotations",
+          "arg": "--annotations /job/input/annotations.json"
+        },
+        {
+          "name": "images",
+          "arg": "--images /job/input/images"
+        },
+        {
+          "name": "output",
+          "arg": "--output /job/output/dataset --summary /job/output/conversion_summary.json"
+        },
+        {
+          "name": "task",
+          "arg": "--task ${task}"
+        },
+        {
+          "name": "val_split",
+          "arg": "--val_split ${val_split}"
+        },
+        {
+          "name": "seed",
+          "arg": "--seed ${seed}"
+        },
+        {
+          "name": "min_score",
+          "arg": "--min_score ${min_score}"
+        },
+        {
+          "name": "classes",
+          "arg": "--classes '${classes}'",
+          "if": "classes"
+        },
+        {
+          "name": "drop_empty",
+          "arg": "--drop_empty",
+          "if": "drop_empty"
+        }
+      ],
+      "containerArgs": [
+        {
+          "name": "binding",
+          "arg": "--bind $PWD:/job"
+        }
+      ],
+      "schedulerOptions": [
+        {
+          "arg": "-A ${slurm_account}",
+          "name": "slurm account"
+        }
+      ],
+      "archiveFilter": {
+        "includeLaunchFiles": false
+      }
+    }
+  }
+}
