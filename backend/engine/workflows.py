@@ -146,17 +146,33 @@ def _run_sink_node(run_id: int, node_key: str, node_config: dict) -> dict:
     specific output (e.g. just 'predictions') land at a user-chosen location,
     independent of where the producing step archived.
     """
-    dest = (node_config or {}).get("path", "")
+    # The sink's settings hold a system plus a bare path (a tapis_path field),
+    # joined here exactly as the local bundle's _platform_source_path does; an
+    # older template's full tapis:// URI in `path` still works as-is.
+    cfg = node_config or {}
+    path, system = str(cfg.get("path") or ""), str(cfg.get("system") or "")
+    dest = f"tapis://{system}/{path.lstrip('/')}" if system and path and "://" not in path else path
     # The resolved input value for this sink's 'data' port (set by _resolve_inputs).
     resolved = get_step_input(run_id, node_key)  # includes resolved input ports
     src = resolved.get("data") or resolved.get("path") or ""
-    if not src or not dest:
-        return {"path": dest, "copied": False, "note": "missing source or destination"}
-    # replace=True clears the destination first, so the sink dir reflects only
-    # this run's wired output — no residue from prior runs with older layouts.
+    # Raising fails the step with this message, instead of a green node that
+    # copied nothing.
+    if not path:
+        raise RuntimeError("This sink has no destination: open its settings and choose a system and path.")
+    if system == "node-local":
+        raise RuntimeError("This sink writes to 'My node', which only a run on your own node can reach. "
+                           "Pick a Tapis system for platform runs.")
+    if "://" not in dest:
+        raise RuntimeError(f"This sink's destination '{path}' has no Tapis system: open its settings and pick one.")
+    if not src:
+        raise RuntimeError("Nothing reached this sink's input: check that it is wired to an upstream output.")
+    # replace=True: a folder output replaces the destination folder's contents,
+    # so it reflects only this run; a single file only replaces itself.
     ok = copy_tapis_path(src, dest, run_id, replace=True)
     print(f"[sink] copy {src} -> {dest} (replace): {'OK' if ok else 'FAILED'}")
-    return {"path": dest, "source": src, "copied": bool(ok)}
+    if not ok:
+        raise RuntimeError(f"Copying {src} to {dest} failed; the backend log has the Tapis error.")
+    return {"path": dest, "source": src, "copied": True}
 
 
 def _resolve_secrets(node_key: str, ctx: dict, team_id: int | None) -> tuple[dict, list[str]]:

@@ -177,6 +177,60 @@ def resolve_image(images_dir: Path, name: str) -> Path | None:
     return None
 
 
+def _gpu_listed() -> bool:
+    """nvidia-smi lists a GPU (or, without nvidia-smi, the driver's /proc entries do)."""
+    if shutil.which("nvidia-smi"):
+        try:
+            out = subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True, timeout=30)
+            return out.returncode == 0 and any(l.startswith("GPU") for l in out.stdout.splitlines())
+        except (OSError, subprocess.SubprocessError):
+            return False
+    gpus = Path("/proc/driver/nvidia/gpus")
+    return gpus.is_dir() and any(gpus.iterdir())
+
+
+def _nv_libs_found() -> bool:
+    """The driver library `apptainer --nv` mounts into a step is in the
+    ldconfig cache, where Apptainer looks for it. Without it Apptainer warns
+    "Could not find any nv libraries on this host" and the step gets no GPU,
+    even when nvidia-smi lists one. True when ldconfig can't be asked, so a
+    missing tool never raises a false alarm."""
+    ldconfig = shutil.which("ldconfig") or next(
+        (p for p in ("/sbin/ldconfig", "/usr/sbin/ldconfig") if Path(p).exists()), None)
+    if not ldconfig:
+        return True
+    try:
+        out = subprocess.run([ldconfig, "-p"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return out.returncode != 0 or "libnvidia-ml.so" in out.stdout
+
+
+def gpu_problem() -> str | None:
+    """None when a step's `apptainer --nv` will get a GPU, else why it won't.
+
+    Without one, a GPU step silently falls back to the CPU: hours instead of
+    minutes.
+    """
+    if not _gpu_listed():
+        if inside_container():
+            return ("no GPU is visible: this runner is itself running inside a container, which can't "
+                    "see the host's GPU or driver. Start it on the host with ./run.sh instead")
+        return ("no GPU is visible on this node (nvidia-smi lists none). On a GPU node, make sure the "
+                "job requested one, e.g. `salloc --gpus-per-node=1 ...` or `#SBATCH --gpus-per-node=1`")
+    if not _nv_libs_found():
+        return ("a GPU is listed, but the NVIDIA driver library Apptainer's --nv mounts into each step "
+                "(libnvidia-ml.so) isn't in this node's ldconfig cache, so the steps won't see the GPU"
+                + ("; this runner is running inside a container, so start it on the host with ./run.sh"
+                   if inside_container() else ""))
+    return None
+
+
+# Set by preflight: whether steps will get a GPU, so each GPU step can repeat
+# the warning when it starts (preflight's scrolls away during a long run).
+_GPU_VISIBLE = True
+
+
 def inside_container() -> bool:
     """Whether this process is itself running inside Apptainer/Singularity.
 
@@ -281,6 +335,26 @@ def fetch_input(url: str, target: Path) -> None:
             f"        If this is a platform-signed link it has probably expired — host the file\n"
             f"        yourself and re-export the bundle, or place it at {target} by hand."
         )
+
+
+def staged_image_in(images_dir: Path, node: dict, item: dict) -> Path | None:
+    """The images-directory copy of a node's staged container, if this input is
+    that container and the copy exists."""
+    if not node.get("image_is_staged") or item.get("target") != node.get("image"):
+        return None
+    return resolve_image(images_dir, node["image"])
+
+
+def link_image(image: Path, target: Path) -> None:
+    """Point the job directory's staged-image path at an images-directory file.
+
+    A symlink, not a copy: a .sif is gigabytes, and the runtime is handed this
+    path on the host, where the link resolves.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.is_symlink() or target.exists():
+        target.unlink()
+    target.symlink_to(image.resolve())
 
 
 def stage_input(source: str, target: Path, copy: bool) -> None:
@@ -410,10 +484,18 @@ def run_job_node(node: dict, images_dir: Path, data_root: Path, workdir: Path,
             log(f"    write {target}")
         for item in node.get("stage_in", []):
             target = job_dir / item["target"]
-            log(f"    stage {item['name']}: {item['source']} -> {target}")
-            if item.get("fetch"):
+            # The step's own container (trainer.sif etc.): use the copy in the
+            # images directory — put there by hand, by the zip, or by
+            # preflight's one-time download — before redeeming the URL again.
+            cached = staged_image_in(images_dir, node, item)
+            if cached is not None:
+                log(f"    stage {item['name']}: {cached} -> {target}")
+                link_image(cached, target)
+            elif item.get("fetch"):
+                log(f"    stage {item['name']}: {item['source']} -> {target}")
                 fetch_input(item["source"], target)
             else:
+                log(f"    stage {item['name']}: {item['source']} -> {target}")
                 stage_input(item["source"], target, copy_inputs)
 
     cmd = build_command(node, job_dir, images_dir, data_root, workdir, runtime)
@@ -507,12 +589,26 @@ def run_sink_node(node: dict, dry_run: bool) -> dict:
     src, dst = Path(source), Path(dest)
     if not src.exists():
         raise BundleError(f"sink source does not exist: {src}")
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    # replace=True semantics, matching _run_sink_node on the platform: the
-    # destination reflects only this run, with no residue from an earlier one.
-    if dst.exists():
-        shutil.rmtree(dst) if dst.is_dir() else dst.unlink()
-    shutil.copytree(src, dst) if src.is_dir() else shutil.copy2(src, dst)
+    # The same rules as the platform's copy (engine.tapis.copy_tapis_path):
+    #   * a folder output replaces the destination folder's contents, so it
+    #     reflects only this run;
+    #   * a file output goes INTO an existing folder (or a path ending in "/")
+    #     under its own name, leaving the rest of that folder alone;
+    #   * otherwise a file output is written at exactly the destination path.
+    if src.is_dir():
+        if dst.exists() and not dst.is_dir():
+            dst.unlink()
+        dst.mkdir(parents=True, exist_ok=True)
+        for child in dst.iterdir():
+            shutil.rmtree(child) if child.is_dir() and not child.is_symlink() else child.unlink()
+        shutil.copytree(src, dst, dirs_exist_ok=True)
+    else:
+        if dst.is_dir() or dest.endswith("/"):
+            dst.mkdir(parents=True, exist_ok=True)
+            dst = dst / src.name
+        else:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
     return {"status": "completed", "dest": str(dst)}
 
 
@@ -520,7 +616,7 @@ def run_sink_node(node: dict, dry_run: bool) -> dict:
 
 def preflight(bundle: dict, images_dir: Path, data_root: Path, workdir: Path,
               runtime: str, skip_unsupported: bool, no_download: bool = False,
-              dry_run: bool = False) -> None:
+              dry_run: bool = False, require_gpu: bool = False) -> None:
     """Fail before running anything, listing every problem at once.
 
     A workflow's first step can take hours; discovering a missing image or an
@@ -582,6 +678,28 @@ def preflight(bundle: dict, images_dir: Path, data_root: Path, workdir: Path,
                 continue
             missing_images.remove(name)
 
+    # A staged container (training's trainer.sif, ...) missing from the images
+    # directory is downloaded there once too, rather than into every job
+    # directory on every run. With --no-download (or a failed download) the
+    # step still fetches it itself when it runs.
+    staged_urls = {
+        n["image"]: item["source"]
+        for n in bundle["nodes"] if n.get("kind") == "job" and n.get("image_is_staged")
+        for item in n.get("stage_in", [])
+        if item.get("target") == n["image"] and item.get("fetch")
+    }
+    if not no_download and not dry_run:
+        for name, url in sorted(staged_urls.items()):
+            if resolve_image(images_dir, name) is not None:
+                continue
+            images_dir.mkdir(parents=True, exist_ok=True)
+            log(f"downloading image {name} (once; cached in {images_dir})")
+            try:
+                fetch_input(url, images_dir / name)
+            except BundleError as e:
+                (images_dir / name).unlink(missing_ok=True)
+                log(f"WARNING: could not cache {name}: {e}")
+
     if missing_images:
         # List what IS there. The overwhelmingly common cause is a file that's
         # present under a different spelling, and showing both lists side by
@@ -611,6 +729,22 @@ def preflight(bundle: dict, images_dir: Path, data_root: Path, workdir: Path,
             log("WARNING: " + detail.splitlines()[0] + " (continuing: --dry-run)")
         else:
             problems.append(detail)
+
+    global _GPU_VISIBLE
+    gpu_steps = [n for n in bundle["nodes"] if n.get("kind") == "job" and n.get("gpu")]
+    reason = gpu_problem() if gpu_steps else None
+    _GPU_VISIBLE = reason is None
+    if not _GPU_VISIBLE:
+        names = ", ".join(f"{n['label']} ({n['step_type']})" for n in gpu_steps)
+        detail = (
+            f"these steps need a GPU: {names}.\n"
+            f"        {reason[0].upper() + reason[1:]}.\n"
+            f"        They would run on the CPU, often hours instead of minutes."
+        )
+        if require_gpu and not dry_run:
+            problems.append(detail + "\n        (--require-gpu is set; drop it to run on the CPU anyway.)")
+        else:
+            log("WARNING: " + detail + "\n        Continuing on the CPU. Pass --require-gpu to stop instead.")
 
     unsupported = [n for n in bundle["nodes"] if n.get("kind") == "unsupported"]
     if unsupported and not skip_unsupported:
@@ -693,7 +827,7 @@ def execute(bundle: dict, args) -> dict:
 
     workdir.mkdir(parents=True, exist_ok=True)
     preflight(bundle, images_dir, data_root, workdir, args.runtime,
-              args.skip_unsupported, args.no_download, args.dry_run)
+              args.skip_unsupported, args.no_download, args.dry_run, args.require_gpu)
 
     for warning in bundle.get("warnings", []):
         log(f"WARNING: {warning}")
@@ -726,6 +860,9 @@ def execute(bundle: dict, args) -> dict:
         node = nodes_by_id[node_id]
         kind = node.get("kind")
         log(f"[{position}/{len(order)}] {node['label']} ({node['step_type']}, {kind})")
+        if kind == "job" and node.get("gpu") and not _GPU_VISIBLE:
+            log("    WARNING: this step needs a GPU, but it won't get one (see the warning at the start); "
+                "it will run on the CPU")
         apply_rewrites(node)
         try:
             if kind == "job":
@@ -815,6 +952,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="Continue past steps that can only run on the platform")
     parser.add_argument("--no-download", action="store_true",
                         help="Never fetch container images, even when the bundle knows a URL for them")
+    parser.add_argument("--require-gpu", action="store_true",
+                        default=os.environ.get("WF_REQUIRE_GPU", "").lower() in ("1", "true", "yes"),
+                        help="Stop before running anything if a step needs a GPU and none is visible "
+                             "(by default the run continues on the CPU, with a warning)")
     parser.add_argument("--log-lines", type=int, default=int(os.environ.get("WF_LOG_LINES", "10")),
                         help="Lines of a running step's output to show live under it (0 hides them; "
                              "the full output is always in the step's runner.log)")

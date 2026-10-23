@@ -174,8 +174,8 @@ function Flow() {
   const paletteSteps = (stepTypes as any[]).filter((s: any) => !s.hidden);
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
 
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const [nodes, setNodes, onNodesChange] = useNodesState<any>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<any>([]);
   const [reactFlowInstance, setReactFlowInstance] = useState<any>(null);
   
   const [drawerOpened, setDrawerOpened] = useState(false);

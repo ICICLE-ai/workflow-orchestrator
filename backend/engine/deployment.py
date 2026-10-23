@@ -30,12 +30,12 @@ import httpx
 
 from engine import tapis_auth
 
-RUNNER_VERSION = "0.1.2"
+RUNNER_VERSION = "0.1.3"
 
 # The published, public runner image (built from runner/Dockerfile), so users
 # only ever pull it. Override to point a deployment at another tag or mirror.
 RUNNER_DOCKER_IMAGE = (
-    os.getenv("WF_RUNNER_DOCKER_IMAGE", "").strip() or "ghcr.io/icicle-ai/workflow-runner:v0.1.2"
+    os.getenv("WF_RUNNER_DOCKER_IMAGE", "").strip() or "ghcr.io/icicle-ai/workflow-runner:v0.1.3"
 )
 # Any URI `apptainer pull` accepts (oras://, library://, docker://, https://).
 # Defaults to the Docker image above, which Apptainer converts itself.
@@ -214,8 +214,35 @@ def _source_mounts(data_root: str, sources: list[str]) -> list[str]:
     return [resolve_source(data_root, p) for p in sources]
 
 
+def sink_mounts(bundle: dict, data_root: str) -> list[str]:
+    """Host folders the bundle's sinks write into, to mount into the runner's
+    container. Without them a containerised runner writes a sink's output
+    inside the container, where it is lost when the container exits.
+
+    The folder mounted is the destination's parent (or the destination itself
+    when it ends in "/"), which covers both "a file at this path" and "into
+    this folder" (see the runner's run_sink_node). Paths under a relative data
+    root live below $PWD, which is mounted anyway.
+    """
+    from engine import local_bundle
+
+    root = data_root.rstrip("/")
+    out: list[str] = []
+    for n in bundle.get("nodes") or []:
+        if n.get("kind") != "sink" or not n.get("dest"):
+            continue
+        dest = str(n["dest"]).replace(local_bundle.DATA_ROOT, root)
+        if not dest.startswith("/"):
+            continue
+        folder = dest.rstrip("/") if dest.endswith("/") else dest.rsplit("/", 1)[0]
+        if folder and folder not in out:
+            out.append(folder)
+    return out
+
+
 def runner_instructions(data_root: str, workdir: str, images_dir: str, bundle_file: str,
-                        secrets: list[str] | None = None, sources: list[str] | None = None) -> dict:
+                        secrets: list[str] | None = None, sources: list[str] | None = None,
+                        outputs: list[str] | None = None) -> dict:
     """Copy-paste commands for running the deployment zip, three ways.
 
     All three run from inside the unzipped zip, so the bundle is ./bundle.json
@@ -225,16 +252,18 @@ def runner_instructions(data_root: str, workdir: str, images_dir: str, bundle_fi
     callers). `sources` are the platform paths a step actually READS (see
     analyze_sources), mounted so the runner can see them; anything else, an
     unused output folder especially, is left out because a missing bind
-    source stops Apptainer from starting at all.
+    source stops Apptainer from starting at all. `outputs` are the folders
+    sinks write into (see sink_mounts): created up front, then mounted.
     """
     images = node_images_dir(images_dir)
     data_mounts = _source_mounts(data_root, sources or [])
-    mounts = _mounts([data_root, workdir, *data_mounts, *([images] if images else [])])
+    outputs = [o for o in (outputs or []) if o.startswith("/")]
+    mounts = _mounts([data_root, workdir, *data_mounts, *([images] if images else []), *outputs])
     images_flag = f"--images-dir {shlex.quote(images)}" if images else f'--images-dir "$PWD/{CONTAINERS_DIR}"'
     flags = f"--data-root {shlex.quote(data_root)} --workdir {shlex.quote(workdir)} {images_flag}"
     # Created up front: Docker would otherwise create a missing bind source as
     # root, and Apptainer refuses to start without it.
-    mkdir = "mkdir -p " + " ".join(shlex.quote(p) for p in [workdir, *([images] if images else [])]) + "\n"
+    mkdir = "mkdir -p " + " ".join(shlex.quote(p) for p in [workdir, *([images] if images else []), *outputs]) + "\n"
 
     # `-e NAME` with no value forwards the host's variable, so credentials go
     # from the user's shell straight into the container and never onto the
@@ -269,6 +298,12 @@ def runner_instructions(data_root: str, workdir: str, images_dir: str, bundle_fi
 
     return {
         "version": RUNNER_VERSION,
+        # Host folders the containerised runner needs (sources, work dir,
+        # images, sink destinations), also baked into the zip's run-docker.sh,
+        # and the ones to create first: the work dir and sink folders only, as
+        # sources must already exist (and may be files).
+        "mounts": mounts,
+        "create": [workdir, *outputs],
         "docker": {
             "image": RUNNER_DOCKER_IMAGE,
             "get": f"docker pull {RUNNER_DOCKER_IMAGE}",
@@ -625,7 +660,8 @@ def _images_dir_sh(images: str | None) -> str:
     return f'IMAGES_DIR="${{WF_IMAGES_DIR:-}}"\n[ -n "$IMAGES_DIR" ] || IMAGES_DIR={default}\n'
 
 
-def _run_sh(runner_image: str, secrets: list[str], images: str | None = None) -> tuple[str, str]:
+def _run_sh(runner_image: str, secrets: list[str], images: str | None = None,
+            mounts: list[str] | None = None, create: list[str] | None = None) -> tuple[str, str]:
     # Neither script cd's: relative --data-root / --workdir must keep meaning
     # "relative to where the user ran it", exactly as with the runner itself.
     # A later --images-dir in "$@" still wins: the runner takes the last one.
@@ -641,6 +677,14 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
     # Credentials are forwarded by NAME (-e NAME), so values stay in the
     # user's environment and never appear in this file or on a command line.
     env_flags = "".join(f" -e {shlex.quote(k)}" for k in secrets)
+    # The folders the workflow reads and its sinks write, as chosen when the zip
+    # was made: mounted at their own paths. The work dir and sink folders are
+    # created first (Docker would otherwise create a missing bind source as
+    # root); sources must already exist, and a file source can't be mkdir'd.
+    mounts = mounts or []
+    create = [c for c in (create or []) if c.startswith("/")]
+    mount_mkdir = ("mkdir -p " + " ".join(shlex.quote(c) for c in create) + "\n") if create else ""
+    mount_flags = "".join(f" -v {shlex.quote(m)}:{shlex.quote(m)}" for m in mounts)
     docker = f"""#!/usr/bin/env bash
 # Run this workflow inside the runner's Docker image. This directory, the
 # current one and the images folder are mounted at their own paths; mount your
@@ -650,9 +694,10 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 {images_sh}# Created here: Docker would otherwise create a missing bind source as root.
 mkdir -p "$IMAGES_DIR"
+{mount_mkdir}
 IMAGE="${{WF_RUNNER_IMAGE:-{runner_image}}}"
 exec docker run --rm --privileged \\
-  -v "$HERE":"$HERE" -v "$PWD":"$PWD" -v "$IMAGES_DIR":"$IMAGES_DIR" -w "$PWD" ${{EXTRA_MOUNTS:-}}{env_flags} \\
+  -v "$HERE":"$HERE" -v "$PWD":"$PWD" -v "$IMAGES_DIR":"$IMAGES_DIR"{mount_flags} -w "$PWD" ${{EXTRA_MOUNTS:-}}{env_flags} \\
   "$IMAGE" "$HERE/bundle.json" --images-dir "$IMAGES_DIR" "$@"
 """
     return host, docker
@@ -693,7 +738,8 @@ def stream_zip(bundle: dict, rows: list[dict], token: str | None, runner: dict,
 
         for arcname, path in runner_files:
             entry(zf, arcname, path.read_bytes())
-        host_sh, docker_sh = _run_sh(runner["docker"]["image"], bundle.get("secrets_required") or [], images)
+        host_sh, docker_sh = _run_sh(runner["docker"]["image"], bundle.get("secrets_required") or [], images,
+                                     runner.get("mounts"), runner.get("create"))
         entry(zf, "run.sh", host_sh.encode(), 0o755)
         entry(zf, "run-docker.sh", docker_sh.encode(), 0o755)
         yield sink.drain()
