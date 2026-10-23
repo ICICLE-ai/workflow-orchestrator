@@ -466,6 +466,29 @@ def build_command(node: dict, job_dir: Path, images_dir: Path, data_root: Path,
     return cmd
 
 
+# Host variables that name tools or Python paths on the HOST and break a step
+# when Apptainer forwards them into the container. An HPC compiler module sets
+# CC to its own icc/gcc, which triton (torch's GPU kernel compiler) then tries
+# to run inside the image; PYTHONPATH/PYTHONHOME point the image's Python at
+# host packages. Dropped from the environment the runtime inherits, not blanked
+# (an empty CC is still "a compiler" to triton). A step that really wants one
+# can still get it via its own env, or APPTAINERENV_<NAME> on the host.
+_HOST_ONLY_ENV = ("CC", "CXX", "FC", "F77", "F90", "CPP", "PYTHONPATH", "PYTHONHOME")
+
+
+def step_env(host: dict) -> dict:
+    """The environment a step's container runtime is started with.
+
+    The host's, minus _HOST_ONLY_ENV, and with Python's user site off: Apptainer
+    mounts $HOME, so packages pip-installed into ~/.local would otherwise shadow
+    the image's own (a host triton/torch running against the image's CUDA).
+    """
+    env = {k: v for k, v in host.items() if k not in _HOST_ONLY_ENV}
+    env.update({"PYTHONNOUSERSITE": "1",
+                "APPTAINERENV_PYTHONNOUSERSITE": "1", "SINGULARITYENV_PYTHONNOUSERSITE": "1"})
+    return env
+
+
 def run_job_node(node: dict, images_dir: Path, data_root: Path, workdir: Path,
                  runtime: str, copy_inputs: bool, dry_run: bool, log_lines: int = 10) -> dict:
     job_dir = Path(node["job_dir"])
@@ -520,7 +543,7 @@ def run_job_node(node: dict, images_dir: Path, data_root: Path, workdir: Path,
         # Python in the container block-buffers output that isn't a terminal,
         # which would leave both the window and runner.log empty for minutes.
         # The *ENV_ forms reach the container even under --cleanenv.
-        env = {**os.environ, "PYTHONUNBUFFERED": "1",
+        env = {**step_env(os.environ), "PYTHONUNBUFFERED": "1",
                "APPTAINERENV_PYTHONUNBUFFERED": "1", "SINGULARITYENV_PYTHONUNBUFFERED": "1"}
         proc = subprocess.Popen(cmd, cwd=str(job_dir), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
