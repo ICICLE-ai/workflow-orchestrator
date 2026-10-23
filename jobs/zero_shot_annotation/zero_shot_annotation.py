@@ -8,7 +8,10 @@ counterpart of the single-image `sam3_service/main.py` endpoint.
 Prompt types
 ------------
 text      – one or more free-text concepts applied to every image
-            (`--text_prompts "tree" "car"`).
+            (`--text_prompts "tree" "car"`).  A prompt written `prompt=label`
+            is sent to the model as `prompt` and its detections are labelled
+            `label` (`--text_prompts dog="german shepherd"`); without `=`, the
+            prompt is its own label.  Several prompts may share one label.
 exemplar  – per-image visual exemplar boxes (SAM3 "geometry prompts").  Positive
             exemplars say "find more things like this", negative exemplars say
             "not like this".  Supplied through `--prompt_file`, because the boxes
@@ -478,6 +481,20 @@ class Sam3Backend(ZeroShotBackend):
 # Prompt loading
 # ──────────────────────────────────────────────────────────────────────────────
 
+def split_text_prompt(prompt: str) -> tuple[str, str]:
+    """``'dog=german shepherd'`` -> ``('dog', 'german shepherd')``: the model is
+    prompted with the left side and detections are labelled with the right.
+
+    A prompt with no ``=``, or nothing after it, is its own label; one with
+    nothing before it is kept whole rather than sending an empty prompt.
+    """
+    text, sep, label = prompt.partition("=")
+    text, label = text.strip(), label.strip()
+    if not sep or not text:
+        return prompt.strip(), prompt.strip()
+    return text, label or text
+
+
 def load_prompt_file(path: Path) -> tuple[list[str], dict[str, list[Prompt]]]:
     """
     Parse a prompt file into ``(text_prompts, exemplars_by_image_key)``.
@@ -560,12 +577,13 @@ def build_jobs(
         else:
             tiles = [(0, 0, width, height)]
 
-        for text in text_prompts:
+        for raw_prompt in text_prompts:
+            text, label = split_text_prompt(raw_prompt)
             for tile in tiles:
                 jobs.append(TileJob(
                     image_idx=image_idx,
                     tile=tile,
-                    prompt=Prompt(label=text, text=text, kind="text"),
+                    prompt=Prompt(label=label, text=text, kind="text"),
                 ))
 
         for exemplar in resolve_exemplars(rel_key, exemplars):
@@ -936,6 +954,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         # CLI text prompts win; otherwise fall back to the file's.
         text_prompts = text_prompts or file_texts
 
+    for raw_prompt in text_prompts:
+        text, label = split_text_prompt(raw_prompt)
+        if text != label:
+            logger.info(f"Text prompt '{text}' -> label '{label}'")
+
     if not text_prompts and not exemplars:
         logger.error(
             "No prompts given. Pass --text_prompts and/or a --prompt_file with exemplars."
@@ -1063,6 +1086,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         "image_dir": str(image_dir.resolve()),
         "images": len(image_paths),
         "text_prompts": text_prompts,
+        # What the model was asked for -> the class written to "class".
+        "text_prompt_labels": {
+            text: label for text, label in (split_text_prompt(t) for t in text_prompts)
+        },
         "exemplar_images": len(exemplars),
         "params": {
             "is_sahi": args.is_sahi,

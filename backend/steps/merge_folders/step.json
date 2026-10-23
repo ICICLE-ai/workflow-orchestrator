@@ -1,0 +1,180 @@
+{
+  "step_type_key": "merge_folders",
+  "resources": {
+    "gpu": false
+  },
+  "display_name": "Merge Folders",
+  "description": "Copies the contents of 2–6 folders into one target folder, keeping each folder's subfolder layout, and outputs that folder. Wire folder_1 and folder_2, plus folder_3–folder_6 as needed; they're merged in that order.",
+  "category": "Data Pre-processing",
+  "icon": "folders",
+  "tapis_app_id": "wf-utils",
+  "inputs": [
+    {
+      "name": "folder_1",
+      "type": "image_dir",
+      "required": true
+    },
+    {
+      "name": "folder_2",
+      "type": "image_dir",
+      "required": true
+    },
+    {
+      "name": "folder_3",
+      "type": "image_dir",
+      "required": false,
+      "description": "Optional: another folder to merge, staged only when wired."
+    },
+    {
+      "name": "folder_4",
+      "type": "image_dir",
+      "required": false,
+      "description": "Optional: another folder to merge, staged only when wired."
+    },
+    {
+      "name": "folder_5",
+      "type": "image_dir",
+      "required": false,
+      "description": "Optional: another folder to merge, staged only when wired."
+    },
+    {
+      "name": "folder_6",
+      "type": "image_dir",
+      "required": false,
+      "description": "Optional: another folder to merge, staged only when wired."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "merged",
+      "type": "image_dir",
+      "output_path": "merged",
+      "description": "The target folder holding every input folder's contents."
+    },
+    {
+      "name": "summary",
+      "type": "json_results",
+      "output_path": "merge_summary.json",
+      "description": "Files copied per folder, and how many name clashes were renamed, overwritten or skipped."
+    }
+  ],
+  "config_schema": {
+    "on_conflict": {
+      "type": "select",
+      "options": [
+        "rename",
+        "overwrite",
+        "skip"
+      ],
+      "description": "When two folders hold a file at the same path: 'rename' keeps both (the later one becomes name_1.jpg), 'overwrite' lets the later folder win, 'skip' keeps the first.",
+      "default": "rename"
+    },
+    "into_subfolders": {
+      "type": "boolean",
+      "description": "Put each folder's contents under its own subfolder (folder_1/, folder_2/, ...) instead of merging them together.",
+      "default": false
+    },
+    "exec_queue": {
+      "type": "string",
+      "description": "Scheduler queue. This is a CPU-only job, so it defaults to a CPU queue (overrides the run-level queue).",
+      "default": "cpu"
+    }
+  },
+  "tapis_job": {
+    "name": "merge-folders",
+    "appId": "wf-utils",
+    "appVersion": "1.0.0",
+    "description": "Merge several folders into one",
+    "execSystemId": "${exec_system}",
+    "execSystemLogicalQueue": "${exec_queue}",
+    "archiveSystemId": "${archive_system}",
+    "archiveSystemDir": "${archive_dir}",
+    "nodeCount": 1,
+    "coresPerNode": 2,
+    "memoryMB": 8000,
+    "maxMinutes": 60,
+    "fileInputs": [
+      {
+        "name": "folder_1",
+        "autoMountLocal": true,
+        "sourceUrl": "${folder_1}",
+        "targetPath": "input/folder_1"
+      },
+      {
+        "name": "folder_2",
+        "autoMountLocal": true,
+        "sourceUrl": "${folder_2}",
+        "targetPath": "input/folder_2"
+      },
+      {
+        "name": "folder_3",
+        "autoMountLocal": true,
+        "sourceUrl": "${folder_3}",
+        "targetPath": "input/folder_3",
+        "if": "folder_3"
+      },
+      {
+        "name": "folder_4",
+        "autoMountLocal": true,
+        "sourceUrl": "${folder_4}",
+        "targetPath": "input/folder_4",
+        "if": "folder_4"
+      },
+      {
+        "name": "folder_5",
+        "autoMountLocal": true,
+        "sourceUrl": "${folder_5}",
+        "targetPath": "input/folder_5",
+        "if": "folder_5"
+      },
+      {
+        "name": "folder_6",
+        "autoMountLocal": true,
+        "sourceUrl": "${folder_6}",
+        "targetPath": "input/folder_6",
+        "if": "folder_6"
+      }
+    ],
+    "parameterSet": {
+      "appArgs": [
+        {
+          "name": "tool",
+          "arg": "merge_folders",
+          "description": "The shared wf-utils container runs several small tools; this picks which one (jobs/wf_utils/)."
+        },
+        {
+          "name": "inputs",
+          "arg": "--inputs_root /job/input"
+        },
+        {
+          "name": "output",
+          "arg": "--output /job/output/merged --summary /job/output/merge_summary.json"
+        },
+        {
+          "name": "on_conflict",
+          "arg": "--on_conflict ${on_conflict}"
+        },
+        {
+          "name": "into_subfolders",
+          "arg": "--into_subfolders",
+          "if": "into_subfolders"
+        }
+      ],
+      "containerArgs": [
+        {
+          "name": "binding",
+          "arg": "--bind $PWD:/job"
+        }
+      ],
+      "schedulerOptions": [
+        {
+          "arg": "-A ${slurm_account}",
+          "name": "slurm account"
+        }
+      ],
+      "archiveFilter": {
+        "includeLaunchFiles": false
+      }
+    }
+  }
+}

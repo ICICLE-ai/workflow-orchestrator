@@ -18,6 +18,7 @@ given node, directly on the host with nothing but python3.
 from __future__ import annotations
 
 import argparse
+import codecs
 import fnmatch
 import json
 import os
@@ -55,6 +56,98 @@ def redact(text: str) -> str:
 
 def log(msg: str) -> None:
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {redact(msg)}", flush=True)
+
+
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07")
+
+
+class LiveTail:
+    """The last few lines of a running step's output, shown under its exec line.
+
+    On a terminal the window is redrawn in place (a progress bar written with
+    \\r updates its one line rather than scrolling) and erased when the step
+    ends, leaving the DAG-level log as it was; the full output is always in
+    the step's runner.log. Off a terminal (redirected to a file, a batch job)
+    there is nothing to redraw, so the newest line is printed every
+    `quiet_every` seconds instead, as a heartbeat.
+    """
+
+    def __init__(self, lines: int, quiet_every: float = 30.0):
+        self.size = max(0, lines)
+        self.tty = sys.stdout.isatty()
+        self.quiet_every = quiet_every
+        self.done: list[str] = []      # finished lines, newest last
+        self.partial = ""              # the line being written now
+        self.overwrite = False         # last line ended in \r: the next replaces it
+        self.drawn = 0
+        self.last_draw = 0.0
+        self.last_quiet = time.time()
+        self.last_quiet_line = ""
+
+    def feed(self, text: str) -> None:
+        if not self.size:
+            return
+        for piece in re.split(r"(\r\n|\r|\n)", text):
+            if piece in ("\n", "\r\n"):
+                self._commit()
+                self.overwrite = False
+            elif piece == "\r":
+                # \r then more text redraws the same line (tqdm and friends);
+                # only a \r with nothing after it before the next \n is a no-op.
+                if self.partial:
+                    self._commit()
+                    self.overwrite = True
+            else:
+                self.partial += piece
+        self._show()
+
+    def _commit(self) -> None:
+        line = _ANSI.sub("", self.partial).rstrip()
+        self.partial = ""
+        if not line:
+            return  # a blank line (or a bare \r) never wipes the line above
+        if self.overwrite and self.done:
+            self.done[-1] = line
+        else:
+            self.done.append(line)
+        del self.done[:-self.size]
+
+    def _window(self) -> list[str]:
+        live = _ANSI.sub("", self.partial).rstrip()
+        lines = self.done[:-1] + [live] if (live and self.overwrite and self.done) else self.done + ([live] if live else [])
+        return [redact(l) for l in lines[-self.size:]]
+
+    def _show(self, force: bool = False) -> None:
+        now = time.time()
+        if not self.tty:
+            lines = self._window()
+            if lines and now - self.last_quiet >= self.quiet_every and lines[-1] != self.last_quiet_line:
+                self.last_quiet, self.last_quiet_line = now, lines[-1]
+                print(f"    | {lines[-1]}", flush=True)
+            return
+        if not force and now - self.last_draw < 0.1:
+            return
+        self.last_draw = now
+        # Truncated to the terminal width: a wrapped line takes two rows, and
+        # moving back up by the line count would then leave stray rows behind.
+        width = max(20, shutil.get_terminal_size((100, 20)).columns - 7)
+        out = [f"\x1b[{self.drawn}F"] if self.drawn else []
+        lines = self._window()
+        for line in lines:
+            out.append(f"\x1b[2K    \x1b[2m| {line[:width]}\x1b[0m\n")
+        for _ in range(self.drawn - len(lines)):
+            out.append("\x1b[2K\n")
+        if self.drawn > len(lines):
+            out.append(f"\x1b[{self.drawn - len(lines)}F")
+        self.drawn = len(lines)
+        sys.stdout.write("".join(out))
+        sys.stdout.flush()
+
+    def close(self) -> None:
+        if self.tty and self.drawn:
+            sys.stdout.write(f"\x1b[{self.drawn}F\x1b[J")
+            sys.stdout.flush()
+            self.drawn = 0
 
 
 def _normalized_image_name(name: str) -> str:
@@ -300,7 +393,7 @@ def build_command(node: dict, job_dir: Path, images_dir: Path, data_root: Path,
 
 
 def run_job_node(node: dict, images_dir: Path, data_root: Path, workdir: Path,
-                 runtime: str, copy_inputs: bool, dry_run: bool) -> dict:
+                 runtime: str, copy_inputs: bool, dry_run: bool, log_lines: int = 10) -> dict:
     job_dir = Path(node["job_dir"])
     output_dir = job_dir / "output"
 
@@ -337,10 +430,33 @@ def run_job_node(node: dict, images_dir: Path, data_root: Path, workdir: Path,
     with open(log_path, "w") as log_file:
         log_file.write(redact(f"# {shlex.join(cmd)}") + "\n\n")
         log_file.flush()
-        # Output is streamed to the step's own log file rather than this
+        # Output goes in full to the step's own log file rather than this
         # process's stdout: a long-running step (training, inference) otherwise
-        # buries the DAG-level progress this runner prints.
-        proc = subprocess.run(cmd, cwd=str(job_dir), stdout=log_file, stderr=subprocess.STDOUT)
+        # buries the DAG-level progress this runner prints. Only its last few
+        # lines are shown here, in a window that slides (see LiveTail).
+        tail = LiveTail(log_lines)
+        # Python in the container block-buffers output that isn't a terminal,
+        # which would leave both the window and runner.log empty for minutes.
+        # The *ENV_ forms reach the container even under --cleanenv.
+        env = {**os.environ, "PYTHONUNBUFFERED": "1",
+               "APPTAINERENV_PYTHONUNBUFFERED": "1", "SINGULARITYENV_PYTHONUNBUFFERED": "1"}
+        proc = subprocess.Popen(cmd, cwd=str(job_dir), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        try:
+            # read1: whatever has arrived, so a progress bar that never ends
+            # its line still shows up as it updates.
+            for chunk in iter(lambda: proc.stdout.read1(65536), b""):
+                text = decoder.decode(chunk)
+                log_file.write(text)
+                log_file.flush()
+                tail.feed(text)
+            proc.wait()
+        except BaseException:
+            proc.kill()
+            proc.wait()
+            raise
+        finally:
+            tail.close()
     elapsed = time.time() - started
 
     if proc.returncode != 0:
@@ -614,7 +730,7 @@ def execute(bundle: dict, args) -> dict:
         try:
             if kind == "job":
                 result = run_job_node(node, images_dir, data_root, workdir,
-                                      args.runtime, args.copy_inputs, args.dry_run)
+                                      args.runtime, args.copy_inputs, args.dry_run, args.log_lines)
             elif kind == "sink":
                 result = run_sink_node(node, args.dry_run)
             elif kind == "unsupported":
@@ -699,6 +815,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="Continue past steps that can only run on the platform")
     parser.add_argument("--no-download", action="store_true",
                         help="Never fetch container images, even when the bundle knows a URL for them")
+    parser.add_argument("--log-lines", type=int, default=int(os.environ.get("WF_LOG_LINES", "10")),
+                        help="Lines of a running step's output to show live under it (0 hides them; "
+                             "the full output is always in the step's runner.log)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print the plan and the exact container commands without running anything")
     args = parser.parse_args(argv)

@@ -1,0 +1,144 @@
+{
+  "step_type_key": "split_dataset",
+  "resources": {
+    "gpu": false
+  },
+  "display_name": "Split Dataset",
+  "description": "Splits a dataset folder into train / valid / test in the layout YOLO training expects, redoing any existing split. Detection or segmentation datasets (images with YOLO .txt labels) get train|valid|test/images and /labels plus data.yaml; classification datasets (one folder per class) get train|val|test/<class>/, split class by class. Wire its dataset output to Model Training's dataset input; for detection or segmentation, set Model Training's data file to data.yaml.",
+  "category": "Data Pre-processing",
+  "icon": "folders",
+  "tapis_app_id": "wf-utils",
+  "inputs": [
+    {
+      "name": "dataset",
+      "type": "image_dir",
+      "description": "The dataset to split: e.g. Annotations to YOLO Dataset's output, a folder of images with .txt labels beside them, or one folder per class."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "dataset",
+      "type": "image_dir",
+      "output_path": "dataset",
+      "description": "The split dataset folder, ready for Model Training."
+    },
+    {
+      "name": "summary",
+      "type": "json_results",
+      "output_path": "split_summary.json",
+      "description": "Images per split, classes, and labels per class (or images per class and split, for classification)."
+    }
+  ],
+  "config_schema": {
+    "dataset_type": {
+      "type": "select",
+      "options": [
+        "auto",
+        "detect",
+        "classify"
+      ],
+      "default": "auto",
+      "description": "'detect' for images with YOLO .txt labels (detection or segmentation), 'classify' for one folder per class. 'auto' picks 'detect' when any label file exists."
+    },
+    "val_split": {
+      "type": "float",
+      "default": 0.2,
+      "description": "Fraction of images for validation (0–1)."
+    },
+    "test_split": {
+      "type": "float",
+      "default": 0.1,
+      "description": "Fraction of images for test (0–1). 0 for no test split. Validation and test together must stay below 1."
+    },
+    "seed": {
+      "type": "int",
+      "default": 42,
+      "description": "Random seed, so the same dataset always splits the same way."
+    },
+    "drop_unlabeled": {
+      "type": "boolean",
+      "default": false,
+      "description": "Detection only: leave out images with no label file. Off by default: they're kept as background images with an empty label."
+    },
+    "exec_queue": {
+      "type": "string",
+      "default": "cpu",
+      "description": "Scheduler queue. This is a CPU-only job, so it defaults to a CPU queue (overrides the run-level queue)."
+    }
+  },
+  "tapis_job": {
+    "name": "split-dataset",
+    "appId": "wf-utils",
+    "appVersion": "1.0.0",
+    "description": "Split a dataset into train/valid/test",
+    "execSystemId": "${exec_system}",
+    "execSystemLogicalQueue": "${exec_queue}",
+    "archiveSystemId": "${archive_system}",
+    "archiveSystemDir": "${archive_dir}",
+    "nodeCount": 1,
+    "coresPerNode": 2,
+    "memoryMB": 8000,
+    "maxMinutes": 60,
+    "fileInputs": [
+      {
+        "name": "dataset",
+        "autoMountLocal": true,
+        "sourceUrl": "${dataset}",
+        "targetPath": "input/dataset"
+      }
+    ],
+    "parameterSet": {
+      "appArgs": [
+        {
+          "name": "tool",
+          "arg": "split_dataset",
+          "description": "The shared wf-utils container runs several small tools; this picks which one (jobs/wf_utils/)."
+        },
+        {
+          "name": "input",
+          "arg": "--input /job/input/dataset"
+        },
+        {
+          "name": "output",
+          "arg": "--output /job/output/dataset --summary /job/output/split_summary.json"
+        },
+        {
+          "name": "type",
+          "arg": "--type ${dataset_type}"
+        },
+        {
+          "name": "val_split",
+          "arg": "--val_split ${val_split}"
+        },
+        {
+          "name": "test_split",
+          "arg": "--test_split ${test_split}"
+        },
+        {
+          "name": "seed",
+          "arg": "--seed ${seed}"
+        },
+        {
+          "name": "drop_unlabeled",
+          "arg": "--drop_unlabeled",
+          "if": "drop_unlabeled"
+        }
+      ],
+      "containerArgs": [
+        {
+          "name": "binding",
+          "arg": "--bind $PWD:/job"
+        }
+      ],
+      "schedulerOptions": [
+        {
+          "arg": "-A ${slurm_account}",
+          "name": "slurm account"
+        }
+      ],
+      "archiveFilter": {
+        "includeLaunchFiles": false
+      }
+    }
+  }
+}
