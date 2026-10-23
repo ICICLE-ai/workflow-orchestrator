@@ -1,10 +1,10 @@
 {
   "step_type_key": "hf_inference",
   "display_name": "Model Inference",
-  "description": "Runs a model from the Model Training step (YOLO or HuggingFace) over a folder of images and writes predictions.json and summary.json.",
+  "description": "Runs a model from the Model Training step (YOLO or HuggingFace) over a folder of images and writes predictions.json, summary.json and annotations.json (the predictions in the Smart Labeler's format).",
   "category": "Inference",
   "resources": { "gpu": true },
-  "tapis_app_id": "hf_inference",
+  "tapis_app_id": "wf_inference",
   "inputs": [
     {
       "name": "model",
@@ -19,7 +19,13 @@
   ],
   "outputs": [
     { "name": "predictions", "type": "json_results", "output_path": "predictions.json" },
-    { "name": "summary", "type": "json_results", "output_path": "summary.json" }
+    { "name": "summary", "type": "json_results", "output_path": "summary.json" },
+    {
+      "name": "annotations",
+      "type": "json_results",
+      "output_path": "annotations.json",
+      "description": "The predictions in the Smart Labeler's own annotations.json format (what its Save writes), keyed by each image's path inside the images folder. Wire it to a Smart Labeler's resume_annotations input, with the same images folder on its images input, to see and correct the predictions."
+    }
   ],
   "config_schema": {
     "framework": {
@@ -58,7 +64,7 @@
   },
   "tapis_job": {
     "name": "hf-inference",
-    "appId": "hf_inference",
+    "appId": "wf_inference",
     "appVersion": "1.0.0",
     "description": "YOLO / HuggingFace inference over an image directory",
     "execSystemId": "${exec_system}",
@@ -117,7 +123,7 @@
       ],
       "archiveFilter": {
         "includeLaunchFiles": false,
-        "includes": ["predictions.json", "summary.json"]
+        "includes": ["predictions.json", "summary.json", "annotations.json"]
       }
     }
   }

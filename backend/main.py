@@ -1371,6 +1371,7 @@ def _deployment_context(db: Session, user: AppUser, template_version_id: int,
 
     template = template_or_404(db, user, template_version_id)
     try:
+        deployment.node_images_dir(images_dir)
         bundle = local_bundle.build_bundle(
             db, template, data_root=data_root, workdir=workdir, images_dir=images_dir
         )
@@ -1403,6 +1404,11 @@ class DeploySettings(BaseModel):
     remap: bool = False
     data_root: str = "/"
     workdir: str = ""
+    # Folder on the node for step images; "" means containers/ in the zip.
+    containers_dir: str = ""
+    # Put the images in the zip (slow, but works offline) instead of letting
+    # the runner download them on the node.
+    images_in_zip: bool = False
 
 
 @app.get("/api/workflow-templates/{template_version_id}/deploy-settings")
@@ -1479,7 +1485,8 @@ def deployment_zip(
     template_version_id: int,
     data_root: str = "/",
     workdir: str = "./wf-local",
-    images_dir: str = "./images",
+    images_dir: str = "./containers",
+    include_images: bool = True,
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_current_user),
 ):
@@ -1490,12 +1497,18 @@ def deployment_zip(
     Streamed, since the images make it gigabytes. Downloading redeems each
     image's source link once — postit links are use-limited, so prefer keeping
     the zip over re-downloading it.
+
+    `include_images=false`, or an absolute `images_dir` (a folder of the
+    user's own on the node), leaves the images out: the zip is then a few
+    hundred KB and the runner downloads each image into that folder on first
+    use, straight from its source to the node.
     """
-    return _deployment_zip_response(db, user, template_version_id, data_root, workdir, images_dir)
+    return _deployment_zip_response(db, user, template_version_id, data_root, workdir, images_dir,
+                                    include_images)
 
 
 def _deployment_zip_response(db: Session, user: AppUser, template_version_id: int,
-                             data_root: str, workdir: str, images_dir: str):
+                             data_root: str, workdir: str, images_dir: str, include_images: bool = True):
     from fastapi.responses import StreamingResponse
     from engine import deployment
 
@@ -1504,7 +1517,7 @@ def _deployment_zip_response(db: Session, user: AppUser, template_version_id: in
     )
     filename = f"{safe_name}-v{template.version}-deploy.zip"
     return StreamingResponse(
-        deployment.stream_zip(bundle, rows, token, runner),
+        deployment.stream_zip(bundle, rows, token, runner, include_images, images_dir),
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
@@ -1516,7 +1529,8 @@ def deployment_link(
     request: Request,
     data_root: str = "/",
     workdir: str = "./wf-local",
-    images_dir: str = "./images",
+    images_dir: str = "./containers",
+    include_images: bool = True,
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_current_user),
 ):
@@ -1531,12 +1545,16 @@ def deployment_link(
     from engine import deployment
 
     template = template_or_404(db, user, template_version_id)
+    try:
+        deployment.node_images_dir(images_dir)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     args = (user.user_id, template_version_id, data_root, workdir, images_dir)
     base = (os.getenv("APP_BASE_URL") or str(request.base_url)).rstrip("/")
     safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", template.name or "workflow").strip("-") or "workflow"
     expires = datetime.now(timezone.utc) + timedelta(seconds=deployment.DOWNLOAD_LINK_TTL)
     return {
-        "url": f"{base}/api/deployment-downloads/{deployment.make_download_token(*args, kind='zip')}",
+        "url": f"{base}/api/deployment-downloads/{deployment.make_download_token(*args, kind='zip', include_images=include_images)}",
         # bundle.json alone, with these paths as its defaults — for a node that
         # already unpacked the zip and only needs the paths changed.
         "bundle_url": f"{base}/api/deployment-downloads/{deployment.make_download_token(*args, kind='bundle')}",
@@ -1563,7 +1581,8 @@ def deployment_download(token: str, db: Session = Depends(get_db)):
     if payload.get("k") == "bundle":
         return export_local_bundle(payload["t"], payload["d"], payload["w"], payload["i"],
                                    download=True, db=db, user=user)
-    return _deployment_zip_response(db, user, payload["t"], payload["d"], payload["w"], payload["i"])
+    return _deployment_zip_response(db, user, payload["t"], payload["d"], payload["w"], payload["i"],
+                                    payload.get("x", True))
 
 
 class RunOptions(BaseModel):

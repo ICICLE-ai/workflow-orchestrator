@@ -8,6 +8,7 @@ import {
   Group,
   Loader,
   Modal,
+  SegmentedControl,
   Select,
   Spoiler,
   Stack,
@@ -55,6 +56,12 @@ interface Prefs {
   remap: boolean;
   data_root: string;
   workdir: string;
+  // Folder on the node the step images are kept in; "" is containers/ next to
+  // run.sh. One folder shared by every workflow downloads each image once.
+  containers_dir: string;
+  // On: the images ride inside the zip (slow, but the node needs no network).
+  // Off: the runner downloads each missing image on the node, on first use.
+  images_in_zip: boolean;
 }
 
 const DEFAULT_PREFS: Prefs = {
@@ -63,6 +70,8 @@ const DEFAULT_PREFS: Prefs = {
   remap: false,
   data_root: "/data",
   workdir: "/scratch/wf-local",
+  containers_dir: "",
+  images_in_zip: false,
 };
 
 function loadPrefs(): Prefs {
@@ -238,12 +247,14 @@ export default function DeployDialog({
   // Shared by every request below so the instructions, the links and the
   // downloaded files all describe the same paths.
   const dataRoot = prefs.remap ? prefs.data_root : "/";
+  // Images inside the zip always land in its containers/; otherwise they go
+  // to the chosen folder, or containers/ when none is chosen.
+  const imagesDir = prefs.images_in_zip ? "" : prefs.containers_dir.trim().replace(/\/+$/, "");
   const query = new URLSearchParams({
     data_root: dataRoot,
     workdir: prefs.workdir,
-    // Every route runs from the unzipped deployment zip, whose step images
-    // are in containers/.
-    images_dir: "./containers",
+    images_dir: imagesDir || "./containers",
+    include_images: String(prefs.images_in_zip),
   }).toString();
   const fileStem = templateData
     ? `${(templateData.name || "workflow").replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "workflow"}-v${templateData.version}`
@@ -355,7 +366,7 @@ export default function DeployDialog({
             <div className={classes.flow}>
               <span className={classes.flowChip}>This workflow (last saved version)</span>
               <IconArrowRight size={12} />
-              <span className={classes.flowChip}>bundle.json + containers</span>
+              <span className={classes.flowChip}>{prefs.images_in_zip ? "bundle.json + containers" : "bundle.json"}</span>
               <IconArrowRight size={12} />
               <span className={classes.flowChip}>{nodeName || "your node"}</span>
             </div>
@@ -504,6 +515,46 @@ export default function DeployDialog({
               onPathChange={(p) => update({ workdir: p })}
             />
 
+            <div>
+              <Text size="sm" fw={500}>Container images</Text>
+              <Text size="xs" c="dimmed" mb={6}>
+                Each step runs from a .sif image, often several GB. Downloading them on the node is much faster
+                than carrying them in the zip.
+              </Text>
+              <SegmentedControl
+                fullWidth
+                size="xs"
+                value={prefs.images_in_zip ? "zip" : "node"}
+                onChange={(v) => update({ images_in_zip: v === "zip" })}
+                data={[
+                  { value: "node", label: "Download on the node (recommended)" },
+                  { value: "zip", label: "Include in the zip (offline node)" },
+                ]}
+              />
+            </div>
+            <Collapse expanded={!prefs.images_in_zip}>
+              <TapisPathField
+                label="Images folder"
+                description={
+                  "Where the runner keeps the images on your node. Missing ones are downloaded here the first time "
+                  + "a run needs them, then reused. Point every workflow at the same folder to download each image "
+                  + "once, e.g. /fs/scratch/<project>/<you>/containers. Leave empty to use containers/ inside the "
+                  + "unzipped folder."
+                }
+                system={system}
+                path={prefs.containers_dir}
+                selectType="dir"
+                showSystemSelect={false}
+                mapPickedPath={toNodePath}
+                toSystemPath={toSystemPath}
+                browseDisabledReason={browseDisabledReason}
+                onPathChange={(p) => update({ containers_dir: p })}
+              />
+              {imagesDir && !imagesDir.startsWith("/") && (
+                <Text size="xs" c="red" mt={4}>Use an absolute path, e.g. /fs/scratch/project/you/containers.</Text>
+              )}
+            </Collapse>
+
           </Stack>
         </Section>
 
@@ -531,7 +582,11 @@ export default function DeployDialog({
                   label="Container images"
                   value={nonStaged.length}
                   delay={60}
-                  hint={`${inZip} of ${nonStaged.length} can be included in the zip; the table below shows the rest.`}
+                  hint={
+                    prefs.images_in_zip
+                      ? `${inZip} of ${nonStaged.length} can be included in the zip; the table below shows the rest.`
+                      : `${inZip} of ${nonStaged.length} download automatically on the node; the table below shows the rest.`
+                  }
                 />
                 <Stat
                   label="Credentials needed"
@@ -589,6 +644,9 @@ export default function DeployDialog({
               nodeName={nodeName}
               info={info}
               loading={infoLoading}
+              imagesDir={imagesDir}
+              imagesInZip={prefs.images_in_zip}
+              onIncludeImages={() => update({ images_in_zip: true })}
             />
           )}
         </Section>

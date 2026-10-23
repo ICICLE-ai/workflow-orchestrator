@@ -172,9 +172,10 @@ const openLink = (url?: string) => {
   if (url) window.location.href = url;
 };
 
-// Both runtimes start the same way: fetch the deployment zip (bundle.json +
-// every step image in containers/) onto the node with curl via a signed link,
-// unzip, cd in. Every run command after that is relative to that folder.
+// Both runtimes start the same way: fetch the deployment zip (bundle.json,
+// plus every step image in containers/ when they ride in the zip) onto the
+// node with curl via a signed link, unzip, cd in. Every run command after that
+// is relative to that folder.
 function RunSteps({
   mode,
   runner,
@@ -184,6 +185,8 @@ function RunSteps({
   link,
   linkLoading,
   changed,
+  imagesDir,
+  imagesInZip,
 }: {
   mode: "docker" | "apptainer";
   runner: DeploymentInfo["runner"];
@@ -193,6 +196,8 @@ function RunSteps({
   link: DownloadLink | null;
   linkLoading: boolean;
   changed: PathChange | null;
+  imagesDir: string;
+  imagesInZip: boolean;
 }) {
   const filename = link?.filename || `${fileStem}-deploy.zip`;
   const folder = link?.folder || fileStem;
@@ -224,8 +229,12 @@ function RunSteps({
       <div className={classes.timeline}>
         <Step n={1} i={1} title={<>Download the deployment zip{on}</>}>
           <Text size="xs" c="dimmed">
-            Holds <Code>bundle.json</Code>, every step image in <Code>containers/</Code> and the runner. Paste
-            this on the node, or download it here and copy it over yourself.
+            {imagesInZip ? (
+              <>Holds <Code>bundle.json</Code>, every step image in <Code>containers/</Code> and the runner.</>
+            ) : (
+              <>Holds <Code>bundle.json</Code> and the runner, a small download.</>
+            )}{" "}
+            Paste this on the node, or download it here and copy it over yourself.
           </Text>
           {link ? (
             <Snippet code={`curl -fL -o ${filename} '${link.url}'`} />
@@ -254,6 +263,14 @@ function RunSteps({
         <Step n={2} i={2} title="Unzip it and go into the folder">
           <Snippet code={`unzip ${filename} && cd ${folder}`} />
           <Text size="xs" c="dimmed">Every command below runs from inside this folder.</Text>
+          {!imagesInZip && (
+            <Text size="xs" c="dimmed">
+              The first run downloads each step's image into{" "}
+              {imagesDir ? <Code>{imagesDir}</Code> : <><Code>containers/</Code> in this folder</>} and keeps it
+              there, so later runs start straight away.
+              {imagesDir && " Any workflow deployed with the same images folder reuses them."}
+            </Text>
+          )}
         </Step>
 
         {mode === "docker" ? (
@@ -330,6 +347,9 @@ export default function DeploymentOptions({
   nodeName,
   info,
   loading,
+  imagesDir,
+  imagesInZip,
+  onIncludeImages,
 }: {
   templateVersionId: number;
   // Same query string the bundle download uses, so commands match the file.
@@ -339,6 +359,11 @@ export default function DeploymentOptions({
   nodeName: string;
   info: DeploymentInfo | null;
   loading: boolean;
+  // The images folder on the node; "" is containers/ in the unzipped folder.
+  imagesDir: string;
+  imagesInZip: boolean;
+  // Switches the dialog to putting the images in the zip.
+  onIncludeImages: () => void;
 }) {
   const [error, setError] = useState<string | null>(null);
   const [link, setLink] = useState<DownloadLink | null>(null);
@@ -416,6 +441,8 @@ export default function DeploymentOptions({
             link={link}
             linkLoading={linkLoading}
             changed={changed}
+            imagesDir={imagesDir}
+            imagesInZip={imagesInZip}
           />
         </Tabs.Panel>
 
@@ -429,11 +456,26 @@ export default function DeploymentOptions({
             link={link}
             linkLoading={linkLoading}
             changed={changed}
+            imagesDir={imagesDir}
+            imagesInZip={imagesInZip}
           />
         </Tabs.Panel>
 
         <Tabs.Panel value="zip" pt="md" className={classes.tabPanel}>
           <Stack gap="xs">
+            {!imagesInZip && (
+              <Alert color="yellow" icon={<IconInfoCircle size={16} />} p="xs">
+                <Group justify="space-between" gap="xs" wrap="nowrap">
+                  <Text size="xs">
+                    This zip has no images in it, so the node will need network access to download them. For a
+                    node without it, include them in the zip.
+                  </Text>
+                  <Button size="compact-xs" variant="light" onClick={onIncludeImages}>
+                    Include images
+                  </Button>
+                </Group>
+              </Alert>
+            )}
             <Text size="sm">
               One file for a node without network access: <Code>bundle.json</Code>, the step images in{" "}
               <Code>containers/</Code> ({zippable.length} of {info.images.filter((i) => !i.staged).length} available
@@ -464,7 +506,11 @@ export default function DeploymentOptions({
             multiline
             w={320}
             withArrow
-            label="Read from each step's live Tapis app definition (containerImage + runtime). The zip already includes these; the table is for fetching them yourself."
+            label={
+              imagesInZip
+                ? "Read from each step's live Tapis app definition (containerImage + runtime). The zip already includes these; the table is for fetching them yourself."
+                : "Read from each step's live Tapis app definition (containerImage + runtime). The runner downloads the ones with a link on first run; the table is for fetching them yourself."
+            }
           >
             <IconInfoCircle size={14} />
           </Tooltip>
@@ -500,7 +546,9 @@ export default function DeploymentOptions({
         </Table>
         {fetchable.length > 0 && (
           <>
-            <Text size="xs" fw={600} mt={4}>Fetch them into containers/ yourself</Text>
+            <Text size="xs" fw={600} mt={4}>
+              Fetch them into {imagesDir ? <Code>{imagesDir}</Code> : "containers/"} yourself
+            </Text>
             <Snippet code={fetchable.map((i) => i.pull_command).filter(Boolean).join("\n")} />
           </>
         )}
