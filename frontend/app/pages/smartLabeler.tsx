@@ -843,8 +843,11 @@ function parseLoadedAnnotations(data: any): { byFile: Record<string, Anno[]>; an
 // Find the annotations_by_file key that actually corresponds to `path`, the
 // current image's path as THIS FileExplorer instance reports it. Tries, in
 // order: an exact match; the same string with/without a leading slash
-// (absolute-vs-relative mismatches are the most common real case); and
-// finally a basename-only match, but ONLY when exactly one key in
+// (absolute-vs-relative mismatches are the most common real case); a key
+// that is a trailing part of the path, e.g. "sub/img.jpg" for
+// "/fs/.../images/sub/img.jpg" (hf_inference's annotations.json is keyed
+// relative to its images folder); and finally a basename-only match, but
+// ONLY when exactly one key in
 // annotationsByFile shares that basename — with two candidates there's no
 // way to tell which directory they actually meant, so it's safer to report
 // no match than to silently guess wrong and show someone else's boxes.
@@ -856,6 +859,11 @@ function findAnnotationKey(annotationsByFile: Record<string, unknown>, path: str
   if (stripped !== path && stripped in annotationsByFile) return stripped;
   const withSlash = `/${stripped}`;
   if (withSlash in annotationsByFile) return withSlash;
+  // Longest matching suffix wins, so "a/sub/img.jpg" beats "sub/img.jpg".
+  const suffixes = Object.keys(annotationsByFile)
+    .filter((k) => k.includes("/") && withSlash.endsWith(`/${k.replace(/^\/+/, "")}`))
+    .sort((a, b) => b.length - a.length);
+  if (suffixes.length > 0) return suffixes[0];
   const basename = stripped.split("/").pop();
   if (basename) {
     const candidates = Object.keys(annotationsByFile).filter(

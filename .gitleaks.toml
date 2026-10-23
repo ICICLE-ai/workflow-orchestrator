@@ -52,6 +52,7 @@ tags = ["tapis", "capability-url", "pre-authenticated"]
     '''8d2f6836-8bb9-4796-b3e3-0354fa634cc5-010''',  # export-flight-mission
     '''af9d5b30-a6d8-4efd-bc83-71991410c42f-010''',  # zero-shot-annotation
     '''639d5124-1c6b-4c1b-b8f0-870630ff99d7-010''',  # extract_frames
+    '''78bf9754-a7c2-4e86-85c1-d594c1a515d1-010''',  # wf_inference
   ]
 
 

@@ -205,6 +205,14 @@ export default function InferencePanel({ config, onChange, step, connectedInputs
             <Text size="xs">HuggingFace classification lists up to the top 5 classes above the threshold.</Text>
           )}
           <Text size="xs">
+            <Code>annotations.json</Code> (the <b>annotations</b> output): the same predictions in the Smart
+            Labeler's format. Wire it to a Smart Labeler's <b>resume_annotations</b> input, with this images folder
+            on its <b>images</b> input, to see and correct them.
+            {task === "classify" && " Each image's class shows as a box around the whole image."}
+            {task === "segment" &&
+              (isYolo ? " Masks show as outlines." : " HuggingFace segmentation has no shapes to show there.")}
+          </Text>
+          <Text size="xs">
             <Code>summary.json</Code> (the <b>summary</b> output): framework, task, threshold, image count and
             total predictions.
           </Text>

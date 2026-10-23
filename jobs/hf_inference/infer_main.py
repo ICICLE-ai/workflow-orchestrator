@@ -35,6 +35,19 @@ DEFAULT_CONF            = 0.25
 DEFAULT_IMGSZ           = 640
 DEFAULT_BATCH           = 16
 
+# Per-image and per-prediction fields starting with "_" (the image's path
+# relative to --data, its size, a mask outline) feed annotations.json only;
+# they're stripped from predictions.json, whose shape downstream steps read.
+
+
+def _rel_path(path, data_dir) -> str:
+    """The image's path relative to the input folder, the key the Smart
+    Labeler matches against its own file browser's paths."""
+    try:
+        return Path(path).resolve().relative_to(Path(data_dir).resolve()).as_posix()
+    except ValueError:
+        return Path(path).name
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -101,6 +114,8 @@ def run_yolo_inference(args, output_dir: Path):
         pred = {
             "image": Path(r.path).name,
             "predictions": [],
+            "_path": _rel_path(r.path, args.data),
+            "_size": (int(r.orig_shape[1]), int(r.orig_shape[0])),
         }
         if args.task == "detect" and r.boxes is not None:
             for box in r.boxes:
@@ -123,6 +138,8 @@ def run_yolo_inference(args, output_dir: Path):
                     "class_id": int(r.boxes.cls[i]),
                     "class_name": model.names[int(r.boxes.cls[i])],
                     "confidence": float(r.boxes.conf[i]),
+                    "_polygon": r.masks.xy[i].tolist(),
+                    "_bbox": r.boxes.xyxy[i].tolist(),
                 })
         predictions.append(pred)
 
@@ -221,6 +238,8 @@ def _hf_classify(model, processor, image_files, device, args):
             predictions.append({
                 "image": f.name,
                 "predictions": top_preds,
+                "_path": _rel_path(f, args.data),
+                "_size": images[j].size,
             })
         print(f"  Processed {min(i + args.batch, len(image_files))}/{len(image_files)} images")
 
@@ -261,6 +280,8 @@ def _hf_detect(model, processor, image_files, device, args):
             predictions.append({
                 "image": f.name,
                 "predictions": preds,
+                "_path": _rel_path(f, args.data),
+                "_size": images[j].size,
             })
         print(f"  Processed {min(i + args.batch, len(image_files))}/{len(image_files)} images")
 
@@ -298,6 +319,8 @@ def _hf_segment(model, processor, image_files, device, args):
                     {"class_id": c, "class_name": n}
                     for c, n in zip(unique_classes, class_names)
                 ],
+                "_path": _rel_path(f, args.data),
+                "_size": images[j].size,
             })
         print(f"  Processed {min(i + args.batch, len(image_files))}/{len(image_files)} images")
 
@@ -334,23 +357,87 @@ def _hf_sam_segment(model, processor, image_files, device, args):
                 "type": "segmentation_mask",
                 "num_masks": int(pred_masks.shape[0]) if pred_masks.ndim > 2 else 1,
             }],
+            "_path": _rel_path(f, args.data),
+            "_size": (w, h),
         })
 
     return predictions
 
 
 # ─────────────────────────────────────────────
+# Smart Labeler annotations
+# ─────────────────────────────────────────────
+def _slug(text: str) -> str:
+    return "".join(c if c.isalnum() else "-" for c in text).strip("-") or "file"
+
+
+def _public(obj):
+    """obj without the "_" fields that only annotations.json uses."""
+    if isinstance(obj, dict):
+        return {k: _public(v) for k, v in obj.items() if not k.startswith("_")}
+    if isinstance(obj, list):
+        return [_public(v) for v in obj]
+    return obj
+
+
+def build_annotations(predictions, task):
+    """The Smart Labeler's own annotations.json: exactly what its Save writes
+    (backend/annotation_formats.build_native), keyed by each image's path
+    relative to the input folder. Wired into a Smart Labeler's
+    resume_annotations input, the predictions open as editable boxes/masks.
+
+    Boxes come from bbox, masks from YOLO instance outlines, and a
+    classification becomes a whole-image box carrying the class. Predictions
+    with no shape (HF semantic segmentation's class list, SAM's mask count)
+    have nothing to draw and are left out; their image is still listed.
+    """
+    annotations = {}
+    has_polygon = False
+    for p in predictions:
+        key = p.get("_path") or p["image"]
+        w, h = p.get("_size") or (0, 0)
+        items = []
+        for det in p["predictions"]:
+            if "class_name" not in det:
+                continue
+            entry = {"id": f"{_slug(key)}-{len(items)}", "label": str(det["class_name"])}
+            if "confidence" in det:
+                entry["score"] = round(float(det["confidence"]), 4)
+            bbox = det.get("bbox") or det.get("_bbox")
+            polygon = det.get("_polygon")
+            if polygon:
+                entry["points"] = [{"x": round(x, 2), "y": round(y, 2)} for x, y in polygon]
+                has_polygon = True
+            elif bbox:
+                x1, y1, x2, y2 = (round(float(v), 2) for v in bbox)
+                entry.update({"x": x1, "y": y1, "width": round(x2 - x1, 2), "height": round(y2 - y1, 2)})
+            elif task == "classify" and w and h:
+                entry.update({"x": 0, "y": 0, "width": w, "height": h})
+            else:
+                continue
+            items.append(entry)
+        annotations[key] = items
+    return {"annotation_type": "segmentation" if has_polygon else "detection", "annotations": annotations}
+
+
+# ─────────────────────────────────────────────
 # Save Results
 # ─────────────────────────────────────────────
 def save_results(predictions, args, output_dir: Path):
-    """Save predictions and summary to output directory."""
+    """Save predictions, Smart Labeler annotations and summary to output directory."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Save full predictions
     predictions_path = output_dir / "predictions.json"
     with open(predictions_path, "w", encoding="utf-8") as f:
-        json.dump(predictions, f, indent=2)
+        json.dump(_public(predictions), f, indent=2)
     print(f"\nPredictions saved to: {predictions_path}")
+
+    # Same predictions in the Smart Labeler's format, ready to open there
+    annotations_path = output_dir / "annotations.json"
+    with open(annotations_path, "w", encoding="utf-8") as f:
+        json.dump(build_annotations(predictions, args.task), f, indent=2)
+    print(f"Smart Labeler annotations saved to: {annotations_path}")
 
     # Save summary
     total_images = len(predictions)

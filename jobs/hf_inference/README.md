@@ -20,7 +20,7 @@ This is the job behind the **Model Inference** step (`backend/steps/hf_inference
    - `classify`: `AutoModelForImageClassification`, keeps up to the top 5 classes above `--conf`
    - `detect`: `AutoModelForObjectDetection`, boxes post-processed at `--conf`
    - `segment`: `AutoModelForSemanticSegmentation`; models with `sam` in the name use `SamModel`, prompted with the image centre
-4. Writes `predictions.json` and `summary.json`
+4. Writes `predictions.json`, `summary.json` and `annotations.json`
 
 ## Supported Models
 
@@ -90,6 +90,7 @@ python infer_main.py --framework yolo --task detect \
 <output_path>/<name>/
   predictions.json
   summary.json
+  annotations.json    # the same predictions in the Smart Labeler's format
   predictions/        # YOLO only: annotated images + Ultralytics JSON
 ```
 
@@ -110,6 +111,24 @@ python infer_main.py --framework yolo --task detect \
 - Classification entries have no `bbox`.
 - Segmentation lists class and confidence per instance (YOLO) or the classes present (HuggingFace semantic). Mask pixels are not written.
 
+`annotations.json` holds the same predictions in the Smart Labeler's own format, the one its Save writes, so they open there as editable shapes. Wire the step's **annotations** output to a Smart Labeler's `resume_annotations` input, and the same images folder to its `images` input:
+
+```json
+{
+  "annotation_type": "detection",
+  "annotations": {
+    "img_001.jpg": [
+      { "id": "img-001-jpg-0", "label": "weed", "score": 0.81, "x": 12.0, "y": 40.5, "width": 198.3, "height": 148.4 }
+    ]
+  }
+}
+```
+
+- Keys are each image's path inside `--data` (`sub/img_001.jpg` for an image in a subfolder).
+- Detection gives boxes. YOLO segmentation gives mask outlines (`points: [{x, y}, ...]`, with `annotation_type` `"segmentation"`).
+- Classification gives one whole-image box labelled with the class.
+- HuggingFace semantic segmentation and SAM produce no shapes, so their images are listed with no annotations.
+
 `summary.json` records the framework, task, model, data, device, confidence threshold, image count, total predictions and a timestamp.
 
 ## On the Platform
@@ -120,10 +139,10 @@ The step's `step.json` handles staging. These paths come from that file:
 - the job dir is bound to `/job`
 - the step passes `--output_path /job --name output`, so results land in the job's output dir and are archived to the run folder
 
-The Tapis app it submits to is **`hf_inference`**, version **`1.0.0`**. To register it, follow the `extract_frames` app:
+The Tapis app it submits to is **`wf_inference`**, version **`1.0.0`**. To register it, follow the `extract_frames` app:
 
 - `runtime: SINGULARITY` with `runtimeOptions: ["SINGULARITY_RUN"]`
 - `containerImage: "$PWD/hf_inference.sif"`
 - a `container SIF` file input whose `sourceUrl` is the postit link to the built `.sif`, with `targetPath: "hf_inference.sif"`
 
-Then add the same link to `backend/image_sources.json` under `"hf_inference"`, and its ID to the allowlist in `.gitleaks.toml`, so "Deploy to my node" bundles the image too.
+Then add the same link to `backend/image_sources.json` under `"wf_inference"`, and its ID to the allowlist in `.gitleaks.toml`, so "Deploy to my node" bundles the image too.

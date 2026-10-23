@@ -17,7 +17,14 @@ From: pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime
 
 %post
     echo "Setting up environment for infer_main.py"
-    apt-get update
+    # Ubuntu mirrors can be mid-sync ("File has unexpected size"); retry the
+    # index fetch with a clean list dir instead of failing the whole build.
+    for i in 1 2 3 4 5; do
+        apt-get -o Acquire::Retries=3 update && break
+        echo "apt-get update failed (attempt $i), retrying in 30s..."
+        rm -rf /var/lib/apt/lists/*
+        sleep 30
+    done
     # libGL / X11 libraries: ultralytics pulls in opencv-python, which needs them.
     apt-get install -y --no-install-recommends \
         ca-certificates \
