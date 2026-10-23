@@ -1,5 +1,5 @@
 Bootstrap: docker
-From: python:3.12-slim-bullseye
+From: python:3.12-slim-bookworm
 
 %files
     mission_generator.py /app/mission_generator.py
