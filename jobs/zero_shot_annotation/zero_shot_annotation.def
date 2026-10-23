@@ -1,5 +1,5 @@
 Bootstrap: docker
-From: python:3.12-bullseye
+From: python:3.12-bookworm
 
 %files
     zero_shot_annotation.py /app/zero_shot_annotation.py
@@ -14,11 +14,13 @@ From: python:3.12-bullseye
     echo "Setting up environment for zero_shot_annotation.py"
     apt-get update
 
-    # libGL and X11 libraries required by opencv-python (mask -> polygon extraction)
+    # libGL and X11 libraries required by opencv-python (mask -> polygon extraction).
+    # Bookworm: libgl1 replaces bullseye's libgl1-mesa-glx. Bullseye itself is
+    # past end of life, and its security mirror now 404s on package downloads.
     apt-get install -y --no-install-recommends \
         ca-certificates \
         git \
-        libgl1-mesa-glx \
+        libgl1 \
         libglib2.0-0 \
         libxext6 \
         libxrender1 \

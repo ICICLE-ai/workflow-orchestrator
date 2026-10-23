@@ -38,6 +38,7 @@
     "generate-geopackage": "https://icicleai.tapis.io/v3/files/postits/redeem/0ed4e6d4-d290-4ce7-bd33-950dc2584b4a-010",
     "opencv-preprocess": "https://icicleai.tapis.io/v3/files/postits/redeem/6f44fec5-9b2c-4ecf-adeb-c91033e4445f-010",
     "wf_inference": "https://icicleai.tapis.io/v3/files/postits/redeem/78bf9754-a7c2-4e86-85c1-d594c1a515d1-010",
+    "wf-utils": "https://icicleai.tapis.io/v3/files/postits/redeem/da97383c-e54d-463b-abcf-8c06d82c3e13-010",
     "training": "https://icicleai.tapis.io/v3/files/postits/redeem/48caa51f-8cbb-49e7-a7c7-349d9ce6f4ab-010",
     "zero-shot-annotation": "https://icicleai.tapis.io/v3/files/postits/redeem/653515ea-77c2-4374-af26-58a0b087ec61-010"
   }
