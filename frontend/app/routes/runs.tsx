@@ -368,7 +368,7 @@ export default function Runs({ loaderData }: Route.ComponentProps) {
                     </Group>
                   </Group>
                   {!isRunning && (
-                    <Collapse in={expanded === r.run_id}>
+                    <Collapse expanded={expanded === r.run_id}>
                       {expanded === r.run_id && <RunDetail runId={r.run_id} />}
                     </Collapse>
                   )}

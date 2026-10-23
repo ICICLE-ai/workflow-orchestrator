@@ -1,7 +1,7 @@
 # wf-runner as a Docker image — run an exported workflow bundle with Docker.
 #
 # Published (public) as ghcr.io/icicle-ai/workflow-runner — users just pull it:
-#   docker pull ghcr.io/icicle-ai/workflow-runner:v0.1.2
+#   docker pull ghcr.io/icicle-ai/workflow-runner:v0.1.3
 #
 # Rebuilding (maintainers only; --platform because Apptainer's .deb is amd64):
 #   docker build --platform linux/amd64 -t ghcr.io/icicle-ai/workflow-runner:<tag> runner/
@@ -10,7 +10,7 @@
 # the run report mean the same thing inside and out):
 #   docker run --rm --privileged \
 #     -v "$PWD":"$PWD" -w "$PWD" -v /data:/data \
-#     ghcr.io/icicle-ai/workflow-runner:v0.1.2 bundle.json --data-root /data --workdir ./wf-local --images-dir /data/images
+#     ghcr.io/icicle-ai/workflow-runner:v0.1.3 bundle.json --data-root /data --workdir ./wf-local --images-dir /data/images
 #
 # Steps still run as Apptainer .sif images — that is the format every step
 # image is published in — so Apptainer is installed here and started once per
@@ -48,6 +48,6 @@ RUN python3 -c "import wf_runner; print('runner OK', wf_runner.__version__)" \
 
 LABEL org.opencontainers.image.title="wf-runner" \
       org.opencontainers.image.description="Runs a Workflow Orchestrator bundle on a self-hosted node; each step runs as its own Apptainer image." \
-      org.opencontainers.image.version="0.1.2"
+      org.opencontainers.image.version="0.1.3"
 
 ENTRYPOINT ["python3", "-m", "wf_runner"]

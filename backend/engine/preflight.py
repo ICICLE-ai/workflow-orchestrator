@@ -115,9 +115,10 @@ def _job_steps(db: Session, template: WorkflowTemplate) -> list[dict]:
     return steps
 
 
-def _source_locations(db: Session, template: WorkflowTemplate) -> list[dict]:
+def _source_locations(db: Session, template: WorkflowTemplate, category: str = "source") -> list[dict]:
     """Source nodes' configured data locations (the only inputs that exist
-    before the run — everything else is produced by an upstream step)."""
+    before the run — everything else is produced by an upstream step). With
+    category="sink", sink nodes' destinations instead."""
     nodes = db.query(WfNode).filter(WfNode.template_version_id == template.template_version_id).all()
     cats = {
         r.step_type_key: r.category
@@ -127,7 +128,7 @@ def _source_locations(db: Session, template: WorkflowTemplate) -> list[dict]:
     }
     out = []
     for n in nodes:
-        if cats.get(n.step_type_key) != "source":
+        if cats.get(n.step_type_key) != category:
             continue
         cfg = n.default_config or {}
         path = str(cfg.get("path") or "")
@@ -307,6 +308,23 @@ def run(db: Session, template: WorkflowTemplate, cfg: dict, token: str | None) -
             reason = "not found" if resp.status_code == 404 else "not readable by you"
             checks.append(_check(f"src:{src['label']}", title, FAIL,
                                  f"{src['system']}:{src['path']} is {reason} — {_tapis_error(resp)}", "Data"))
+
+    # --- Sink destinations -----------------------------------------------------
+    # Checked from the settings alone: the copy creates missing folders, so the
+    # failures worth catching before launch are a missing path or system.
+    for sink in _source_locations(db, template, category="sink"):
+        title = f"Output: {sink['label']}"
+        if not sink["path"]:
+            checks.append(_check(f"sink:{sink['label']}", title, FAIL,
+                                 "No destination set: open the sink and choose a system and path.", "Data"))
+        elif not sink["system"]:
+            checks.append(_check(f"sink:{sink['label']}", title, FAIL,
+                                 f"{sink['path']} has no Tapis system: open the sink and pick one.", "Data"))
+        elif sink["system"] == "node-local":
+            checks.append(_check(f"sink:{sink['label']}", title, FAIL,
+                                 "Writes to 'My node', which a platform run can't reach: pick a Tapis system.", "Data"))
+        else:
+            checks.append(_check(f"sink:{sink['label']}", title, PASS, f"{sink['system']}:{sink['path']}", "Data"))
 
     # --- Archive location ------------------------------------------------------
     arc_title = "Output folder"

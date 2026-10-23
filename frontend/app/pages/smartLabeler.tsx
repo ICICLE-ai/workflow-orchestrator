@@ -13,7 +13,7 @@ import { uploadTapisFile } from "../lib/tapisFiles";
 // load during SSR. The runtime modules are loaded lazily below, client-side only.
 import type { FileExplorerProps } from "@icicle-ai/tapis-file-explorer";
 import type { AnnotationDetails as AnnotationDetailsComponent } from "@icicle-ai/annotation-details";
-import type { ImageCanvasProps, CanvasEngine, BaseAnnotation } from "@icicle-ai/image-annotation-canvas";
+import type { AdditionSource, ImageCanvasProps, CanvasEngine, BaseAnnotation } from "@icicle-ai/image-annotation-canvas";
 
 // apiFetch, not a bare fetch: it carries whichever credential this deployment
 // uses — the session cookie standalone, the host's X-Tapis-Token when embedded.
@@ -69,6 +69,18 @@ const hasPoints = (a: Anno) =>
 // Math.min return NaN for the whole outline, so the list is re-derived rather
 // than trusted piecemeal. An already-valid annotation is returned by identity,
 // which keeps the canvas engines from re-diffing every annotation each render.
+// Zero-shot loads used to copy each detection's prompt_type ("text",
+// "visual", "exemplar") into `flag`, which the canvas draws as a coloured dot
+// on every annotation. Annotations loaded that way (ids "zs-<n>") and saved
+// in a node's config get it moved back to prompt_type; any other flag is the
+// user's own and stays. Returns the same object when there's nothing to fix.
+const PROMPT_TYPE_FLAGS = new Set(["text", "visual", "exemplar"]);
+function withoutPromptTypeFlag(a: Anno): Anno {
+  if (!String(a.id).startsWith("zs-") || !PROMPT_TYPE_FLAGS.has(String(a.flag))) return a;
+  const { flag, ...rest } = a;
+  return { ...rest, prompt_type: rest.prompt_type ?? flag } as Anno;
+}
+
 function toEngineShape(a: Anno, mode: "detection" | "segmentation"): Anno {
   if (mode === "segmentation") {
     if (hasPoints(a)) return a;
@@ -267,7 +279,7 @@ export default function SmartLabelerPanel({ config, onChange, step, nodeId, conn
   // crashing or silently vanishing; the reverse direction derives a bounding
   // box from points for the same reason on the way back to Boxes mode.
   const annotations = useMemo(
-    () => rawAnnotations.map((a) => toEngineShape(a, annotationType)),
+    () => rawAnnotations.map((a) => toEngineShape(withoutPromptTypeFlag(a), annotationType)),
     [rawAnnotations, annotationType]
   );
   // True once a fallback (non-exact) key match has actually been used for
@@ -677,7 +689,25 @@ export default function SmartLabelerPanel({ config, onChange, step, nodeId, conn
               onSelection={setSelectedId}
               selectedAnnotationIds={selectedIds}
               onMultiSelection={setSelectedIds}
-              onAddition={(added: Anno[]) => setAnnotationsForCurrent([...annotations, ...added])}
+              // Since image-annotation-canvas 0.2.0 this is the ONLY way SAM3
+              // results reach the canvas (text-prompt masks included): what's
+              // stored here comes back through `annotations` above.
+              onAddition={(added: Anno[], source?: AdditionSource) => {
+                setAnnotationsForCurrent([...annotations, ...added]);
+                if (source === "sam3-click" && added.length > 0) {
+                  // One region from a click: select it, ready to label or refine.
+                  setSelectedId(added[added.length - 1].id);
+                } else if (source === "sam3-text") {
+                  // Possibly many unrelated regions: leave the selection alone
+                  // and say how many were found.
+                  notifications.show({
+                    color: added.length ? "teal" : "yellow",
+                    message: added.length
+                      ? `SAM3 found ${added.length} region${added.length === 1 ? "" : "s"}.`
+                      : "SAM3 found no regions for that prompt.",
+                  });
+                }
+              }}
               onUpdate={(id: string, updates: Partial<Anno>) =>
                 setAnnotationsForCurrent(annotations.map((a) => (a.id === id ? { ...a, ...updates } : a)))
               }
@@ -793,8 +823,8 @@ export default function SmartLabelerPanel({ config, onChange, step, nodeId, conn
 //    — `annotations` is a flat ARRAY, one record per detection, grouped here
 //    by image_path. bounding_box is [x1, y1, x2, y2] (corners), converted to
 //    smart_labeler's own x/y/width/height. `class` -> label, `prompt_type`
-//    stashed on `flag` (filterable in the details panel same as any other
-//    flag). A present `segmentation` (absolute-pixel [[x,y],...] outline)
+//    kept as its own field (not `flag`; see below). A present
+//    `segmentation` (absolute-pixel [[x,y],...] outline)
 //    is used instead of the box when non-empty.
 //
 // `typeof x === "object"` is true for arrays too, so shape (2) must be
@@ -814,7 +844,10 @@ function parseLoadedAnnotations(data: any): { byFile: Record<string, Anno[]>; an
       if (!path || typeof path !== "string") return;
       const anno: Anno = { id: `zs-${i}`, label: item.class ?? item.label ?? "object" };
       if (typeof item.score === "number") anno.score = item.score;
-      if (item.prompt_type) anno.flag = String(item.prompt_type);
+      // Kept as its own field, NOT as `flag`: the canvas draws a coloured dot
+      // beside every flagged annotation, and a flag is the user's own marker
+      // (a "negative" one even changes how exemplars are built).
+      if (item.prompt_type) anno.prompt_type = String(item.prompt_type);
       const seg = item.segmentation;
       if (Array.isArray(seg) && seg.length > 0) {
         anno.points = seg.map((p: number[]) => ({ x: p[0], y: p[1] }));

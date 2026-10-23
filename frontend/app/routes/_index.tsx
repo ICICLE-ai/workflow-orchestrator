@@ -1,5 +1,5 @@
 import type { Route } from "./+types/_index";
-import { AppShell, Container, Title, Text, Button, Group, Card, SimpleGrid, ThemeIcon } from "@mantine/core";
+import { AppShell, Container, Text, Button, Group, Card, SimpleGrid, ThemeIcon } from "@mantine/core";
 import { IconLayoutDashboard, IconActivity, IconFolder } from "@tabler/icons-react";
 import { useNavigate } from "react-router";
 import SecretsMenu from "../components/SecretsMenu";
@@ -42,9 +42,11 @@ export default function Dashboard() {
       <AppShell.Main>
         <Container size="lg" py="xl">
           <div style={{ textAlign: 'center', marginBottom: '40px' }}>
-            <Title order={1} size="h1" fw={900} variant="gradient" gradient={{ from: 'indigo', to: 'cyan' }}>
+            {/* Mantine 9 Title has no gradient; Text keeps it, rendered as the page h1. */}
+            <Text component="h1" fw={900} variant="gradient" gradient={{ from: 'indigo', to: 'cyan' }}
+              m={0} style={{ fontSize: 'var(--mantine-h1-font-size)', lineHeight: 'var(--mantine-h1-line-height)' }}>
               Workflow Orchestrator
-            </Title>
+            </Text>
             <Text c="dimmed" mt="md" size="lg" maw={600} mx="auto">
               Design, configure, and execute dynamic AI pipelines using our drag-and-drop React Flow canvas.
             </Text>

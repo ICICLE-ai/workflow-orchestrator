@@ -79,7 +79,7 @@ commands in them already use the paths you entered above:
      anyone holding it can download the zip until then.
   2. `unzip <name>-deploy.zip && cd <name>`. The folder has `bundle.json` and
      every step image in `containers/`.
-  3. `docker pull ghcr.io/icicle-ai/workflow-runner:v0.1.2`. The runner image is
+  3. `docker pull ghcr.io/icicle-ai/workflow-runner:v0.1.3`. The runner image is
      public, so there's nothing to build or log in to.
   4. The full `docker run` command. It mounts the current folder, your data root
      and your work dir, each at the same path inside the container, and points

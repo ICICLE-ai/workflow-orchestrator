@@ -1394,6 +1394,7 @@ def _deployment_context(db: Session, user: AppUser, template_version_id: int,
     runner = deployment.runner_instructions(
         data_root, workdir, images_dir, bundle_file, bundle.get("secrets_required") or [],
         [src["platform_path"] for src in sources if src["used"]],
+        deployment.sink_mounts(bundle, data_root),
     )
     return template, bundle, rows, runner, token, safe_name, sources
 

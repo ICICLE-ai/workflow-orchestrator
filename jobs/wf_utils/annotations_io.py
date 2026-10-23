@@ -66,7 +66,7 @@ def load_annotations(data) -> dict:
                     "score": item.get("score"),
                     "box": box,
                     "polygon": polygon,
-                    "extra": {k: item[k] for k in ("flag",) if item.get(k)},
+                    "extra": {k: item[k] for k in ("flag", "prompt_type") if item.get(k)},
                 })
     return out
 
@@ -122,9 +122,12 @@ def to_smart_labeler(per_image: dict) -> dict:
             entry = {"id": f"{_slug(key)}-{i}", "label": a["label"]}
             if isinstance(a["score"], (int, float)):
                 entry["score"] = a["score"]
-            flag = a["extra"].get("flag") or a["extra"].get("prompt_type")
-            if flag:
-                entry["flag"] = str(flag)
+            # Only a real flag: the canvas draws a dot for every flagged
+            # annotation, and a "negative" flag changes how exemplars are built.
+            if a["extra"].get("flag"):
+                entry["flag"] = str(a["extra"]["flag"])
+            if a["extra"].get("prompt_type"):
+                entry["prompt_type"] = str(a["extra"]["prompt_type"])
             if has_polygon and a["polygon"]:
                 entry["points"] = [{"x": round(x, 2), "y": round(y, 2)} for x, y in a["polygon"]]
             else:
