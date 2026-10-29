@@ -1,7 +1,9 @@
 # Harvest Workflow Orchestrator — backend (FastAPI + DBOS)
 #
-# Build from the backend/ directory:
-#   docker build -t harvest-backend backend/
+# Build from the repo root, passing the runner source as a named context:
+#   docker build --build-context runner=runner -t harvest-backend backend/
+# (Without --build-context the runner comes from the published runner image,
+# which can lag runner/wf_runner; see the `runner` stage below.)
 #
 # Run (see the env contract at the bottom of this file):
 #   docker run --rm -p 8002:8002 --env-file backend/.env \
@@ -12,6 +14,17 @@
 # used here: it has drifted from pyproject.toml (it lists Pillow but not dbos or
 # pyogrio, without which the app cannot even import), so pyproject + uv.lock are
 # the single source of truth.
+
+# --- runner: the wf_runner package bundled into deployment zips --------------
+# Laid out like the repo's runner/ directory (wf_runner/ at its root), so
+# `--build-context runner=runner` replaces this whole stage with the live source.
+# Without it, fall back to the published runner image -- possibly older than
+# runner/wf_runner, but never missing. That image is amd64-only; fine on any
+# build host, as only its pure-Python files are copied out.
+ARG RUNNER_IMAGE=ghcr.io/icicle-ai/workflow-runner:v0.1.3
+FROM --platform=linux/amd64 ${RUNNER_IMAGE} AS runner-image
+FROM scratch AS runner
+COPY --from=runner-image /app/wf_runner /wf_runner
 
 # --- builder: resolve and install dependencies into a self-contained venv ----
 FROM python:3.14-slim-bookworm AS builder
@@ -54,6 +67,14 @@ WORKDIR /app
 
 COPY --from=builder --chown=app:app /app/.venv /app/.venv
 COPY --chown=app:app . /app
+
+# The runner source, which engine/deployment.py copies into every deployment zip
+# so `run.sh` can `python3 -m wf_runner` on the user's node. This image is built
+# from backend/ alone, so ../runner isn't in the build context; it comes from the
+# `runner` stage at the top. Without this the zip ships no wf_runner/ and run.sh
+# dies with "No module named wf_runner".
+COPY --from=runner --chown=app:app /wf_runner /app/runner/wf_runner
+ENV WF_RUNNER_SOURCE_DIR=/app/runner
 
 USER app
 

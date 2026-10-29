@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, Float, ForeignKey, DateTime, JSON, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Boolean, Float, ForeignKey, DateTime, JSON, UniqueConstraint, CheckConstraint
 from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.sql import func
 
@@ -37,6 +37,67 @@ class AppUser(Base):
     team = relationship("Team", back_populates="users")
     workflows = relationship("WorkflowTemplate", back_populates="owner")
     pipeline_runs = relationship("PipelineRun", back_populates="user")
+
+
+# User groups: named, many-to-many sets of users that a workflow can be shared
+# with in one step.
+#
+# Deliberately NOT the Team above. A user has exactly one team_id, every user is
+# auto-attached to `default_team` (see auth._upsert_user), and the team scopes
+# secrets — so reusing it for sharing would make "share with my group" mean
+# "share with everyone" today, and would tie who-can-see-my-workflow to
+# who-can-decrypt-my-API-keys. A group is created by any user, can overlap with
+# any other group, and grants nothing but read access to what is shared with it.
+class UserGroup(Base):
+    __tablename__ = 'user_group'
+
+    group_id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    description = Column(String, default='')
+    created_by_id = Column(Integer, ForeignKey('app_user.user_id', ondelete='SET NULL'))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    members = relationship("UserGroupMember", back_populates="group", cascade="all, delete-orphan")
+
+
+class UserGroupMember(Base):
+    __tablename__ = 'user_group_member'
+
+    group_id = Column(Integer, ForeignKey('user_group.group_id', ondelete='CASCADE'), primary_key=True)
+    user_id = Column(Integer, ForeignKey('app_user.user_id', ondelete='CASCADE'), primary_key=True, index=True)
+    # 'admin' may rename the group, add/remove members and change roles;
+    # 'member' may see the group, its members and what is shared with it, and
+    # share their own workflows with it. groups.py keeps at least one admin.
+    role = Column(String, nullable=False, default='member')
+    added_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    group = relationship("UserGroup", back_populates="members")
+    user = relationship("AppUser")
+
+
+# One grant of READ access (open, run, clone — never write) on a workflow
+# lineage to either one user or one group; exactly one of user_id/group_id is
+# set. Public visibility stays on WorkflowTemplate.is_public, since "everyone"
+# isn't a grantee row.
+#
+# Keyed by template_id like WorkflowTrigger, so a share covers every version —
+# including ones saved after it was granted. Not a FK for the same reason:
+# template_id repeats across a lineage's rows.
+class TemplateShare(Base):
+    __tablename__ = 'template_share'
+
+    share_id = Column(Integer, primary_key=True, index=True)
+    template_id = Column(Integer, nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey('app_user.user_id', ondelete='CASCADE'), index=True)
+    group_id = Column(Integer, ForeignKey('user_group.group_id', ondelete='CASCADE'), index=True)
+    created_by_id = Column(Integer, ForeignKey('app_user.user_id', ondelete='SET NULL'))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        CheckConstraint('(user_id IS NULL) <> (group_id IS NULL)', name='ck_template_share_one_grantee'),
+        UniqueConstraint('template_id', 'user_id', name='uix_template_share_user'),
+        UniqueConstraint('template_id', 'group_id', name='uix_template_share_group'),
+    )
 
 
 class Secret(Base):

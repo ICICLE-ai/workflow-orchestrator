@@ -25,13 +25,33 @@ import os
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import time
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+try:
+    from wf_runner import __version__
+except ImportError:  # run as a plain script: python3 runner/wf_runner/runner.py
+    __version__ = "unknown"
+
 SUPPORTED_BUNDLE_VERSION = 1
+
+# What the upload package (run-<id>-report.zip) carries of each step's outputs.
+# Only small, viewable files: the platform renders them in the run's panels,
+# and nothing a panel can't show (weights, image folders) is worth the upload.
+# Anything left out is still listed in the report, by its path on this node.
+UPLOAD_EXTS = {
+    ".json", ".jsonl", ".csv", ".tsv", ".txt", ".md", ".yaml", ".yml", ".xml", ".log",
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg",
+    ".geojson", ".gpkg", ".kml",
+}
+UPLOAD_LOG_BYTES = 200_000      # tail of each step's runner.log
+UPLOAD_FILES_PER_PORT = 200
+UPLOAD_SKIPPED_LISTED = 50      # per port; the rest are only counted
 
 
 class BundleError(RuntimeError):
@@ -326,10 +346,16 @@ def fetch_input(url: str, target: Path) -> None:
     import urllib.request
 
     target.parent.mkdir(parents=True, exist_ok=True)
+    # Written beside the target and renamed into place only once complete: a
+    # cut-off download of a cached image would otherwise sit at its final name,
+    # and every later run would take it for the real thing and fail to mount it.
+    partial = target.with_name(target.name + ".part")
     try:
-        with urllib.request.urlopen(url, timeout=120) as response, open(target, "wb") as out:
+        with urllib.request.urlopen(url, timeout=120) as response, open(partial, "wb") as out:
             shutil.copyfileobj(response, out)
+        partial.replace(target)
     except (urllib.error.URLError, OSError) as e:
+        partial.unlink(missing_ok=True)
         raise BundleError(
             f"could not download {url.split('?')[0]}: {e}\n"
             f"        If this is a platform-signed link it has probably expired — host the file\n"
@@ -909,8 +935,9 @@ def execute(bundle: dict, args) -> dict:
                 log(f"    path: {path or '(none)'}" + ("  (does not exist yet)" if missing else ""))
         except BundleError as e:
             log(f"    FAILED: {e}")
-            results[node_id] = {"status": "failed", "error": str(e)}
-            write_report(workdir, run_id, bundle, results, started, "failed")
+            results[node_id] = {"status": "failed", "error": redact(str(e))}
+            report = write_report(workdir, run_id, bundle, results, started, "failed", upload_limits(args))
+            log(f"failed — report: {report}")
             raise
 
         for port, actual in (result.get("outputs") or {}).items():
@@ -922,33 +949,165 @@ def execute(bundle: dict, args) -> dict:
         log(f"    {result['status']}" + (f" in {result['seconds']}s" if "seconds" in result else ""))
 
     status = "dry-run" if args.dry_run else "completed"
-    report = write_report(workdir, run_id, bundle, results, started, status)
+    report = write_report(workdir, run_id, bundle, results, started, status,
+                          None if args.dry_run else upload_limits(args))
     log(f"{status} in {time.time() - started:.0f}s — report: {report}")
+    if not args.dry_run:
+        log(f"to view this run on the platform, upload {report.with_suffix('.zip')} "
+            "from Runs → Import local run")
     return results
 
 
+def upload_limits(args) -> tuple[int, int]:
+    """(per-file, total) byte caps for output files in the upload package."""
+    mb = 1024 * 1024
+    return int(args.upload_max_file_mb * mb), int(args.upload_max_mb * mb)
+
+
 def write_report(workdir: Path, run_id: str, bundle: dict, results: dict,
-                 started: float, status: str) -> Path:
+                 started: float, status: str, upload: tuple[int, int] | None = None) -> Path:
     """Persist what ran and where every artifact landed.
 
     This is the local stand-in for the platform's run detail page: without it,
     finding a completed step's outputs means guessing at the workspace layout.
+
+    With `upload` (the output-file caps), also packs run-<id>-report.zip: this
+    report, each step's log tail and its small output files, which the
+    platform's "Import local run" turns into a run you can open in Runs. The
+    template id and node ids it carries are the platform's own, from the
+    bundle, so the import lands on the same canvas the bundle was exported
+    from.
     """
-    path = workdir / f"run-{run_id}-report.json"
-    path.write_text(json.dumps({
+    nodes = {n["node_id"]: n for n in bundle["nodes"]}
+    report = {
         "run_id": run_id,
         "status": status,
         "template": bundle.get("template"),
+        "bundle_version": bundle.get("bundle_version"),
+        "runner_version": __version__,
+        "host": socket.gethostname(),
         "started_at": datetime.fromtimestamp(started, timezone.utc).isoformat(),
         "finished_at": datetime.now(timezone.utc).isoformat(),
         "seconds": round(time.time() - started, 1),
+        "edges": bundle.get("edges", []),
         "steps": [
-            {"node_id": nid, "label": next((n["label"] for n in bundle["nodes"] if n["node_id"] == nid), nid),
+            {"node_id": nid, "label": nodes.get(nid, {}).get("label", nid),
+             "step_type": nodes.get(nid, {}).get("step_type"), "kind": nodes.get(nid, {}).get("kind"),
              **res}
             for nid, res in results.items()
         ],
-    }, indent=2))
+    }
+    if upload:
+        try:
+            write_upload_package(workdir / f"run-{run_id}-report.zip", report, nodes, *upload)
+        except OSError as e:
+            # The JSON report below still records the run; only the upload is lost.
+            log(f"WARNING: could not write the upload package: {e}")
+    path = workdir / f"run-{run_id}-report.json"
+    path.write_text(json.dumps(report, indent=2))
     return path
+
+
+def write_upload_package(path: Path, report: dict, nodes: dict, max_file: int, max_total: int) -> None:
+    """Pack the report, log tails and small outputs into one zip to upload.
+
+    Each step in `report` gains `log_file` and `artifacts` (per output port:
+    the files packed under artifacts/<node>/<port>/, and what was left out and
+    why), so the platform knows exactly what it received.
+    """
+    budget = [max_total]
+    tmp = path.with_suffix(".zip.part")
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
+        for step in report["steps"]:
+            nid = step["node_id"]
+            node = nodes.get(nid, {})
+            # A failed step has no outputs but does have a log, and the log is
+            # the part of a failed run worth looking at.
+            if node.get("kind") == "job" and node.get("job_dir"):
+                tail = _log_tail(Path(node["job_dir"]) / "runner.log")
+                if tail is not None:
+                    name = f"logs/{nid}.log"
+                    zf.writestr(name, tail)
+                    step["log_file"] = name
+            artifacts = {
+                port: _pack_port(zf, f"artifacts/{nid}/{port}", Path(location), max_file, budget)
+                for port, location in (step.get("outputs") or {}).items()
+                if location
+            }
+            if artifacts:
+                step["artifacts"] = artifacts
+        zf.writestr("report.json", json.dumps(report, indent=2))
+    tmp.replace(path)
+
+
+def _log_tail(log_path: Path) -> str | None:
+    try:
+        with open(log_path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - UPLOAD_LOG_BYTES))
+            data = f.read()
+    except OSError:
+        return None
+    text = data.decode("utf-8", errors="replace")
+    if size > UPLOAD_LOG_BYTES:
+        text = f"[… first {size - UPLOAD_LOG_BYTES} bytes not included …]\n" + text.split("\n", 1)[-1]
+    # Container output can echo a credential back; the command line already
+    # had them masked, this catches the rest.
+    return redact(text)
+
+
+def _pack_port(zf: zipfile.ZipFile, prefix: str, location: Path, max_file: int, budget: list[int]) -> dict:
+    entry: dict = {"path": str(location), "files": [], "skipped": [], "skipped_total": 0}
+    if location.is_file():
+        entry["kind"] = "file"
+        candidates = [(location, location.name)]
+    elif location.is_dir():
+        entry["kind"] = "dir"
+        candidates = []
+        # Symlinks are not followed: a job dir holds links to its staged
+        # inputs, and packing those would upload the user's source data.
+        for root, dirs, files in os.walk(location):
+            dirs[:] = sorted(d for d in dirs if not (Path(root) / d).is_symlink())
+            for name in sorted(files):
+                src = Path(root) / name
+                if not src.is_symlink():
+                    candidates.append((src, src.relative_to(location).as_posix()))
+    else:
+        entry["kind"] = "missing"
+        return entry
+
+    def skip(rel: str, reason: str) -> None:
+        entry["skipped_total"] += 1
+        if len(entry["skipped"]) < UPLOAD_SKIPPED_LISTED:
+            entry["skipped"].append({"file": rel, "reason": reason})
+
+    for src, rel in candidates:
+        if src.suffix.lower() not in UPLOAD_EXTS:
+            skip(rel, "type")
+            continue
+        if len(entry["files"]) >= UPLOAD_FILES_PER_PORT:
+            skip(rel, "file count")
+            continue
+        try:
+            size = src.stat().st_size
+        except OSError:
+            skip(rel, "unreadable")
+            continue
+        if size > max_file:
+            skip(rel, "size")
+            continue
+        if size > budget[0]:
+            skip(rel, "total size")
+            continue
+        try:
+            zf.write(src, f"{prefix}/{rel}")
+        except OSError:
+            skip(rel, "unreadable")
+            continue
+        budget[0] -= size
+        entry["files"].append(rel)
+    return entry
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -982,6 +1141,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--log-lines", type=int, default=int(os.environ.get("WF_LOG_LINES", "10")),
                         help="Lines of a running step's output to show live under it (0 hides them; "
                              "the full output is always in the step's runner.log)")
+    parser.add_argument("--upload-max-file-mb", type=float,
+                        default=float(os.environ.get("WF_UPLOAD_MAX_FILE_MB", "5")),
+                        help="Largest output file packed into the run's upload zip (default 5)")
+    parser.add_argument("--upload-max-mb", type=float,
+                        default=float(os.environ.get("WF_UPLOAD_MAX_MB", "50")),
+                        help="Total output-file size packed into the upload zip (default 50; "
+                             "0 packs only the report and logs)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print the plan and the exact container commands without running anything")
     args = parser.parse_args(argv)

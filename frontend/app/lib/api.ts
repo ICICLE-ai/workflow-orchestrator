@@ -74,6 +74,7 @@ export async function logout() {
 }
 
 export type CurrentUser = {
+  user_id?: number;
   username: string;
   // "tapis-token" when the embedding host supplied the credential — the UI hides
   // its own login/logout in that mode.

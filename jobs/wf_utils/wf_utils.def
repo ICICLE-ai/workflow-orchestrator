@@ -8,6 +8,7 @@ From: python:3.12-slim
     merge_annotations.py /app/merge_annotations.py
     zero_shot_to_yolo.py /app/zero_shot_to_yolo.py
     split_dataset.py /app/split_dataset.py
+    hf_upload.py /app/hf_upload.py
     requirements.txt /app/requirements.txt
 
 %environment
@@ -32,4 +33,4 @@ From: python:3.12-slim
     Maintainer "Brijesh Nanda <brundayogananda.1@osu.edu>"
     Version "1.0.0"
     Appname "wf-utils"
-    Description "Small CPU-only data tools for Workflow Orchestrator steps (merge_folders, merge_annotations, zero_shot_to_yolo, split_dataset); the first argument picks the tool"
+    Description "Small CPU-only data tools for Workflow Orchestrator steps (merge_folders, merge_annotations, zero_shot_to_yolo, split_dataset, hf_upload); the first argument picks the tool"

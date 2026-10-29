@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { ReactFlow, ReactFlowProvider, addEdge, useNodesState, useEdgesState, Background, Controls } from '@xyflow/react';
 import { AppShell, Group, Button, Text, ActionIcon, Stack, Title, Drawer, TextInput, Textarea, Select, Notification, Loader, Alert, List, Accordion, Divider, Modal, Badge, Tooltip } from '@mantine/core';
-import { IconArrowLeft, IconDeviceFloppy, IconX, IconPlayerPlay, IconAlertTriangle, IconEye, IconServerBolt } from '@tabler/icons-react';
+import { IconArrowLeft, IconDeviceFloppy, IconX, IconPlayerPlay, IconAlertTriangle, IconEye, IconServerBolt, IconShare, IconCopy } from '@tabler/icons-react';
 import { useNavigate, useParams, useLoaderData } from 'react-router';
 import { notifications } from '@mantine/notifications';
 import CustomNode from '../components/CustomNode';
@@ -12,6 +12,7 @@ import ThemeToggle from '../components/ThemeToggle';
 import RunSettingsDrawer, { type RunOptions, type JobSteps } from '../components/RunSettingsDrawer';
 import { type ExecutionMode, type SingleJobPlan } from '../components/SingleJobPanel';
 import DeployDialog from '../components/DeployDialog';
+import ShareDialog from '../components/ShareDialog';
 
 const nodeTypes = { customNode: CustomNode };
 
@@ -158,9 +159,34 @@ function Flow() {
   // the is_owner field — where it arrives undefined — is treated as editable
   // rather than silently locking the canvas.
   const isReadOnly = Boolean(templateData) && templateData.is_owner === false;
-  const readOnlyReason = templateData?.is_public
-    ? "This is a public template published by another user."
-    : "This template belongs to another user.";
+  const sharedBy = templateData?.owner_username ? ` by ${templateData.owner_username}` : '';
+  const readOnlyReason = templateData?.access === 'shared'
+    ? `This workflow was shared with you${sharedBy}.`
+    : templateData?.is_public
+      ? `This is a public template published${sharedBy}.`
+      : "This template belongs to another user.";
+  const readOnlyTitle = templateData?.access === 'shared'
+    ? 'Shared with you — view and run only'
+    : 'Public demo template — view and run only';
+  const [shareOpened, setShareOpened] = useState(false);
+  const [cloning, setCloning] = useState(false);
+
+  // "Save as my copy": a private, editable lineage owned by the caller, copied
+  // server-side from the SAVED version (on-screen edits aren't carried over).
+  const cloneTemplate = async () => {
+    setCloning(true);
+    try {
+      const res = await apiFetch(`/api/workflow-templates/${templateData.template_version_id}/clone`, { method: 'POST' });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.detail || 'Could not copy this workflow.');
+      notifications.show({ color: 'green', title: 'Copied to your workspace', message: body.message });
+      navigate(`/templates/${body.template_version_id}/edit`);
+    } catch (e: any) {
+      notifications.show({ color: 'red', title: 'Copy failed', message: e.message });
+    } finally {
+      setCloning(false);
+    }
+  };
   const navigate = useNavigate();
 
   // Steps offered in the palette. `hidden` (step.json -> StepTypeRegistry.hidden)
@@ -717,12 +743,35 @@ function Flow() {
                 Deploy to my node
               </Button>
             )}
+            {templateData && !isReadOnly && (
+              // Owner-only: who else can open and run this workflow. Covers
+              // every version, so it doesn't matter which one is open.
+              <Button
+                variant="default"
+                leftSection={<IconShare size={16} />}
+                onClick={() => setShareOpened(true)}
+                title="Share this workflow with people, groups, or everyone"
+              >
+                Share
+              </Button>
+            )}
             {/* Standing indicator, so the state that changes what Run does is
                 visible before Run is pressed rather than only in the prompt. */}
             {isDirty && (
               <Badge color="yellow" variant="light" title="The canvas differs from the last saved version">
                 Unsaved changes
               </Badge>
+            )}
+            {isReadOnly && (
+              <Button
+                variant="light"
+                leftSection={<IconCopy size={16} />}
+                loading={cloning}
+                onClick={cloneTemplate}
+                title="Copy the saved version into a new workflow you own and can edit"
+              >
+                Save as my copy
+              </Button>
             )}
             {isReadOnly ? (
               // Disabled rather than hidden: a missing button reads as a bug,
@@ -834,12 +883,12 @@ function Flow() {
                 color="blue"
                 variant="light"
                 icon={<IconEye size={18} />}
-                title="Public demo template — view and run only"
+                title={readOnlyTitle}
                 withCloseButton={false}
                 style={{ boxShadow: '0 8px 24px rgba(0,0,0,0.12)' }}
               >
                 <Text size="sm">
-                  {readOnlyReason} It is shown for demonstration: you can open it and{' '}
+                  {readOnlyReason} You can open it and{' '}
                   <b>run it</b>, but changes can&apos;t be saved back to it. To edit, make it
                   your own with <b>Save as my copy</b>.
                 </Text>
@@ -967,6 +1016,15 @@ function Flow() {
         }
       />
 
+      {templateData && !isReadOnly && (
+        <ShareDialog
+          opened={shareOpened}
+          onClose={() => setShareOpened(false)}
+          templateId={templateData.template_id}
+          templateName={templateData.name}
+        />
+      )}
+
       <DeployDialog
         opened={deployOpened}
         onClose={() => setDeployOpened(false)}
@@ -985,8 +1043,8 @@ function Flow() {
       >
         <Stack gap="md">
           <Text size="sm">
-            {readOnlyReason} It is published for demonstration, so edits can&apos;t be saved
-            to it — and a run has to execute a saved graph.
+            {readOnlyReason} Only its owner can save edits to it — and a run has to
+            execute a saved graph.
           </Text>
           <Text size="sm">
             You can run it exactly as published (your on-screen edits are ignored for this

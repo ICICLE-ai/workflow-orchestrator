@@ -1,8 +1,8 @@
 import { Group, Button } from "@mantine/core";
-import { IconFolder, IconActivity } from "@tabler/icons-react";
+import { IconFolder, IconActivity, IconUsersGroup } from "@tabler/icons-react";
 import { useNavigate, useLocation } from "react-router";
 
-// Persistent "Templates" / "Runs" navigation, shown in every page's header
+// Persistent "Templates" / "Runs" / "Groups" navigation, shown in every page's header
 // (see _index.tsx, templates.tsx, runs.tsx, runs.$runId.tsx, WorkflowCanvas.tsx)
 // so switching between them never requires going back to the dashboard
 // first. The active section is highlighted from the current route; both
@@ -13,6 +13,7 @@ export default function TopNav() {
   const location = useLocation();
   const onTemplates = location.pathname.startsWith("/templates");
   const onRuns = location.pathname.startsWith("/runs");
+  const onGroups = location.pathname.startsWith("/groups");
 
   return (
     <Group gap={4}>
@@ -33,6 +34,15 @@ export default function TopNav() {
         onClick={() => navigate("/runs")}
       >
         Runs
+      </Button>
+      <Button
+        size="xs"
+        variant={onGroups ? "light" : "subtle"}
+        color={onGroups ? "indigo" : "gray"}
+        leftSection={<IconUsersGroup size={14} />}
+        onClick={() => navigate("/groups")}
+      >
+        Groups
       </Button>
     </Group>
   );

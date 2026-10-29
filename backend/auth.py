@@ -459,4 +459,4 @@ def me(request: Request, db: Session = Depends(get_db)):
     user, mode = resolve_current_user_with_mode(request, db)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    return {"username": user.username, "auth_mode": mode}
+    return {"user_id": user.user_id, "username": user.username, "auth_mode": mode}

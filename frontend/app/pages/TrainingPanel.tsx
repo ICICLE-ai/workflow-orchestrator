@@ -229,6 +229,10 @@ export default function TrainingPanel({ config, onChange, step, connectedInputs 
   const dataFile = String(val("data_file", ""));
   const hubDataset = String(val("hub_dataset", ""));
   const datasetWired = Boolean(connectedInputs?.dataset);
+  // A wired base_model (an existing checkpoint) replaces `model`: the job
+  // stages it as base_model.pt and passes that as --model (see step.json).
+  const baseModel = connectedInputs?.base_model;
+  const baseModelPath = String(baseModel?.config?.path ?? "");
 
   // A secret field stores the secret's KEY; the value is resolved server-side
   // at submission (see GenericConfigForm / backend/engine/secrets.py).
@@ -339,7 +343,7 @@ export default function TrainingPanel({ config, onChange, step, connectedInputs 
   const command = (() => {
     const parts: string[] = [
       `--framework ${framework}`,
-      `--model ${model || "<model>"}`,
+      baseModel ? "--model /job/base_model.pt" : `--model ${model || "<model>"}`,
       `--task ${task}`,
       hubDataset && !datasetWired ? `--data ${hubDataset}` : `--data /job/dataset/${dataFile}`,
       "--output_path /job/output",
@@ -393,7 +397,20 @@ export default function TrainingPanel({ config, onChange, step, connectedInputs 
             />
           </Stack>
 
-          <Select
+          {baseModel && (
+            <Alert icon={<IconBrain size={16} />} variant="light" title="Starting from a connected checkpoint">
+              <Text size="xs">
+                Training starts from the model wired into <strong>base_model</strong>
+                {baseModelPath ? <> (<Code>{baseModelPath}</Code>)</> : " (another step's output, known once it runs)"},
+                copied into the job as <Code>/job/base_model.pt</Code>. The model chosen below is ignored while it's connected.
+              </Text>
+              <Text size="xs" c="dimmed" mt={4}>
+                Keep the task and framework matching that checkpoint, e.g. a YOLO segmentation best.pt needs YOLO + segment.
+              </Text>
+            </Alert>
+          )}
+
+          {!baseModel && <Select
             label="Model"
             description={
               isYolo
@@ -407,9 +424,9 @@ export default function TrainingPanel({ config, onChange, step, connectedInputs 
             value={customModel || !modelInfo ? CUSTOM : model}
             onChange={pickModel}
             allowDeselect={false}
-          />
+          />}
 
-          {(customModel || !modelInfo) && (
+          {!baseModel && (customModel || !modelInfo) && (
             <TextInput
               label={isYolo ? "Checkpoint name or path" : "Model ID or path"}
               description={
@@ -426,7 +443,7 @@ export default function TrainingPanel({ config, onChange, step, connectedInputs 
             />
           )}
 
-          {modelInfo && (
+          {!baseModel && modelInfo && (
             <Paper withBorder p="sm" radius="md">
               <Group gap="xs" mb={4}>
                 <Text size="sm" fw={600}>{modelInfo.label}</Text>

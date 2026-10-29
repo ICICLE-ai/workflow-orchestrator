@@ -1,6 +1,6 @@
 import type { Route } from "./+types/runs.$runId";
 import { AppShell, Container, Text, Group, ThemeIcon, ActionIcon, Badge, Loader, Tooltip, Button, Drawer, Stack, Code, Divider, Modal, Select, JsonInput, Alert } from "@mantine/core";
-import { IconActivity, IconArrowLeft, IconRefresh, IconSettings, IconEdit, IconRepeat, IconPlayerPlay, IconInfoCircle } from "@tabler/icons-react";
+import { IconActivity, IconArrowLeft, IconRefresh, IconSettings, IconEdit, IconRepeat, IconPlayerPlay, IconInfoCircle, IconServer } from "@tabler/icons-react";
 import { useNavigate } from "react-router";
 import { notifications } from "@mantine/notifications";
 import { useState, useEffect, useCallback, useMemo } from "react";
@@ -557,12 +557,16 @@ function RunViewForRun({ loaderData }: Route.ComponentProps) {
   }, [detail, navigate]);
 
   const status = (detail?.status || "").toUpperCase();
-  const canRerun = status === "FAILED" || status === "CANCELLED";
+  // Imported from the user's own node (backend/engine/local_import.py): its
+  // outputs live on that node, so nothing here can carry it on, and a platform
+  // re-run has none of its run options to reuse.
+  const isLocal = detail?.frozen_config?.source === "local";
+  const canRerun = !isLocal && (status === "FAILED" || status === "CANCELLED");
   // Resuming is offered for any run that isn't in flight — including a COMPLETED
   // one, where it means "redo this step and everything after it" rather than
   // "carry on". Only a RUNNING run has nothing to resume: it has to be stopped
   // first, which the backend also enforces.
-  const canResume = !!status && status !== "RUNNING";
+  const canResume = !isLocal && !!status && status !== "RUNNING";
 
   return (
     <AppShell header={{ height: 60 }} padding="0">
@@ -585,6 +589,13 @@ function RunViewForRun({ loaderData }: Route.ComponentProps) {
             )}
           </Group>
           <Group gap="sm">
+            {isLocal && (
+              <Tooltip label={`Ran with the runner (v${detail.frozen_config?.runner_version || '?'}) as run ${detail.frozen_config?.local_run_id}, then imported`}>
+                <Badge color="grape" variant="light" size="lg" leftSection={<IconServer size={12} />}>
+                  ran on {detail.frozen_config?.host || 'your node'}
+                </Badge>
+              </Tooltip>
+            )}
             {canResume && (
               <Button size="xs" color="blue"
                 leftSection={<IconPlayerPlay size={14} />}
