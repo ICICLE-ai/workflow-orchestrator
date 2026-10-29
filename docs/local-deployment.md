@@ -242,6 +242,7 @@ without executing any of them.
 ```
 <workdir>/
   run-<run-id>-report.json            what ran, how long, where each output is
+  run-<run-id>-report.zip             the same, packed to upload to the platform
   wf_runs/<run-id>/<step>/<node>/
       input/ data/ ...                staged inputs
       output/                         the step's artifacts
@@ -250,6 +251,39 @@ without executing any of them.
 
 The report is the local equivalent of the platform's run detail page — without
 it, finding a step's outputs means guessing at the workspace layout.
+
+### Viewing the run on the platform
+
+Every run, failed ones included, also ends with `run-<run-id>-report.zip`. On
+the platform, open **Runs → Import local run** and upload it. It becomes an
+ordinary run of the template version the bundle came from, marked **local**
+with the node's hostname. It opens on the same canvas, with each step's status
+and its log (the tail of `runner.log`). Panels such as **Visualization** show
+that run's results, because they read the files that came in the zip.
+
+What the zip carries:
+
+| | |
+|---|---|
+| `report.json` | the report above, plus the bundle's template id and edges |
+| `logs/<node>.log` | the last 200 KB of each job step's `runner.log`, with credentials masked |
+| `artifacts/<node>/<port>/` | that step's small output files: JSON, CSV, text, YAML, images, GeoJSON/GeoPackage/KML |
+
+Anything else, such as model weights, very large files and symlinks (staged
+inputs), stays on the node. The report lists each such file by its node path
+and why it was left out. Output files are capped at 5 MB each and 50 MB in
+total (`--upload-max-file-mb`, `--upload-max-mb`, or `WF_UPLOAD_MAX_FILE_MB` /
+`WF_UPLOAD_MAX_MB`). `--upload-max-mb 0` uploads only the report and logs.
+
+Uploading the same zip twice opens the run it already created. An imported run
+can't be resumed or re-run from the platform, because its outputs are on your
+node. Run it again with the runner and import the new zip.
+
+On the backend, the uploaded files are stored under `WF_LOCAL_RUNS_DIR`
+(default `backend/data/local_runs/`; in a container, mount a volume there) and
+uploads are capped at `WF_LOCAL_RUN_MAX_UPLOAD_MB` (default 200). They are
+served only to the run's owner, under the system id `wf-local-run-<run_id>` on
+the existing `/api/tapis-files/{list,content}` endpoints.
 
 ## How it stays correct
 

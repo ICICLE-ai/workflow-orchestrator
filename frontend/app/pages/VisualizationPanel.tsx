@@ -15,38 +15,75 @@ import {
 } from "@mantine/core";
 import { IconChartBar, IconInfoCircle, IconExternalLink } from "@tabler/icons-react";
 import { apiFetch } from "../lib/api";
+import { resolveWiredLocation } from "../lib/tapis";
 import type { StepPanelProps } from "./types";
 
 // ─────────────────────────────────────────────────────────────
 // VisualizationPanel — displays training performance metrics
-// from the metrics.json output of a training step.
+// from a metrics.json, wherever it comes from:
+//   - a Training node's `metrics` output (resolved once the run has
+//     produced it — opened from the run page, see runs.$runId.tsx's
+//     panelConnectedInputs), or
+//   - a 📄 JSON File source pointing at any metrics.json, so a past
+//     run's results can be viewed without re-running training.
+// The wired value may name the file itself or a folder holding one.
 // Registered in registry.ts under "visualization".
 // ─────────────────────────────────────────────────────────────
 
+// The trainers' metrics.json: { task, framework, metrics: {...}, metadata: {...} }.
+// `metrics` keys differ by framework (YOLO: "metrics/mAP50(M)", ...;
+// HuggingFace: "eval_accuracy", ...), so they're rendered generically.
 interface TrainingMetrics {
   task?: string;
   framework?: string;
-  metrics?: {
-    eval_loss?: number;
-    eval_accuracy?: number;
-    eval_runtime?: number;
-    eval_samples_per_second?: number;
-    eval_steps_per_second?: number;
-    epoch?: number;
-    eval_dice_score?: number;
-    eval_iou?: number;
-    eval_map?: number;
-  };
-  metadata?: {
-    model?: string;
-    dataset?: string;
-    epochs?: number;
-    batch?: number;
-    lr?: number;
-    timestamp?: string;
-    best_model?: string;
-  };
+  metrics?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
 }
+
+// Friendly names for the keys the trainers are known to write. Anything else
+// is still shown, under its raw key.
+const METRIC_LABELS: Record<string, string> = {
+  "metrics/mAP50(B)": "Box mAP50",
+  "metrics/mAP50-95(B)": "Box mAP50-95",
+  "metrics/mAP50(M)": "Mask mAP50",
+  "metrics/mAP50-95(M)": "Mask mAP50-95",
+  "metrics/accuracy_top1": "Top-1 Accuracy",
+  "metrics/accuracy_top5": "Top-5 Accuracy",
+  eval_accuracy: "Accuracy",
+  eval_loss: "Eval Loss",
+  eval_dice_score: "Dice Score",
+  eval_iou: "IoU",
+  eval_map: "mAP",
+  eval_runtime: "Eval Runtime",
+  eval_samples_per_second: "Samples / s",
+  eval_steps_per_second: "Steps / s",
+  epoch: "Epochs Trained",
+};
+
+const METADATA_LABELS: Record<string, string> = {
+  model: "Model",
+  dataset: "Dataset",
+  epochs: "Epochs",
+  imgsz: "Image size",
+  batch: "Batch size",
+  lr: "Learning rate",
+  lr0: "Learning rate",
+  device: "Device",
+  optimizer: "Optimizer",
+  output_path: "Output",
+  best_weights: "Best weights",
+  last_weights: "Last weights",
+  best_model: "Best model",
+  timestamp: "Trained at",
+};
+
+// Scores in [0, 1] that read better as percentages.
+const isRatio = (key: string) => /map|accuracy|iou|dice/i.test(key);
+
+// The first of these present is the headline score shown as a bar.
+const HEADLINE_KEYS = [
+  "metrics/mAP50-95(M)", "metrics/mAP50-95(B)", "metrics/accuracy_top1", "eval_accuracy", "eval_map",
+];
 
 function MetricCard({ label, value, color = "blue", unit = "" }: {
   label: string;
@@ -67,44 +104,48 @@ function MetricCard({ label, value, color = "blue", unit = "" }: {
   );
 }
 
-export default function VisualizationPanel({ config, step }: StepPanelProps) {
+export default function VisualizationPanel({ config, step, connectedInputs }: StepPanelProps) {
   const [metrics, setMetrics] = useState<TrainingMetrics | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Try to load metrics from the connected input (results port)
-  const resultsPath = config?.results as string | undefined;
+  const resultsPort = step.inputs.find((p) => p.data_type === "json_results")?.port_name ?? "results";
+  const wired = connectedInputs?.[resultsPort];
+  const loc = wired ? resolveWiredLocation(wired) : null;
+  // A folder (e.g. a training run's <task>/<name>/) holds metrics.json.
+  const metricsPath = loc ? (/\.json$/i.test(loc.path) ? loc.path : `${loc.path.replace(/\/+$/, "")}/metrics.json`) : "";
   const wandbProject = config?.wandb_project as string | undefined;
   const wandbUrl = config?.wandb_url as string | undefined;
 
   useEffect(() => {
-    if (!resultsPath) return;
-    setLoading(true);
+    setMetrics(null);
     setError(null);
-
-    // Fetch metrics.json via the backend files API
-    apiFetch(`/api/files/read?path=${encodeURIComponent(resultsPath + "/metrics.json")}`)
-      .then((res) => res.json())
-      .then((data) => {
-        setMetrics(data);
-        setLoading(false);
+    if (!loc) return;
+    let cancelled = false;
+    setLoading(true);
+    apiFetch(`/api/tapis-files/content?system=${encodeURIComponent(loc.system)}&path=${encodeURIComponent(metricsPath)}`)
+      .then(async (res) => {
+        if (!res.ok) throw new Error(res.status === 404 ? "not found" : `HTTP ${res.status}`);
+        return res.json();
       })
-      .catch(() => {
-        setError("Could not load metrics.json from the training output path.");
-        setLoading(false);
-      });
-  }, [resultsPath]);
+      .then((data) => { if (!cancelled) setMetrics(data); })
+      .catch((err) => {
+        if (!cancelled) setError(`Could not load ${loc.system}:${metricsPath} (${err?.message || "unreadable"}).`);
+      })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loc?.system, metricsPath]);
 
-  // Format numbers nicely
-  const fmt = (n?: number, decimals = 4) =>
-    n !== undefined ? n.toFixed(decimals) : "—";
+  const fmt = (key: string, n: number) =>
+    isRatio(key) && n >= 0 && n <= 1 ? `${(n * 100).toFixed(2)}%` : Number.isInteger(n) ? String(n) : n.toFixed(4);
 
-  const accuracy = metrics?.metrics?.eval_accuracy;
-  const loss = metrics?.metrics?.eval_loss;
-  const epoch = metrics?.metrics?.epoch;
-  const diceScore = metrics?.metrics?.eval_dice_score;
-  const iou = metrics?.metrics?.eval_iou;
-  const mAP = metrics?.metrics?.eval_map;
+  const scores = Object.entries(metrics?.metrics || {})
+    .filter((entry): entry is [string, number] => typeof entry[1] === "number");
+  const headlineKey = HEADLINE_KEYS.find((k) => typeof metrics?.metrics?.[k] === "number");
+  const headline = headlineKey ? (metrics!.metrics![headlineKey] as number) : undefined;
+  const details = Object.entries(metrics?.metadata || {})
+    .filter(([, v]) => v !== null && v !== undefined && v !== "" && typeof v !== "object");
 
   return (
     <Stack gap="md">
@@ -133,16 +174,19 @@ export default function VisualizationPanel({ config, step }: StepPanelProps) {
         <Alert icon={<IconInfoCircle size={14} />} color="orange" variant="light">
           <Text size="xs">{error}</Text>
           <Text size="xs" c="dimmed" mt={4}>
-            Connect this step to a training output or check the results path.
+            A Training node's metrics exist only once its run has finished — open this step from that run's page.
+            Otherwise check the JSON File source's path.
           </Text>
         </Alert>
       )}
 
-      {/* No results path */}
-      {!resultsPath && !loading && (
+      {/* Nothing wired, or wired to a step whose output isn't known yet */}
+      {!loc && !loading && (
         <Alert icon={<IconInfoCircle size={14} />} color="gray" variant="light">
           <Text size="xs">
-            Connect this step to the <strong>metrics</strong> output of a Training node to see results.
+            {wired
+              ? "The connected step's metrics will be available once it has run. Open this step from the run's page to see them."
+              : <>Connect a <strong>📄 JSON File</strong> source (any metrics.json) or a Training node's <strong>metrics</strong> output to see results.</>}
           </Text>
         </Alert>
       )}
@@ -151,61 +195,31 @@ export default function VisualizationPanel({ config, step }: StepPanelProps) {
       {metrics && !loading && (
         <>
           {/* Key metrics */}
-          <SimpleGrid cols={2} spacing="sm">
-            {accuracy !== undefined && (
-              <MetricCard
-                label="Accuracy"
-                value={`${(accuracy * 100).toFixed(2)}%`}
-                color="green"
-              />
-            )}
-            {loss !== undefined && (
-              <MetricCard
-                label="Eval Loss"
-                value={fmt(loss, 4)}
-                color="red"
-              />
-            )}
-            {diceScore !== undefined && (
-              <MetricCard
-                label="Dice Score"
-                value={fmt(diceScore, 4)}
-                color="violet"
-              />
-            )}
-            {iou !== undefined && (
-              <MetricCard
-                label="IoU"
-                value={fmt(iou, 4)}
-                color="orange"
-              />
-            )}
-            {mAP !== undefined && (
-              <MetricCard
-                label="mAP"
-                value={fmt(mAP, 4)}
-                color="blue"
-              />
-            )}
-            {epoch !== undefined && (
-              <MetricCard
-                label="Epochs Trained"
-                value={epoch}
-                color="gray"
-              />
-            )}
-          </SimpleGrid>
+          {scores.length > 0 ? (
+            <SimpleGrid cols={2} spacing="sm">
+              {scores.map(([key, value]) => (
+                <MetricCard
+                  key={key}
+                  label={METRIC_LABELS[key] ?? key}
+                  value={fmt(key, value)}
+                  color={/loss/i.test(key) ? "red" : isRatio(key) ? "green" : "gray"}
+                />
+              ))}
+            </SimpleGrid>
+          ) : (
+            <Text size="xs" c="dimmed">This metrics.json has no numeric scores.</Text>
+          )}
 
-          {/* Accuracy bar */}
-          {accuracy !== undefined && (
+          {/* Headline score bar */}
+          {headlineKey && headline !== undefined && headline >= 0 && headline <= 1 && (
             <Box>
               <Group justify="space-between" mb={4}>
-                <Text size="xs" fw={500}>Accuracy</Text>
-                <Text size="xs" c="dimmed">{(accuracy * 100).toFixed(2)}%</Text>
+                <Text size="xs" fw={500}>{METRIC_LABELS[headlineKey] ?? headlineKey}</Text>
+                <Text size="xs" c="dimmed">{(headline * 100).toFixed(2)}%</Text>
               </Group>
               <Progress
-                value={accuracy * 100}
-                color={accuracy > 0.9 ? "green" : accuracy > 0.7 ? "yellow" : "red"}
+                value={headline * 100}
+                color={headline > 0.9 ? "green" : headline > 0.7 ? "yellow" : "red"}
                 size="md"
                 radius="sm"
               />
@@ -215,39 +229,17 @@ export default function VisualizationPanel({ config, step }: StepPanelProps) {
           <Divider />
 
           {/* Metadata */}
-          {metrics.metadata && (
+          {details.length > 0 && (
             <Stack gap={4}>
               <Text size="xs" fw={600} c="dimmed">Training Details</Text>
-              {metrics.metadata.model && (
-                <Group gap={6}>
-                  <Text size="xs" c="dimmed" w={80}>Model</Text>
-                  <Text size="xs" style={{ fontFamily: "monospace" }}>{metrics.metadata.model}</Text>
+              {details.map(([key, value]) => (
+                <Group key={key} gap={6} wrap="nowrap" align="flex-start">
+                  <Text size="xs" c="dimmed" w={90} style={{ flexShrink: 0 }}>{METADATA_LABELS[key] ?? key}</Text>
+                  <Text size="xs" style={{ fontFamily: "monospace", wordBreak: "break-all" }}>
+                    {key === "timestamp" ? new Date(String(value)).toLocaleString() : String(value)}
+                  </Text>
                 </Group>
-              )}
-              {metrics.metadata.epochs && (
-                <Group gap={6}>
-                  <Text size="xs" c="dimmed" w={80}>Epochs</Text>
-                  <Text size="xs">{metrics.metadata.epochs}</Text>
-                </Group>
-              )}
-              {metrics.metadata.batch && (
-                <Group gap={6}>
-                  <Text size="xs" c="dimmed" w={80}>Batch size</Text>
-                  <Text size="xs">{metrics.metadata.batch}</Text>
-                </Group>
-              )}
-              {metrics.metadata.lr && (
-                <Group gap={6}>
-                  <Text size="xs" c="dimmed" w={80}>Learning rate</Text>
-                  <Text size="xs">{metrics.metadata.lr}</Text>
-                </Group>
-              )}
-              {metrics.metadata.timestamp && (
-                <Group gap={6}>
-                  <Text size="xs" c="dimmed" w={80}>Trained at</Text>
-                  <Text size="xs">{new Date(metrics.metadata.timestamp).toLocaleString()}</Text>
-                </Group>
-              )}
+              ))}
             </Stack>
           )}
 

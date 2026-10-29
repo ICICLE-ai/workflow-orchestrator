@@ -1,16 +1,48 @@
 import type { Route } from "./+types/templates";
-import { AppShell, Container, Title, Text, Button, Group, Card, SimpleGrid, ThemeIcon, ActionIcon, TextInput, Select } from "@mantine/core";
-import { IconActivity, IconArrowLeft, IconPlus, IconEdit, IconSearch } from "@tabler/icons-react";
-import { useNavigate, Link } from "react-router";
+import { AppShell, Container, Title, Text, Button, Group, Card, SimpleGrid, ThemeIcon, ActionIcon, TextInput, Select, Badge, Tooltip, SegmentedControl } from "@mantine/core";
+import { IconActivity, IconArrowLeft, IconPlus, IconEdit, IconSearch, IconShare, IconWorld, IconUsers, IconLock } from "@tabler/icons-react";
+import { useNavigate, useRevalidator } from "react-router";
 import { useMemo, useState } from "react";
 import { apiFetch } from "../lib/api";
 import TopNav from "../components/TopNav";
 import ThemeToggle from "../components/ThemeToggle";
+import ShareDialog from "../components/ShareDialog";
 
 export async function clientLoader() {
   const res = await apiFetch("/api/workflow-templates");
   if (!res.ok) throw new Error("Failed to load templates");
   return res.json();
+}
+
+// Which templates to show, by why the caller can see them (the API's `access`).
+const ACCESS_FILTERS = [
+  { value: "all", label: "All" },
+  { value: "mine", label: "Mine" },
+  { value: "shared", label: "Shared with me" },
+  { value: "public", label: "Public" },
+];
+
+// The card's visibility badge. For the owner it says who can see it; for
+// everyone else it says why THEY can.
+function AccessBadge({ t }: { t: any }) {
+  if (t.is_owner) {
+    if (t.is_public) return <Badge size="xs" color="teal" variant="light" leftSection={<IconWorld size={10} />}>Public</Badge>;
+    if (t.has_shares) return <Badge size="xs" color="indigo" variant="light" leftSection={<IconUsers size={10} />}>Shared</Badge>;
+    return <Badge size="xs" color="gray" variant="light" leftSection={<IconLock size={10} />}>Private</Badge>;
+  }
+  const by = t.owner_username ? ` by ${t.owner_username}` : "";
+  if (t.access === "shared") {
+    return (
+      <Tooltip label={`Shared with you${by}`}>
+        <Badge size="xs" color="indigo" variant="light" leftSection={<IconUsers size={10} />}>Shared with you</Badge>
+      </Tooltip>
+    );
+  }
+  return (
+    <Tooltip label={`Published${by}`}>
+      <Badge size="xs" color="teal" variant="light" leftSection={<IconWorld size={10} />}>Public</Badge>
+    </Tooltip>
+  );
 }
 
 const SORT_OPTIONS = [
@@ -22,7 +54,10 @@ const SORT_OPTIONS = [
 
 export default function Templates({ loaderData }: Route.ComponentProps) {
   const navigate = useNavigate();
+  const revalidator = useRevalidator();
   const templates = loaderData;
+  const [sharing, setSharing] = useState<any | null>(null);
+  const [access, setAccess] = useState("all");
 
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState<string | null>(null);
@@ -38,6 +73,9 @@ export default function Templates({ loaderData }: Route.ComponentProps) {
     const q = search.trim().toLowerCase();
     let result = templates.filter((t: any) => {
       if (category && t.category !== category) return false;
+      if (access === "mine" && !t.is_owner) return false;
+      if (access === "shared" && t.access !== "shared") return false;
+      if (access === "public" && !t.is_public) return false;
       if (!q) return true;
       return (t.name || "").toLowerCase().includes(q) || (t.description || "").toLowerCase().includes(q);
     });
@@ -51,7 +89,7 @@ export default function Templates({ loaderData }: Route.ComponentProps) {
       }
     });
     return result;
-  }, [templates, search, category, sortBy]);
+  }, [templates, search, category, sortBy, access]);
 
   return (
     <AppShell header={{ height: 60 }} padding="md">
@@ -102,6 +140,7 @@ export default function Templates({ loaderData }: Route.ComponentProps) {
                   clearable
                   w={180}
                 />
+                <SegmentedControl data={ACCESS_FILTERS} value={access} onChange={setAccess} />
                 <Select
                   data={SORT_OPTIONS}
                   value={sortBy}
@@ -117,24 +156,38 @@ export default function Templates({ loaderData }: Route.ComponentProps) {
                 <SimpleGrid cols={{ base: 1, sm: 2, md: 3 }} spacing="lg">
                   {visibleTemplates.map((t: any) => (
                 <Card key={t.template_id} shadow="sm" padding="lg" radius="md" withBorder>
-                  <Group justify="space-between" mb="xs">
-                    <Text fw={500}>{t.name}</Text>
-                    <Text size="xs" c="dimmed">v{t.version}</Text>
+                  <Group justify="space-between" mb="xs" wrap="nowrap">
+                    <Text fw={500} truncate>{t.name}</Text>
+                    <Group gap={6} wrap="nowrap">
+                      <AccessBadge t={t} />
+                      <Text size="xs" c="dimmed">v{t.version}</Text>
+                    </Group>
                   </Group>
+                  {!t.is_owner && t.owner_username && (
+                    <Text size="xs" c="dimmed" mb={4}>by {t.owner_username}</Text>
+                  )}
                   <Text size="sm" c="dimmed" lineClamp={2} mb="md">
                     {t.description || "No description provided."}
                   </Text>
-                  <Button 
-                    variant="light" 
-                    color="blue" 
-                    fullWidth 
-                    mt="md" 
-                    radius="md" 
-                    leftSection={<IconEdit size={16} />}
-                    onClick={() => navigate(`/templates/${t.template_version_id}/edit`)}
-                  >
-                    Edit Template
-                  </Button>
+                  <Group mt="md" gap="xs" wrap="nowrap">
+                    <Button
+                      variant="light"
+                      color="blue"
+                      radius="md"
+                      style={{ flex: 1 }}
+                      leftSection={<IconEdit size={16} />}
+                      onClick={() => navigate(`/templates/${t.template_version_id}/edit`)}
+                    >
+                      {t.is_owner ? "Edit Template" : "Open Template"}
+                    </Button>
+                    {t.is_owner && (
+                      <Tooltip label="Share">
+                        <ActionIcon variant="light" color="indigo" size="lg" radius="md" aria-label="Share" onClick={() => setSharing(t)}>
+                          <IconShare size={16} />
+                        </ActionIcon>
+                      </Tooltip>
+                    )}
+                  </Group>
                 </Card>
                   ))}
                 </SimpleGrid>
@@ -143,6 +196,16 @@ export default function Templates({ loaderData }: Route.ComponentProps) {
           )}
         </Container>
       </AppShell.Main>
+
+      {sharing && (
+        <ShareDialog
+          opened
+          onClose={() => setSharing(null)}
+          templateId={sharing.template_id}
+          templateName={sharing.name}
+          onSaved={() => revalidator.revalidate()}
+        />
+      )}
     </AppShell>
   );
 }

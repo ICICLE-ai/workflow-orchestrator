@@ -9,6 +9,7 @@ tool; everything after it is that tool's own arguments.
     python wf_utils.py merge_folders --inputs_root /job/input --output /job/output/merged
     python wf_utils.py zero_shot_to_yolo --annotations a.json --images imgs --output dataset
     python wf_utils.py split_dataset --input dataset --output split --val_split 0.2 --test_split 0.1
+    HF_TOKEN=hf_... python wf_utils.py hf_upload --model best.pt --repo_id my-model --result hf_upload.json
     python wf_utils.py --list
 
 Adding a tool: drop <name>.py next to this file with a main() that parses
@@ -26,6 +27,7 @@ TOOLS = {
     "merge_annotations": "Combine several annotation files (zero-shot / Smart Labeler) into one",
     "zero_shot_to_yolo": "Convert zero-shot (or Smart Labeler) annotations into a YOLO dataset",
     "split_dataset": "Split a dataset into train/valid/test in the layout YOLO training expects",
+    "hf_upload": "Push a trained model to a Hugging Face Hub repo and record its links",
 }
 
 

@@ -1,0 +1,147 @@
+{
+  "step_type_key": "hf_model_upload",
+  "resources": {
+    "gpu": false
+  },
+  "display_name": "Push to Hugging Face",
+  "description": "Pushes a trained model to a Hugging Face Hub model repo (created if it doesn't exist) and returns its links. Wire Model Training's model output (YOLO weights/best.pt, or a HuggingFace best_model folder) and, optionally, its metrics output for a model card. The links are in the result output's hf_upload.json: repo_url, and download_url pinned to this upload. Needs a team secret holding a Hugging Face token with WRITE access.",
+  "category": "Training",
+  "icon": "cloud-upload",
+  "tapis_app_id": "wf-utils",
+  "inputs": [
+    {
+      "name": "model",
+      "type": "pytorch_model",
+      "description": "The trained model: Model Training's model output."
+    },
+    {
+      "name": "metrics",
+      "type": "json_results",
+      "required": false,
+      "description": "Optional: Model Training's metrics output. Uploaded as metrics.json and summarized in the model card."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "result",
+      "type": "json_results",
+      "output_path": "hf_upload.json",
+      "description": "The repo's links: repo_url, download_url (pinned to this upload's commit), and one link per uploaded file."
+    }
+  ],
+  "config_schema": {
+    "repo_id": {
+      "type": "string",
+      "default": "",
+      "description": "Model repo to push to: 'user-or-org/name', or just 'name' to use the token's own account. Created if it doesn't exist."
+    },
+    "hf_token": {
+      "type": "secret",
+      "default": "",
+      "description": "Team secret holding a Hugging Face access token with WRITE access (huggingface.co/settings/tokens). Passed to the job as HF_TOKEN."
+    },
+    "private": {
+      "type": "boolean",
+      "default": false,
+      "description": "Create the repo as private. Only applies when the repo is created; an existing repo keeps its visibility. Links to a private repo need a token to open."
+    },
+    "skip_model_card": {
+      "type": "boolean",
+      "default": false,
+      "description": "Don't write a README.md model card (task, base model, metrics, usage). Turn on to keep a card you edited on the Hub."
+    },
+    "exec_queue": {
+      "type": "string",
+      "default": "cpu",
+      "description": "Scheduler queue. This is a CPU-only job, so it defaults to a CPU queue (overrides the run-level queue)."
+    }
+  },
+  "tapis_job": {
+    "name": "hf-model-upload",
+    "appId": "wf-utils",
+    "appVersion": "1.0.0",
+    "description": "Push a trained model to the Hugging Face Hub",
+    "execSystemId": "${exec_system}",
+    "execSystemLogicalQueue": "${exec_queue}",
+    "archiveSystemId": "${archive_system}",
+    "archiveSystemDir": "${archive_dir}",
+    "nodeCount": 1,
+    "coresPerNode": 1,
+    "memoryMB": 4000,
+    "maxMinutes": 60,
+    "fileInputs": [
+      {
+        "name": "model",
+        "autoMountLocal": true,
+        "sourceUrl": "${model}",
+        "targetPath": "input/model"
+      },
+      {
+        "name": "metrics",
+        "if": "metrics",
+        "autoMountLocal": true,
+        "sourceUrl": "${metrics}",
+        "targetPath": "input/metrics.json"
+      }
+    ],
+    "parameterSet": {
+      "appArgs": [
+        {
+          "name": "tool",
+          "arg": "hf_upload",
+          "description": "The shared wf-utils container runs several small tools; this picks which one (jobs/wf_utils/)."
+        },
+        {
+          "name": "model",
+          "arg": "--model /job/input/model --source_name ${model}",
+          "description": "--source_name restores the weights' own file name (best.pt): the staged copy is just input/model."
+        },
+        {
+          "name": "repo_id",
+          "arg": "--repo_id ${repo_id}"
+        },
+        {
+          "name": "metrics",
+          "arg": "--metrics /job/input/metrics.json",
+          "if": "metrics"
+        },
+        {
+          "name": "private",
+          "arg": "--private",
+          "if": "private"
+        },
+        {
+          "name": "no_card",
+          "arg": "--no_card",
+          "if": "skip_model_card"
+        },
+        {
+          "name": "result",
+          "arg": "--result /job/output/hf_upload.json"
+        }
+      ],
+      "envVariables": [
+        {
+          "key": "HF_TOKEN",
+          "value": "${hf_token}",
+          "if": "hf_token"
+        }
+      ],
+      "containerArgs": [
+        {
+          "name": "binding",
+          "arg": "--bind $PWD:/job"
+        }
+      ],
+      "schedulerOptions": [
+        {
+          "arg": "-A ${slurm_account}",
+          "name": "slurm account"
+        }
+      ],
+      "archiveFilter": {
+        "includeLaunchFiles": false
+      }
+    }
+  }
+}

@@ -7,6 +7,7 @@ apptainer run wf-utils.sif --list
 apptainer run wf-utils.sif merge_folders --inputs /data/a /data/b --output ./merged
 apptainer run wf-utils.sif zero_shot_to_yolo --annotations annotations.json --images ./images --output ./dataset
 apptainer run wf-utils.sif split_dataset --input ./dataset --output ./split --val_split 0.2 --test_split 0.1
+HF_TOKEN=hf_... apptainer run wf-utils.sif hf_upload --model ./weights/best.pt --repo_id my-model --result hf_upload.json
 ```
 
 | Tool | Step | What it does |
@@ -15,6 +16,7 @@ apptainer run wf-utils.sif split_dataset --input ./dataset --output ./split --va
 | `merge_annotations` | Merge Annotations (`backend/steps/merge_annotations`) | Combines several annotation files into one |
 | `zero_shot_to_yolo` | Annotations to YOLO Dataset (`backend/steps/zero_shot_to_yolo`) | Turns zero-shot (or Smart Labeler) annotations into a ready-to-train YOLO dataset |
 | `split_dataset` | Split Dataset (`backend/steps/split_dataset`) | Splits a dataset into train / valid / test in the layout YOLO training expects |
+| `hf_upload` | Push to Hugging Face (`backend/steps/hf_model_upload`) | Pushes a trained model to a Hugging Face Hub repo and records its links |
 
 `annotations_io.py` is shared code, not a tool: it reads and writes both annotation formats (zero-shot's flat output and the Smart Labeler's `annotations.json`).
 
@@ -108,3 +110,19 @@ Classification (one folder per class):
 - Split class by class, so each split keeps the class balance. The folder is `val`, not `valid`: that's the name Ultralytics looks for when classifying. No `data.yaml` is needed; Model Training takes the folder itself.
 
 `--type auto` (the default) picks detection when any label file exists. Files that would land on the same path (e.g. `a.jpg` from both the old train and valid folders) are renamed `a_1.jpg`, with their labels. `split_summary.json` records images per split, classes and labels per class.
+
+## hf_upload
+
+Pushes a trained model to a Hugging Face Hub model repo, creating it if it doesn't exist, in one commit:
+
+```
+weights/best.pt (YOLO)        ->  <repo>/best.pt
+best_model/ (HuggingFace)     ->  <repo>/<its files>
+metrics.json (optional)       ->  <repo>/metrics.json, plus a README.md model card
+```
+
+- The token is read from `HF_TOKEN` only, never an argument, and needs **write** access. In the workflow it comes from the team secret picked in the step's settings.
+- `--repo_id` is `user-or-org/name`, or just `name` for the token's own account. Characters the Hub doesn't allow become `-`.
+- `--private` applies only when the repo is created. `--no_card` leaves an existing README alone.
+- The links go to `--result` (`hf_upload.json`, the step's `result` output): `repo_url`, and `download_url` pinned to this upload's commit, so it keeps pointing at what this run uploaded after later pushes.
+- The job node needs outbound internet access to huggingface.co.

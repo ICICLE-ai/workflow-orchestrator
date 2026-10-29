@@ -74,6 +74,7 @@ Useful flags:
 | `--copy-inputs` | Copy staged inputs instead of symlinking them. |
 | `--skip-unsupported` | Continue past steps that can only run on the platform. |
 | `--runtime PATH` | Use a different container runtime binary (e.g. `singularity`). |
+| `--upload-max-file-mb N` / `--upload-max-mb N` | Caps on the output files packed into the upload zip (default 5 per file, 50 in total; or `WF_UPLOAD_MAX_FILE_MB` / `WF_UPLOAD_MAX_MB`). `0` total packs only the report and logs. |
 
 `--data-root`, `--workdir` and `--images-dir` also read from `WF_DATA_ROOT`,
 `WF_WORKDIR` and `WF_IMAGES_DIR`, and fall back to the defaults recorded in the
@@ -109,6 +110,12 @@ For each node, in dependency order:
 Nothing in that is step-specific — every detail comes from the step's own
 definition, carried in the bundle. Per-step output goes to `<jobdir>/runner.log`,
 and a summary of the whole run to `<workdir>/run-<run-id>-report.json`.
+
+Alongside the report, the runner writes `<workdir>/run-<run-id>-report.zip`,
+also when a run fails. It holds the report, each step's log tail and its small
+output files. Upload it on the platform from **Runs → Import local run** to see
+the run on its canvas, with logs and results panels. See
+[docs/local-deployment.md](../docs/local-deployment.md#viewing-the-run-on-the-platform).
 
 ## Limitations
 

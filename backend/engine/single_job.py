@@ -15,7 +15,7 @@ sequentially inside one allocation.
 HOW ONE TAPIS JOB CAN RUN MANY STEPS
 ------------------------------------
 A Tapis job runs exactly one app, and every step here has its own
-(`yolo-inference`, `workflow-orchestrator-trainer-v2`, ...), so the pipeline
+(`yolo-inference`, `trainer`, ...), so the pipeline
 cannot be expressed as one job of those apps. What it CAN be is one job of an
 app that executes step containers itself — which is precisely what
 `runner/wf_runner` already does for the bundles engine/local_bundle.py exports

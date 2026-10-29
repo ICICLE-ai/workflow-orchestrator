@@ -671,6 +671,12 @@ def _run_sh(runner_image: str, secrets: list[str], images: str | None = None,
 # are passed straight to the runner; see README.md.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+if [ ! -d "$HERE/wf_runner" ]; then
+  echo "run.sh: $HERE/wf_runner is missing; this zip was exported without the runner." >&2
+  echo "        Copy runner/wf_runner/ from the Workflow Orchestrator repo next to run.sh," >&2
+  echo "        or use run-docker.sh / the Apptainer runner image (see README.md)." >&2
+  exit 1
+fi
 {images_sh}PYTHONPATH="$HERE${{PYTHONPATH:+:$PYTHONPATH}}" \\
   exec python3 -m wf_runner "$HERE/bundle.json" --images-dir "$IMAGES_DIR" "$@"
 """

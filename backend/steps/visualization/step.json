@@ -2,39 +2,15 @@
   "step_type_key": "visualization",
   "resources": { "gpu": false },
   "display_name": "Visualization",
-  "description": "Generates visualization artifacts from results / processed data.",
+  "description": "Shows a training run's metrics.json: the scores (mAP, accuracy, loss, ...) and the run's settings. Wire it to a Training node's 'metrics' output, or to a 📄 JSON File source pointing at any metrics.json (or a folder holding one). Design-time only — submits no Tapis job.",
   "category": "Visualization",
   "icon": "eye",
-  "tapis_app_id": "harvest-visualization",
   "inputs": [
-    { "name": "results", "type": "json_results" }
+    { "name": "results", "type": "json_results", "description": "A metrics.json file, or a folder containing one." }
   ],
-  "outputs": [
-    { "name": "visualization", "type": "json_results" }
-  ],
+  "outputs": [],
   "config_schema": {},
-  "tapis_job": {
-    "name": "harvest-visualization",
-    "appId": "harvest-visualization",
-    "appVersion": "0.2.9",
-    "description": "Generate visualization artifacts",
-    "execSystemId": "${exec_system}",
-    "execSystemLogicalQueue": "${exec_queue}",
-    "archiveSystemId": "${archive_system}",
-    "archiveSystemDir": "${archive_dir}",
-    "nodeCount": 1,
-    "coresPerNode": 32,
-    "memoryMB": 100000,
-    "maxMinutes": 300,
-    "fileInputs": [
-      { "name": "results", "envKey": "results", "autoMountLocal": true, "sourceUrl": "${results}", "targetPath": "inputdir" }
-    ],
-    "parameterSet": {
-      "schedulerOptions": [
-        { "arg": "-A ${slurm_account}", "name": "slurm account" },
-        { "arg": "--job-name=visualization", "name": "job_name" }
-      ],
-      "archiveFilter": { "includeLaunchFiles": false }
-    }
-  }
+  "tapis_app_id": null,
+  "tapis_job": null,
+  "submits_job": false
 }

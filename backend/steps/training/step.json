@@ -6,13 +6,19 @@
   "display_name": "Model Training",
   "description": "Trains a YOLO (detect, segment, classify) or HuggingFace (classify, detect) model and writes a standard metrics.json.",
   "category": "Training",
-  "tapis_app_id": "workflow-orchestrator-trainer-v2",
+  "tapis_app_id": "trainer",
   "inputs": [
     {
       "name": "dataset",
       "type": "image_dir",
       "required": false,
       "description": "The training dataset folder on a Tapis file system. It is copied into the job and passed to the trainer as --data (plus `data_file` when set). Leave unwired only for a HuggingFace detection run that uses `hub_dataset`."
+    },
+    {
+      "name": "base_model",
+      "type": "pytorch_model",
+      "required": false,
+      "description": "Optional: an existing checkpoint to start from instead of `model` — a 🧠 Pretrained Model source (a .pt on the HPC, e.g. an earlier run's weights/best.pt, or a HuggingFace model folder), or another Training node's model output. It is copied into the job and passed as --model; the `model` setting is ignored while this is wired."
     }
   ],
   "outputs": [
@@ -156,8 +162,8 @@
   },
   "tapis_job": {
     "name": "workflow-orchestrator-training",
-    "appId": "workflow-orchestrator-trainer-v2",
-    "appVersion": "1.0",
+    "appId": "trainer",
+    "appVersion": "1.0.0",
     "description": "Workflow Orchestrator model training",
     "execSystemId": "${exec_system}",
     "execSystemLogicalQueue": "${exec_queue}",
@@ -172,7 +178,7 @@
         "name": "container SIF",
         "envKey": "sifpath",
         "autoMountLocal": true,
-        "sourceUrl": "https://icicleai.tapis.io/v3/files/postits/redeem/48caa51f-8cbb-49e7-a7c7-349d9ce6f4ab-010",
+        "sourceUrl": "https://icicleai.tapis.io/v3/files/postits/redeem/f7d02c8b-4a6a-40af-b1a2-b21235b24432-010",
         "targetPath": "trainer.sif"
       },
       {
@@ -182,12 +188,21 @@
         "sourceUrl": "${dataset}",
         "targetPath": "dataset",
         "description": "The whole dataset folder, copied into the job dir. Dropped when the port is unwired (Hub dataset runs)."
+      },
+      {
+        "name": "base model",
+        "if": "base_model",
+        "autoMountLocal": true,
+        "sourceUrl": "${base_model}",
+        "targetPath": "base_model.pt",
+        "description": "The checkpoint to start from, when base_model is wired. Named .pt because Ultralytics picks a loader by file extension; a HuggingFace model folder loads fine under the same name."
       }
     ],
     "parameterSet": {
       "appArgs": [
         { "name": "framework", "arg": "--framework ${framework}" },
-        { "name": "model", "arg": "--model ${model}" },
+        { "name": "model", "arg": "--model ${model}", "if": "base_model=" },
+        { "name": "base model", "arg": "--model /job/base_model.pt", "if": "base_model" },
         { "name": "task", "arg": "--task ${task}" },
         { "name": "data", "arg": "--data /job/dataset/${data_file}", "if": "dataset" },
         { "name": "hub data", "arg": "--data ${hub_dataset}", "if": "hub_dataset" },

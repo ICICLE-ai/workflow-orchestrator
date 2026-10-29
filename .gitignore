@@ -16,3 +16,5 @@ backend/Harvest Workflow Orchestrator - Schema Redesign.pdf
 *__pycache__/
 
 *.sif
+# Files of runs imported from self-hosted nodes (WF_LOCAL_RUNS_DIR default)
+backend/data/

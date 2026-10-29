@@ -388,10 +388,47 @@ Both lists have a search box, a filter and a sort order:
 
 | List | Search by | Filter by | Sort by |
 | --- | --- | --- | --- |
-| **Templates** | name or description | category | name (A–Z, Z–A), newest or oldest |
+| **Templates** | name or description | category; All / Mine / Shared with me / Public | name (A–Z, Z–A), newest or oldest |
 | **Past Runs** | workflow name or run number | status | newest or oldest, name (A–Z, Z–A) |
 
 ![Templates search, filter and sort](./docs/images/templates_search_filter.png)
+
+## Share a workflow
+
+A new workflow is **private**: only you can see it. To share it, click
+**Share** in the canvas header (or the share icon on its card in the Templates
+list) and choose:
+
+| Option | Who can see it |
+| --- | --- |
+| **Private** | Only you. |
+| **Specific people** | The users and groups you pick. You can share with any group you belong to. |
+| **Public** | Every signed-in user. |
+
+Sharing covers every version of the workflow, including versions you save
+later. People you share with can **open, run and copy** it, but only you can
+save new versions; they get **Save as my copy** instead. Their runs are their
+own: you never see each other's runs. A copy starts private, whatever the
+original was.
+
+People appear in the picker once they have signed in to the Studio at least
+once. Each card in the Templates list shows a badge: **Private**, **Shared** or
+**Public** on your own workflows, and **Shared with you** or **Public** on
+other people's.
+
+## Create a user group
+
+Groups let you share with a whole team at once. Click **Groups** in the top
+navigation, then **New Group**. You become the group's first admin.
+
+- **Admins** can rename or delete the group, add and remove members, and make
+  other members admins.
+- **Members** can see who's in the group, share their own workflows with it,
+  and leave it.
+
+A group always keeps at least one admin, so the last admin has to promote
+someone else before leaving. Deleting a group, or leaving it, removes access to
+workflows that were shared only through that group.
 
 ## Switch between light and dark mode
 
