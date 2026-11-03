@@ -9,6 +9,9 @@ From: python:3.12-bookworm
     export PATH="/usr/local/bin:/app:$PATH"
     export LC_ALL=C.UTF-8
     export LANG=C.UTF-8
+    # Source checkouts the insid3 backend imports from (neither is on PyPI).
+    export INSID3_HOME=/opt/insid3
+    export DINOV3_HOME=/opt/dinov3
 
 %post
     echo "Setting up environment for zero_shot_annotation.py"
@@ -36,6 +39,18 @@ From: python:3.12-bookworm
     pip install --no-cache-dir -r requirements.txt
     echo "Python dependencies installed."
 
+    # INSID3 backend: the model code and the DINOv3 backbone definition.
+    # Pinned because the backend calls INSID3's private pipeline steps
+    # (see Insid3Backend). The DINOv3 WEIGHTS are not baked in — they sit
+    # behind Meta's license form, so each job is handed a checkpoint path.
+    # INSID3's optional CRF refiner is left out: it needs nvcc to build.
+    git clone https://github.com/visinf/INSID3 /opt/insid3
+    git -C /opt/insid3 checkout 0c165a10cf52ab91f335883d06260de86854adbe
+    git clone https://github.com/facebookresearch/dinov3 /opt/dinov3
+    git -C /opt/dinov3 checkout 6876159a11b4df116f30f667f8c9888617df0751
+    rm -rf /opt/insid3/.git /opt/dinov3/.git
+    chmod -R a+rX /opt/insid3 /opt/dinov3
+
     chmod 755 /app/zero_shot_annotation.py
     chmod 644 /app/requirements.txt
     echo "Setup complete."
@@ -48,4 +63,4 @@ From: python:3.12-bookworm
     Maintainer "Brijesh Nanda <brundayogananda.1@osu.edu>"
     Version "1.0"
     Appname "Zero-Shot Annotator"
-    Description "Batch zero-shot annotation with SAM3 (pluggable backend), text and exemplar prompts, optional SAHI tiling"
+    Description "Batch zero-shot annotation with SAM3 (pluggable backend), text and exemplar prompts, INSID3 in-context segmentation from reference exemplars, optional SAHI tiling"

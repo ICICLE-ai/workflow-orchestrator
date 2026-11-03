@@ -16,6 +16,11 @@ exemplar  – per-image visual exemplar boxes (SAM3 "geometry prompts").  Positi
             exemplars say "find more things like this", negative exemplars say
             "not like this".  Supplied through `--prompt_file`, because the boxes
             are image-specific pixel coordinates.
+reference – in-context segmentation (`--model insid3`).  The same prompt-file
+            exemplars are read as REFERENCES instead: each annotated object
+            (polygon, or box turned into a mask by SAM3) teaches the model what
+            a class looks like, and every image in the directory is segmented
+            for it — not only the image the exemplar was drawn on.
 
 Both prompt types may be used in the same run; every detection records which
 prompt produced it.
@@ -46,6 +51,28 @@ Prompt file schema (`--prompt_file`)
     defaults to all-positive.
   - "text" is the concept name SAM3 pairs with the exemplar (default "visual").
   - "label" is the class name written to the output annotations.
+  - "polygons" (optional) gives each box's object outline as [[x, y], ...],
+    aligned with "boxes" — `null` where a box has no outline.  SAM3 ignores it;
+    INSID3 uses it as the reference mask.  An entry may give "polygons" alone,
+    in which case its boxes are the polygons' bounding boxes.
+
+In-context segmentation (`--model insid3`)
+------------------------------------------
+INSID3 (training-free in-context segmentation on a frozen DINOv3) takes a
+reference image + object mask and segments the same concept in a target image.
+Exemplar entries become references, grouped by label:
+  - Outlines come from "polygons"; a box with no outline is turned into a mask
+    by the SAM3 tracker (`--reference_box_masks sam3`, the default) or used as
+    a filled rectangle (`box`).
+  - Negative boxes and the "default" key are ignored — a reference must be a
+    real object in a real image.
+  - Reference images must live under `--image_dir`; they are segmented too, so
+    instances left unlabelled there are still found.
+INSID3 returns one mask per class, which is split into connected components —
+one annotation each.  Touching objects therefore come out as one annotation.
+Each component's score is its mean similarity to the reference prototype.
+`--confidence` and `--mask_threshold` do not apply; INSID3 makes its own
+foreground decision.
 
 SAHI (tiled inference)
 ----------------------
@@ -83,6 +110,11 @@ Usage
     # exemplar prompts (and any text prompts) from a prompt file
     python zero_shot_annotation.py --image_dir ./images --output_dir ./out \
         --prompt_file prompts.json
+
+    # in-context segmentation: exemplars on a few images, segments on the rest
+    python zero_shot_annotation.py --image_dir ./images --output_dir ./out \
+        --prompt_file prompts.json --model insid3 \
+        --insid3_weights pretrain/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth
 """
 
 from __future__ import annotations
@@ -91,6 +123,8 @@ import argparse
 import json
 import logging
 import math
+import os
+import sys
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -99,6 +133,7 @@ from typing import Iterator, Optional
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from PIL import Image
 from torchvision.ops import batched_nms
 from tqdm import tqdm
@@ -125,6 +160,13 @@ DEFAULT_EXEMPLAR_TEXT = "visual"
 # through thousands of tiles to write an empty annotation file helps nobody.
 MAX_CONSECUTIVE_BATCH_FAILURES = 3
 
+# Checkpoint whose tracker head turns box-only references into masks for INSID3.
+SAM3_BOX_MODEL_ID = "facebook/sam3"
+
+# Reference shots per class INSID3 is given.  Every shot adds a full
+# (patches x patches) similarity map per target, so memory grows linearly.
+MAX_REFERENCE_SHOTS = 16
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Data structures
@@ -135,12 +177,22 @@ class Prompt:
     """One prompt applied to one image (or one tile of it)."""
     label: str                                              # class written to output
     text: str                                               # concept given to the model
-    kind: str = "text"                                      # "text" | "exemplar"
+    kind: str = "text"                                      # "text" | "exemplar" | "reference"
     boxes: list[list[float]] = field(default_factory=list)  # xyxy, image coords
     box_labels: list[int] = field(default_factory=list)     # 1 positive, 0 negative
+    # Outline per box ([[x, y], ...]) or None; only read for INSID3 references.
+    polygons: list[Optional[list[list[float]]]] = field(default_factory=list)
 
     def has_exemplars(self) -> bool:
         return self.kind == "exemplar" and len(self.boxes) > 0
+
+
+@dataclass
+class ReferenceShot:
+    """One reference image (or crop of it) and the object mask for one class."""
+    label: str
+    image: Image.Image
+    mask: np.ndarray                     # (H, W) bool, same size as image
 
 
 @dataclass
@@ -362,6 +414,10 @@ class ZeroShotBackend(ABC):
     default_model_id: str = ""
     supports_text: bool = True
     supports_exemplars: bool = False
+    # Reference backends read prompt-file exemplars as cross-image references,
+    # are handed them once through prepare_references(), then receive
+    # kind="reference" prompts naming only the label to segment.
+    supports_references: bool = False
 
     def __init__(self, model_id: Optional[str] = None, device: str = DEVICE):
         self.model_id = model_id or self.default_model_id
@@ -370,6 +426,10 @@ class ZeroShotBackend(ABC):
     @abstractmethod
     def load(self) -> None:
         """Load weights onto ``self.device``. Called once before inference."""
+
+    def prepare_references(self, shots_by_label: dict[str, list[ReferenceShot]]) -> None:
+        """Encode reference shots once, before any reference prompt is run."""
+        raise NotImplementedError(f"Backend '{self.name}' does not support references")
 
     @abstractmethod
     def predict(
@@ -477,6 +537,434 @@ class Sam3Backend(ZeroShotBackend):
         return batch_detections
 
 
+@register_backend("insid3")
+class Insid3Backend(ZeroShotBackend):
+    """
+    INSID3 in-context segmentation — reference image + mask in, the same
+    concept segmented in each target out.  github.com/visinf/INSID3
+
+    Drives INSID3's own pipeline step by step rather than through ``segment()``,
+    which re-encodes every reference for every target and returns a bare
+    boolean mask: here references are encoded once per class, targets are
+    encoded a batch at a time, and the cross-image similarity map is kept to
+    score each output instance.  Those steps are private INSID3 methods, which
+    is why the container pins the INSID3 commit.
+
+    ``model_id`` names the DINOv3 backbone; ``weights`` must be that
+    backbone's checkpoint.
+    """
+
+    default_model_id = "dinov3_vitl16"
+    supports_text = False
+    supports_exemplars = False
+    supports_references = True
+
+    BACKBONES = ("dinov3_vits16", "dinov3_vitb16", "dinov3_vitl16")
+
+    def __init__(
+        self,
+        model_id: Optional[str] = None,
+        device: str = DEVICE,
+        weights: Optional[str] = None,
+        image_size: int = 1024,
+        min_area: float = 0.0,
+    ):
+        super().__init__(model_id=model_id, device=device)
+        if self.model_id not in self.BACKBONES:
+            raise ValueError(
+                f"INSID3 backbone must be one of {', '.join(self.BACKBONES)}, got '{self.model_id}'"
+            )
+        self.weights = weights or os.environ.get("DINOV3_WEIGHTS", "")
+        self.image_size = image_size
+        self.min_area = min_area
+        self.model = None
+        self._references: dict[str, dict] = {}
+
+    def load(self) -> None:
+        if cv2 is None:
+            raise RuntimeError("INSID3 needs opencv-python to split masks into instances")
+        if not self.weights or not Path(self.weights).is_file():
+            raise RuntimeError(
+                f"DINOv3 weights not found at '{self.weights}'. Pass --insid3_weights with the "
+                f"{self.model_id} .pth checkpoint from github.com/facebookresearch/dinov3."
+            )
+
+        # Neither repo is pip-installable; the container clones both (see .def).
+        for env_var, default in (("INSID3_HOME", "/opt/insid3"), ("DINOV3_HOME", "/opt/dinov3")):
+            home = os.environ.get(env_var, default)
+            if home not in sys.path:
+                sys.path.insert(0, home)
+
+        from dinov3.hub import backbones
+        from models.insid3 import INSID3
+
+        logger.info(f"Loading INSID3 on {self.model_id} ({self.weights}) on {self.device}...")
+        # Load the checkpoint ourselves: handed a path, the hub builder copies it
+        # into $TORCH_HOME on every run.
+        encoder = getattr(backbones, self.model_id)(pretrained=False)
+        encoder.load_state_dict(
+            torch.load(self.weights, map_location="cpu", weights_only=True), strict=True
+        )
+        self.model = INSID3(
+            encoder=encoder,
+            image_size=self.image_size,
+            mask_refiner="bilinear",
+            # Masks come back at image_size x image_size; instances are split
+            # there and scaled to each tile, rather than upsampling every mask
+            # to full resolution first.
+            resize_to_orig_size=False,
+            device=self.device,
+        ).to(self.device).eval()
+        for param in self.model.parameters():
+            param.requires_grad = False
+        logger.info("Model loaded")
+
+    @torch.no_grad()
+    def _encode(self, pixels: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """(N, C, H, W) normalised images -> L2-normalised and debiased (N, C, h, w) features."""
+        fmaps = F.normalize(self.model._extract_features(pixels.unsqueeze(0)), p=2, dim=2)
+        return fmaps[0], self.model._debias_features(fmaps)[0]
+
+    def _to_pixels(self, images: list[Image.Image]) -> torch.Tensor:
+        return torch.stack([self.model._transform(img) for img in images]).to(self.device)
+
+    @torch.no_grad()
+    def prepare_references(self, shots_by_label: dict[str, list[ReferenceShot]]) -> None:
+        from utils.data import downsample_mask, load_mask
+
+        for label, shots in shots_by_label.items():
+            pixels = self._to_pixels([shot.image for shot in shots])
+            masks = torch.cat([
+                load_mask(torch.from_numpy(shot.mask), self.image_size, self.device)
+                for shot in shots
+            ]).unsqueeze(1)                                       # (S, 1, H, W)
+
+            feats_deb = torch.cat([
+                self._encode(pixels[i: i + 1])[1] for i in range(len(shots))
+            ]).unsqueeze(0)                                       # (1, S, C, h, w)
+            h, w = feats_deb.shape[-2:]
+
+            # Same prototype INSID3 builds: mean foreground feature per shot,
+            # averaged across shots.
+            prototypes = []
+            for s in range(len(shots)):
+                fg = feats_deb[0, s, :, downsample_mask(masks[s: s + 1], h, w)]
+                if fg.shape[1] > 0:
+                    prototypes.append(fg.mean(dim=1))
+            prototype = F.normalize(torch.stack(prototypes).mean(dim=0), p=2, dim=0).unsqueeze(1)
+
+            self._references[label] = {
+                "feats_deb": feats_deb,
+                "masks": masks,
+                "prototype": prototype,
+            }
+            logger.info(f"Encoded {len(shots)} reference shot(s) for '{label}'")
+
+    @torch.no_grad()
+    def _segment(
+        self,
+        feat_tgt: torch.Tensor,
+        feat_tgt_deb: torch.Tensor,
+        tgt_pixels: torch.Tensor,
+        ref: dict,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """INSID3.predict_mask from feature extraction on, with cached references.
+
+        Returns ``(mask, similarity)``: an (image_size, image_size) bool mask and
+        the (h, w) similarity of each target patch to the reference prototype.
+        """
+        from utils.clustering import agglomerative_clustering, compute_cluster_prototypes
+
+        _, C, h, w = feat_tgt.shape
+        feats_ref_deb, prototype = ref["feats_deb"], ref["prototype"]
+
+        sim_maps = [
+            torch.einsum("bchw,bcxy->bhwxy", feats_ref_deb[:, m], feat_tgt_deb)
+            for m in range(feats_ref_deb.shape[1])
+        ]
+        candidate = self.model._locate_candidates(
+            sim_maps, ref["masks"], feat_tgt_deb, prototype, h, w
+        )
+        similarity = torch.einsum("bchw,cd->bhw", feat_tgt_deb, prototype).squeeze(0)
+
+        if candidate.sum() == 0:
+            mask = candidate
+        else:
+            cluster_labels = agglomerative_clustering(
+                feat_tgt[0].reshape(C, -1).permute(1, 0), self.model.tau
+            ).reshape(h, w)
+            K = int(cluster_labels.max().item()) + 1
+            cluster_protos = compute_cluster_prototypes(
+                feat_tgt_deb[0].reshape(C, -1).permute(1, 0), cluster_labels.view(-1), K
+            )
+            mask = self.model._seed_and_aggregate(
+                candidate, cluster_labels, cluster_protos, K,
+                prototype, feat_tgt, feat_tgt_deb, h, w,
+            )
+
+        return self.model._finalize_mask(mask, tgt_pixels), similarity
+
+    def _mask_to_detections(
+        self,
+        mask: torch.Tensor,
+        similarity: torch.Tensor,
+        tile_size: tuple[int, int],
+        prompt: Prompt,
+        want_segmentation: bool,
+    ) -> list[Detection]:
+        """Split a class mask into one detection per connected component."""
+        mask_np = mask.cpu().numpy().astype(np.uint8)
+        if not mask_np.any():
+            return []
+
+        n, labels, stats, _ = cv2.connectedComponentsWithStats(mask_np, connectivity=8)
+        sim_np = F.interpolate(
+            similarity[None, None].float(), size=mask_np.shape, mode="bilinear", align_corners=False
+        )[0, 0].cpu().numpy()
+        counts = np.maximum(stats[:, cv2.CC_STAT_AREA], 1)
+        mean_sim = np.bincount(labels.ravel(), weights=sim_np.ravel(), minlength=n) / counts
+
+        width, height = tile_size
+        sx, sy = width / mask_np.shape[1], height / mask_np.shape[0]
+
+        detections: list[Detection] = []
+        for k in range(1, n):                        # 0 is background
+            x, y, w, h, area = stats[k]
+            if area * sx * sy < self.min_area:
+                continue
+
+            seg_points: list[list[int]] = []
+            if want_segmentation:
+                seg_points = [
+                    [int(round(px * sx)), int(round(py * sy))]
+                    for px, py in mask_to_boundary_points(labels == k)
+                ]
+
+            detections.append(Detection(
+                x_min=int(x * sx), y_min=int(y * sy),
+                x_max=int(math.ceil((x + w) * sx)), y_max=int(math.ceil((y + h) * sy)),
+                score=float(np.clip(mean_sim[k], 0.0, 1.0)),
+                label=prompt.label,
+                prompt_type=prompt.kind,
+                segmentation=seg_points,
+            ))
+        return detections
+
+    @torch.no_grad()
+    def predict(
+        self,
+        images: list[Image.Image],
+        prompts: list[Prompt],
+        threshold: float,
+        mask_threshold: float,
+        want_segmentation: bool,
+    ) -> list[list[Detection]]:
+        # threshold / mask_threshold don't apply: INSID3 makes its own
+        # foreground decision, and scores only rank instances for NMS.
+        pixels = self._to_pixels(images)
+        feats, feats_deb = self._encode(pixels)
+
+        batch_detections: list[list[Detection]] = []
+        for i, (image, prompt) in enumerate(zip(images, prompts)):
+            mask, similarity = self._segment(
+                feats[i: i + 1], feats_deb[i: i + 1], pixels[i: i + 1],
+                self._references[prompt.label],
+            )
+            batch_detections.append(
+                self._mask_to_detections(mask, similarity, image.size, prompt, want_segmentation)
+            )
+
+        del pixels, feats, feats_deb
+        if self.device == "cuda":
+            torch.cuda.empty_cache()
+
+        return batch_detections
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Reference preparation  (INSID3)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def polygon_to_mask(polygon: list[list[float]], width: int, height: int) -> np.ndarray:
+    mask = np.zeros((height, width), dtype=np.uint8)
+    points = np.round(np.asarray(polygon, dtype=np.float64)).astype(np.int32)
+    if len(points) >= 3:
+        cv2.fillPoly(mask, [points], 1)
+    return mask.astype(bool)
+
+
+def box_to_mask(box: list[float], width: int, height: int) -> np.ndarray:
+    mask = np.zeros((height, width), dtype=bool)
+    x1, y1, x2, y2 = (int(round(v)) for v in box)
+    mask[max(0, y1): min(height, y2), max(0, x1): min(width, x2)] = True
+    return mask
+
+
+class Sam3BoxSegmenter:
+    """Box -> object mask with the SAM3 tracker head (SAM-style box prompt).
+
+    Unlike Sam3Model's exemplar prompts, which find every instance LIKE the
+    box, this segments the one object INSIDE it — what a reference mask needs.
+    """
+
+    def __init__(self, device: str):
+        from transformers import Sam3TrackerModel, Sam3TrackerProcessor
+
+        logger.info(f"Loading {SAM3_BOX_MODEL_ID} tracker to turn reference boxes into masks...")
+        self.device = device
+        self.processor = Sam3TrackerProcessor.from_pretrained(SAM3_BOX_MODEL_ID)
+        self.model = Sam3TrackerModel.from_pretrained(SAM3_BOX_MODEL_ID).to(device).eval()
+
+    @torch.no_grad()
+    def masks(self, image: Image.Image, boxes: list[list[float]]) -> list[np.ndarray]:
+        inputs = self.processor(images=image, input_boxes=[boxes], return_tensors="pt").to(self.device)
+        outputs = self.model(**inputs, multimask_output=False)
+        masks = self.processor.post_process_masks(
+            outputs.pred_masks.cpu(), inputs["original_sizes"].cpu()
+        )[0]                                         # (num_boxes, 1, H, W)
+
+        width, height = image.size
+        result = []
+        for box, mask in zip(boxes, masks):
+            # Keep the mask inside its box so a leaky prediction can't pull
+            # background into the reference prototype.
+            result.append(mask[0].numpy().astype(bool) & box_to_mask(box, width, height))
+        return result
+
+    def close(self) -> None:
+        del self.model, self.processor
+        if self.device == "cuda":
+            torch.cuda.empty_cache()
+
+
+def find_image(key: str, discovered: list[tuple[Path, str]]) -> Optional[Path]:
+    """Resolve a prompt-file image key the way resolve_exemplars does."""
+    for path, rel_key in discovered:
+        if rel_key == key:
+            return path
+    basename = Path(key).name
+    for path, rel_key in discovered:
+        if Path(rel_key).name == basename:
+            return path
+    return None
+
+
+def crop_window(
+    box: list[float], width: int, height: int, size: int
+) -> tuple[int, int, int, int]:
+    """A ``size`` x ``size`` window centred on ``box``, shifted to stay inside the image."""
+    size_w, size_h = min(size, width), min(size, height)
+    cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+    x1 = int(min(max(0, cx - size_w / 2), width - size_w))
+    y1 = int(min(max(0, cy - size_h / 2), height - size_h))
+    return x1, y1, x1 + size_w, y1 + size_h
+
+
+def build_reference_shots(
+    exemplars: dict[str, list[Prompt]],
+    discovered: list[tuple[Path, str]],
+    box_masks: str,
+    device: str,
+    is_sahi: bool,
+    tile_size: int,
+) -> dict[str, list[ReferenceShot]]:
+    """
+    Turn prompt-file exemplars into INSID3 reference shots, grouped by label.
+
+    Without SAHI there is one shot per (image, label): the whole image and the
+    union of that label's object masks.  With SAHI, targets are tiles, so each
+    object becomes its own tile-sized crop — a reference at the scale the
+    model will see objects at — with every same-label object in the crop
+    marked foreground.
+    """
+    if "default" in exemplars:
+        logger.warning("Ignoring the 'default' exemplar entry — references must be drawn on a real image")
+
+    segmenter: Optional[Sam3BoxSegmenter] = None
+    shots: dict[str, list[ReferenceShot]] = {}
+    ignored_negatives = 0
+
+    try:
+        for key, prompts in exemplars.items():
+            if key == "default":
+                continue
+            path = find_image(key, discovered)
+            if path is None:
+                logger.warning(f"Reference image '{key}' is not under --image_dir — skipping it")
+                continue
+
+            image = Image.open(path).convert("RGB")
+            width, height = image.size
+
+            # Per label: (box, outline-or-None) for each positive object.
+            objects: dict[str, list[tuple[list[float], Optional[list[list[float]]]]]] = {}
+            for prompt in prompts:
+                polygons = prompt.polygons or [None] * len(prompt.boxes)
+                for box, box_label, polygon in zip(prompt.boxes, prompt.box_labels, polygons):
+                    if box_label != 1:
+                        ignored_negatives += 1
+                        continue
+                    objects.setdefault(prompt.label, []).append((box, polygon))
+
+            box_only = [box for objs in objects.values() for box, polygon in objs if polygon is None]
+            refined: list[np.ndarray] = []
+            if box_only and box_masks == "sam3":
+                if segmenter is None:
+                    try:
+                        segmenter = Sam3BoxSegmenter(device)
+                    except Exception as exc:
+                        logger.warning(
+                            f"Could not load the SAM3 tracker ({exc}) — using box-shaped "
+                            f"reference masks instead"
+                        )
+                        box_masks = "box"
+                if segmenter is not None:
+                    refined = segmenter.masks(image, box_only)
+
+            for label, objs in objects.items():
+                masks = []
+                for box, polygon in objs:
+                    if polygon is not None:
+                        masks.append(polygon_to_mask(polygon, width, height))
+                    elif refined:
+                        masks.append(refined.pop(0))
+                    else:
+                        masks.append(box_to_mask(box, width, height))
+                masks = [m for m in masks if m.any()]
+                if not masks:
+                    logger.warning(f"Reference '{key}' / '{label}': every mask was empty — skipping")
+                    continue
+
+                union = np.logical_or.reduce(masks)
+                if not is_sahi:
+                    shots.setdefault(label, []).append(ReferenceShot(label, image, union))
+                    continue
+
+                for box, _ in objs:
+                    window = crop_window(box, width, height, tile_size)
+                    x1, y1, x2, y2 = window
+                    crop_mask = union[y1:y2, x1:x2]
+                    if crop_mask.any():
+                        shots.setdefault(label, []).append(
+                            ReferenceShot(label, image.crop(window), crop_mask.copy())
+                        )
+    finally:
+        if segmenter is not None:
+            segmenter.close()
+
+    if ignored_negatives:
+        logger.info(f"Ignored {ignored_negatives} negative exemplar box(es) — INSID3 uses positives only")
+
+    for label, label_shots in shots.items():
+        if len(label_shots) > MAX_REFERENCE_SHOTS:
+            idx = np.round(np.linspace(0, len(label_shots) - 1, MAX_REFERENCE_SHOTS)).astype(int)
+            shots[label] = [label_shots[i] for i in idx]
+            logger.info(
+                f"'{label}': using {MAX_REFERENCE_SHOTS} of {len(label_shots)} reference shots"
+            )
+    return shots
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Prompt loading
 # ──────────────────────────────────────────────────────────────────────────────
@@ -512,10 +1000,26 @@ def load_prompt_file(path: Path) -> tuple[list[str], dict[str, list[Prompt]]]:
         prompts: list[Prompt] = []
         for entry in entries:
             boxes = [[float(v) for v in box] for box in entry.get("boxes", [])]
+            polygons = [
+                [[float(x), float(y)] for x, y in polygon] if polygon else None
+                for polygon in entry.get("polygons") or []
+            ]
+            if not boxes and polygons:
+                # Outlines alone: each polygon is an object, boxed by its extent.
+                polygons = [p for p in polygons if p]
+                boxes = [
+                    [min(x for x, _ in p), min(y for _, y in p), max(x for x, _ in p), max(y for _, y in p)]
+                    for p in polygons
+                ]
             if not boxes:
                 continue
             if any(len(box) != 4 for box in boxes):
                 raise ValueError(f"Exemplar boxes for '{image_key}' must be [x1, y1, x2, y2]")
+            if polygons and len(polygons) != len(boxes):
+                raise ValueError(
+                    f"Exemplar '{image_key}': {len(boxes)} boxes but {len(polygons)} polygons "
+                    f"(use null for a box with no outline)"
+                )
 
             box_labels = [int(v) for v in entry.get("box_labels", [])] or [1] * len(boxes)
             if len(box_labels) != len(boxes):
@@ -530,6 +1034,7 @@ def load_prompt_file(path: Path) -> tuple[list[str], dict[str, list[Prompt]]]:
                 kind="exemplar",
                 boxes=boxes,
                 box_labels=box_labels,
+                polygons=polygons,
             ))
         if prompts:
             exemplars[image_key] = prompts
@@ -563,6 +1068,7 @@ def build_jobs(
     overlap_ratio: float,
     exemplar_tile_mode: str,
     exemplar_min_visibility: float,
+    reference_labels: Optional[list[str]] = None,
 ) -> list[TileJob]:
     """Expand (image × prompt × tile) into a flat, image-ordered job list."""
     jobs: list[TileJob] = []
@@ -584,6 +1090,16 @@ def build_jobs(
                     image_idx=image_idx,
                     tile=tile,
                     prompt=Prompt(label=label, text=text, kind="text"),
+                ))
+
+        # References were encoded up front; every tile of every image is
+        # segmented for each referenced class, reference images included.
+        for label in reference_labels or []:
+            for tile in tiles:
+                jobs.append(TileJob(
+                    image_idx=image_idx,
+                    tile=tile,
+                    prompt=Prompt(label=label, text=label, kind="reference"),
                 ))
 
         for exemplar in resolve_exemplars(rel_key, exemplars):
@@ -633,15 +1149,18 @@ def batched(jobs: list[TileJob], batch_size: int) -> Iterator[list[TileJob]]:
         yield jobs[i: i + batch_size]
 
 
-def split_by_prompt_kind(jobs: list[TileJob]) -> tuple[list[TileJob], list[TileJob]]:
+def split_by_prompt_kind(jobs: list[TileJob]) -> tuple[list[TileJob], list[TileJob], list[TileJob]]:
     """
-    Separate text jobs from exemplar jobs so batches stay homogeneous — exemplar
-    padding never leaks into text-only inference, and text jobs are never charged
-    for a geometry-encoder pass.
+    Separate text, exemplar and reference jobs so batches stay homogeneous —
+    exemplar padding never leaks into text-only inference, and text jobs are
+    never charged for a geometry-encoder pass.
     """
     exemplar_jobs = [j for j in jobs if j.prompt.has_exemplars()]
-    text_jobs = [j for j in jobs if not j.prompt.has_exemplars()]
-    return text_jobs, exemplar_jobs
+    reference_jobs = [j for j in jobs if j.prompt.kind == "reference"]
+    text_jobs = [
+        j for j in jobs if not j.prompt.has_exemplars() and j.prompt.kind != "reference"
+    ]
+    return text_jobs, exemplar_jobs, reference_jobs
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -876,7 +1395,8 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
                         choices=sorted(BACKEND_REGISTRY),
                         help="Zero-shot backend")
     parser.add_argument("--model_id", type=str, default=None,
-                        help="HuggingFace checkpoint override for the backend")
+                        help="HuggingFace checkpoint override for the backend; for insid3, "
+                             "the DINOv3 backbone (dinov3_vits16 / dinov3_vitb16 / dinov3_vitl16)")
     parser.add_argument("--device", type=str, default="auto",
                         choices=["auto", "cuda", "cpu"],
                         help="Compute device; 'auto' uses CUDA when available")
@@ -899,6 +1419,19 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
                         help="Which tiles to run for exemplar prompts under --is_sahi")
     parser.add_argument("--exemplar_min_visibility", type=float, default=0.5,
                         help="Fraction of an exemplar box that must fall inside a tile")
+
+    # INSID3 (in-context segmentation)
+    parser.add_argument("--insid3_weights", type=str, default=None,
+                        help="DINOv3 .pth checkpoint matching --model_id "
+                             "(default: $DINOV3_WEIGHTS)")
+    parser.add_argument("--insid3_image_size", type=int, default=1024,
+                        help="Square resolution INSID3 runs at; 768 is faster, slightly less accurate")
+    parser.add_argument("--reference_box_masks", type=str, default="sam3",
+                        choices=["sam3", "box"],
+                        help="How a reference box with no polygon becomes a mask: segmented by "
+                             "the SAM3 tracker, or the filled box")
+    parser.add_argument("--min_area", type=float, default=0.0,
+                        help="Drop INSID3 instances smaller than this many pixels")
 
     # Inference
     parser.add_argument("--batch_size", type=int, default=8,
@@ -973,6 +1506,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         logger.error(str(exc))
         return 1
 
+    # References may sit past the --max_images cut-off; look them up in the lot.
+    all_discovered = discovered
     if args.max_images is not None:
         discovered = discovered[: args.max_images]
 
@@ -992,7 +1527,35 @@ def main(argv: Optional[list[str]] = None) -> int:
         logger.error(str(exc))
         return 1
 
-    backend = get_backend(args.model, model_id=args.model_id, device=device)
+    backend_kwargs = {}
+    if args.model == "insid3":
+        backend_kwargs = {
+            "weights": args.insid3_weights,
+            "image_size": args.insid3_image_size,
+            "min_area": args.min_area,
+        }
+    try:
+        backend = get_backend(args.model, model_id=args.model_id, device=device, **backend_kwargs)
+    except ValueError as exc:
+        logger.error(str(exc))
+        return 1
+
+    # A reference backend reads the prompt file's exemplars as references.
+    references: dict[str, list[Prompt]] = {}
+    if backend.supports_references:
+        references, exemplars = exemplars, {}
+        if not references:
+            logger.error(
+                f"Backend '{args.model}' needs reference exemplars — pass a --prompt_file "
+                f"with boxes and/or polygons drawn on some of the images."
+            )
+            return 1
+        if text_prompts and not backend.supports_text:
+            # Typically left over in the step's config from an earlier text run.
+            logger.warning(
+                f"Backend '{args.model}' has no text prompts — ignoring {text_prompts}"
+            )
+            text_prompts = []
 
     if exemplars and not backend.supports_exemplars:
         logger.error(f"Backend '{args.model}' does not support exemplar prompts")
@@ -1006,6 +1569,24 @@ def main(argv: Optional[list[str]] = None) -> int:
         logger.warning("opencv-python not installed — writing boxes without polygons")
         want_segmentation = False
 
+    # ── References ───────────────────────────────────────────────────────────
+    reference_shots: dict[str, list[ReferenceShot]] = {}
+    if references:
+        if cv2 is None:
+            logger.error("Reference prompts need opencv-python to rasterise masks")
+            return 1
+        reference_shots = build_reference_shots(
+            exemplars=references,
+            discovered=all_discovered,
+            box_masks=args.reference_box_masks,
+            device=device,
+            is_sahi=args.is_sahi,
+            tile_size=args.tile_size,
+        )
+        if not reference_shots:
+            logger.error("No usable reference masks — check the prompt file's image keys")
+            return 1
+
     # ── Plan ─────────────────────────────────────────────────────────────────
     jobs = build_jobs(
         image_paths=image_paths,
@@ -1017,15 +1598,17 @@ def main(argv: Optional[list[str]] = None) -> int:
         overlap_ratio=args.overlap_ratio,
         exemplar_tile_mode=args.exemplar_tile_mode,
         exemplar_min_visibility=args.exemplar_min_visibility,
+        reference_labels=sorted(reference_shots),
     )
     if not jobs:
         logger.error("Nothing to do — no (image, prompt, tile) combinations were produced")
         return 1
 
-    text_jobs, exemplar_jobs = split_by_prompt_kind(jobs)
+    text_jobs, exemplar_jobs, reference_jobs = split_by_prompt_kind(jobs)
     logger.info(
         f"Planned {len(jobs)} inferences "
-        f"({len(text_jobs)} text, {len(exemplar_jobs)} exemplar) | "
+        f"({len(text_jobs)} text, {len(exemplar_jobs)} exemplar, "
+        f"{len(reference_jobs)} reference) | "
         f"SAHI={args.is_sahi} "
         f"tile_size={args.tile_size if args.is_sahi else '-'} "
         f"overlap={args.overlap_ratio if args.is_sahi else '-'} "
@@ -1034,11 +1617,21 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     # ── Run ──────────────────────────────────────────────────────────────────
     start = time.time()
-    backend.load()
+    try:
+        backend.load()
+        if reference_shots:
+            backend.prepare_references(reference_shots)
+    except RuntimeError as exc:
+        logger.error(str(exc))
+        return 1
 
     detections_by_idx: dict[int, list[Detection]] = {}
     total_failed_batches = 0
-    for job_group, desc in ((text_jobs, "Text prompts"), (exemplar_jobs, "Exemplar prompts")):
+    for job_group, desc in (
+        (text_jobs, "Text prompts"),
+        (exemplar_jobs, "Exemplar prompts"),
+        (reference_jobs, "Reference prompts"),
+    ):
         if not job_group:
             continue
         try:
@@ -1091,6 +1684,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             text: label for text, label in (split_text_prompt(t) for t in text_prompts)
         },
         "exemplar_images": len(exemplars),
+        # Class -> reference shots INSID3 was given.
+        "reference_shots": {label: len(shots) for label, shots in reference_shots.items()},
         "params": {
             "is_sahi": args.is_sahi,
             "tile_size": args.tile_size if args.is_sahi else None,
@@ -1102,6 +1697,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             "class_agnostic_nms": args.class_agnostic_nms,
             "exemplar_tile_mode": args.exemplar_tile_mode,
             "exemplar_min_visibility": args.exemplar_min_visibility,
+            **({
+                "insid3_image_size": args.insid3_image_size,
+                "reference_box_masks": args.reference_box_masks,
+                "min_area": args.min_area,
+            } if reference_shots else {}),
         },
         "runtime_seconds": round(elapsed, 1),
     }

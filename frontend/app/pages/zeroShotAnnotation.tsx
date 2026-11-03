@@ -13,7 +13,13 @@ import TapisPathField from "../components/TapisPathField";
 // Settings panel for the 'zero_shot_annotation' step (backend/steps/zero_shot_annotation/step.json)
 // — annotates every image in a directory with a zero-shot open-vocabulary
 // model (SAM3 by default), driven by either free-text concepts or visual
-// exemplar boxes (or both).
+// exemplar boxes (or both). With model 'insid3', the same prompt file's
+// exemplars are references instead: INSID3 segments their classes in every
+// image, not just the one they were drawn on.
+//
+// prompt_mode 'reference' and model 'insid3' go together — picking either one
+// sets the other (see setPromptMode / setModel), since INSID3 takes no text
+// and SAM3 has no cross-image references.
 //
 // text_prompts is stored in config as a single CLI-ready string (each prompt
 // individually double-quoted and space-joined, e.g. `tree "parked car"`, and
@@ -40,6 +46,34 @@ export default function ZeroShotAnnotationPanel({ config, onChange, step, connec
   const promptMode = String(field("prompt_mode") ?? "text");
   const textPrompts = String(field("text_prompts") ?? "");
   const isSahi = Boolean(field("is_sahi"));
+  const model = String(field("model") ?? "sam3");
+  const isInsid3 = model === "insid3";
+
+  const setPromptMode = (mode: string) =>
+    onChange({
+      ...config,
+      prompt_mode: mode,
+      model: mode === "reference" ? "insid3" : isInsid3 ? "sam3" : model,
+    });
+  const setModel = (next: string) =>
+    onChange({
+      ...config,
+      model: next,
+      prompt_mode: next === "insid3" ? "reference" : promptMode === "reference" ? "exemplar" : promptMode,
+    });
+
+  // Same full-URI storage as annotation_file below, so both file fields
+  // round-trip through TapisPathField the same way.
+  const weightsUri = String(field("insid3_weights") ?? "");
+  const weightsParts = splitTapisUri(weightsUri);
+  const weightsSystem = weightsParts?.system ?? "";
+  const weightsPath = weightsParts?.path ?? weightsUri;
+  const setWeights = (nextSystem: string, nextPath: string) =>
+    set(
+      "insid3_weights",
+      nextSystem && nextPath ? `tapis://${nextSystem}/${nextPath.replace(/^\/+/, "")}` : nextPath,
+    );
+  const boxMasks = String(field("reference_box_masks") ?? "sam3");
 
   // annotation_file is stored as a FULL tapis://system/path URI, not a bare
   // path alongside a separate `system` field. It has to be: the key doubles as
@@ -106,7 +140,8 @@ export default function ZeroShotAnnotationPanel({ config, onChange, step, connec
       ...config,
       system,
       annotation_file: system && path ? `tapis://${system}/${path.replace(/^\/+/, "")}` : path,
-      prompt_mode: "exemplar",
+      // Reference mode shows the same Prompt file field — keep it.
+      prompt_mode: isInsid3 ? "reference" : "exemplar",
     });
   };
 
@@ -152,8 +187,9 @@ export default function ZeroShotAnnotationPanel({ config, onChange, step, connec
         <div>
           <Title order={3}>✨ Zero-Shot Annotation</Title>
           <Text size="sm" c="dimmed" mt={4}>
-            Annotates every image in the wired directory with a zero-shot open-vocabulary model — no training,
-            no class supports. Drive it with free-text concepts, visual exemplar boxes, or both.
+            Annotates every image in the wired directory with a zero-shot model — no training, no class
+            supports. Drive it with free-text concepts, visual exemplar boxes, or both — or draw exemplars on a
+            few images and let INSID3 segment the rest.
           </Text>
         </div>
 
@@ -169,15 +205,16 @@ export default function ZeroShotAnnotationPanel({ config, onChange, step, connec
 
         <ParamSection
           title="Prompts"
-          explainer="Text prompts are free-text concepts applied to every image. Exemplar prompts are boxes drawn around one instance in a specific image — SAM3 finds the rest. Both can be supplied; at least one is required."
+          explainer="Text prompts are free-text concepts applied to every image. Exemplar prompts are boxes drawn around one instance in a specific image — SAM3 finds the rest in that image. Both can be supplied; at least one is required. In-context (INSID3) reads the exemplars as references and segments their classes in every image."
         >
           <Stack gap="sm">
             <SegmentedControl
               value={promptMode}
-              onChange={(v) => set("prompt_mode", v)}
+              onChange={setPromptMode}
               data={[
                 { label: "Text prompts", value: "text" },
                 { label: "Exemplar prompts", value: "exemplar" },
+                { label: "In-context (INSID3)", value: "reference" },
               ]}
             />
 
@@ -206,7 +243,7 @@ export default function ZeroShotAnnotationPanel({ config, onChange, step, connec
                       size="compact-xs"
                       variant="subtle"
                       leftSection={<IconLink size={12} />}
-                      onClick={() => set("prompt_mode", "exemplar")}
+                      onClick={() => setPromptMode("exemplar")}
                     >
                       Switch
                     </Button>
@@ -215,6 +252,14 @@ export default function ZeroShotAnnotationPanel({ config, onChange, step, connec
               </Stack>
             ) : (
               <Stack gap="xs">
+                {promptMode === "reference" && (
+                  <Text size="xs" c="dimmed">
+                    Draw exemplars on a few images in the directory (e.g. in the Smart Labeler, then convert with
+                    the annotation format adapter's sam3_exemplars output). Each labelled object becomes a reference
+                    for its class — polygons are used as the object's mask, boxes are segmented first — and every
+                    image is then segmented for every class, reference images included.
+                  </Text>
+                )}
                 <Group align="flex-end" gap="xs" wrap="nowrap">
                   <div style={{ flex: 1 }}>
                     <TapisPathField
@@ -257,15 +302,19 @@ export default function ZeroShotAnnotationPanel({ config, onChange, step, connec
                     prompt file from wired annotation_file input
                   </Badge>
                 )}
-                <PromptLabelEditor
-                  label="Additional text prompts (optional)"
-                  description="Text concepts to run alongside the exemplars — not a substitute for text paired with an exemplar in the prompt file itself."
-                  value={textPrompts}
-                  onChange={setTextPromptTags}
-                />
+                {promptMode === "exemplar" && (
+                  <PromptLabelEditor
+                    label="Additional text prompts (optional)"
+                    description="Text concepts to run alongside the exemplars — not a substitute for text paired with an exemplar in the prompt file itself."
+                    value={textPrompts}
+                    onChange={setTextPromptTags}
+                  />
+                )}
                 {!hasExemplars && (
                   <Badge size="xs" variant="light" color="yellow">
-                    No prompt file selected yet — exemplar detection needs one.
+                    {promptMode === "reference"
+                      ? "No prompt file selected yet — INSID3 needs reference exemplars."
+                      : "No prompt file selected yet — exemplar detection needs one."}
                   </Badge>
                 )}
               </Stack>
@@ -275,41 +324,102 @@ export default function ZeroShotAnnotationPanel({ config, onChange, step, connec
 
         <ParamSection
           title="Model"
-          explainer="Backend model from the zero-shot registry. SAM3 is the default and only registered backend today; model_id overrides its HuggingFace checkpoint."
+          explainer="Backend model from the zero-shot registry. SAM3 (default) handles text and exemplar prompts; model_id overrides its HuggingFace checkpoint. INSID3 segments reference classes across every image on a frozen DINOv3 backbone; model_id picks the backbone."
         >
           <Group grow align="flex-start">
             <Select
               label="Model"
               description={tip("model")}
-              data={schema.model?.options || ["sam3"]}
-              value={String(field("model") ?? "sam3")}
-              onChange={(v) => set("model", v ?? "sam3")}
+              data={schema.model?.options || ["sam3", "insid3"]}
+              value={model}
+              onChange={(v) => setModel(v ?? "sam3")}
               allowDeselect={false}
             />
-            <TextInput
-              label="Model ID override"
-              description={tip("model_id")}
-              placeholder="facebook/sam3"
-              value={String(field("model_id") ?? "")}
-              onChange={(e) => set("model_id", e.currentTarget.value)}
-            />
+            {isInsid3 ? (
+              <Select
+                label="DINOv3 backbone"
+                description={tip("model_id")}
+                data={["dinov3_vitl16", "dinov3_vitb16", "dinov3_vits16"]}
+                value={String(field("model_id") || "dinov3_vitl16")}
+                onChange={(v) => set("model_id", v === "dinov3_vitl16" ? "" : v ?? "")}
+                allowDeselect={false}
+              />
+            ) : (
+              <TextInput
+                label="Model ID override"
+                description={tip("model_id")}
+                placeholder="facebook/sam3"
+                value={String(field("model_id") ?? "")}
+                onChange={(e) => set("model_id", e.currentTarget.value)}
+              />
+            )}
           </Group>
-          <Select
-            mt="sm"
-            label="HuggingFace token"
-            description={tip("hf_token") || "facebook/sam3 is a gated checkpoint — pick the team secret holding an HF token with access to it."}
-            placeholder="Select a secret"
-            data={secretOptions}
-            value={hfToken || null}
-            onChange={(v) => set("hf_token", v ?? "")}
-            searchable
-            clearable
-          />
-          {!hfToken && (
-            <Badge mt={4} size="xs" variant="light" color="yellow">
-              No HF token selected — facebook/sam3 is gated and the job will fail to load it unless the
-              checkpoint is already cached with HF_HUB_OFFLINE=1 on the exec system.
-            </Badge>
+          {isInsid3 && (
+            <Stack gap="sm" mt="sm">
+              <TapisPathField
+                label="DINOv3 weights"
+                description={tip("insid3_weights")}
+                system={weightsSystem}
+                path={weightsPath}
+                selectType="file"
+                onSystemChange={(v) => setWeights(v, weightsPath)}
+                onPathChange={(v) => setWeights(weightsSystem, v)}
+              />
+              {!weightsUri.trim() && (
+                <Badge size="xs" variant="light" color="yellow">
+                  No DINOv3 checkpoint selected — INSID3 can't run without one.
+                </Badge>
+              )}
+              <Group grow align="flex-start">
+                <Select
+                  label="Reference box masks"
+                  description={tip("reference_box_masks")}
+                  data={schema.reference_box_masks?.options || ["sam3", "box"]}
+                  value={boxMasks}
+                  onChange={(v) => set("reference_box_masks", v ?? "sam3")}
+                  allowDeselect={false}
+                />
+                <Select
+                  label="Image size"
+                  description={tip("insid3_image_size")}
+                  data={["1024", "768"]}
+                  value={String(field("insid3_image_size") ?? 1024)}
+                  onChange={(v) => set("insid3_image_size", Number(v ?? 1024))}
+                  allowDeselect={false}
+                />
+                <NumberInput
+                  label="Min instance area (px)"
+                  description={tip("min_area")}
+                  value={Number(field("min_area") ?? 0)}
+                  onChange={(v) => set("min_area", v)}
+                  min={0}
+                  step={50}
+                />
+              </Group>
+            </Stack>
+          )}
+          {/* INSID3 only touches SAM3 to turn box-only references into masks. */}
+          {(!isInsid3 || boxMasks === "sam3") && (
+            <>
+              <Select
+                mt="sm"
+                label="HuggingFace token"
+                description={tip("hf_token") || "facebook/sam3 is a gated checkpoint — pick the team secret holding an HF token with access to it."}
+                placeholder="Select a secret"
+                data={secretOptions}
+                value={hfToken || null}
+                onChange={(v) => set("hf_token", v ?? "")}
+                searchable
+                clearable
+              />
+              {!hfToken && (
+                <Badge mt={4} size="xs" variant="light" color="yellow">
+                  {isInsid3
+                    ? "No HF token selected — box-only references fall back to filled-box masks unless facebook/sam3 is already cached with HF_HUB_OFFLINE=1 on the exec system."
+                    : "No HF token selected — facebook/sam3 is gated and the job will fail to load it unless the checkpoint is already cached with HF_HUB_OFFLINE=1 on the exec system."}
+                </Badge>
+              )}
+            </>
           )}
         </ParamSection>
 
@@ -346,7 +456,13 @@ export default function ZeroShotAnnotationPanel({ config, onChange, step, connec
                 />
               </Group>
             )}
-            {isSahi && hasExemplars && (
+            {isSahi && isInsid3 && (
+              <Text size="xs" c="dimmed">
+                With INSID3, each reference object is cropped to a tile-sized window around it, so the model
+                compares objects at the scale it sees them in the tiles.
+              </Text>
+            )}
+            {isSahi && hasExemplars && !isInsid3 && (
               <Group grow>
                 <Select
                   label="Exemplar tile mode"
@@ -390,6 +506,7 @@ export default function ZeroShotAnnotationPanel({ config, onChange, step, connec
                 description={tip("confidence")}
                 value={Number(field("confidence") ?? 0.3)}
                 onChange={(v) => set("confidence", v)}
+                disabled={isInsid3}
                 min={0}
                 max={1}
                 step={0.05}
@@ -400,6 +517,7 @@ export default function ZeroShotAnnotationPanel({ config, onChange, step, connec
                 description={tip("mask_threshold")}
                 value={Number(field("mask_threshold") ?? 0.5)}
                 onChange={(v) => set("mask_threshold", v)}
+                disabled={isInsid3}
                 min={0}
                 max={1}
                 step={0.05}
