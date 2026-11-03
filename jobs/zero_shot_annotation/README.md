@@ -1,6 +1,6 @@
 # Zero-Shot Annotation
 
-Annotates every image in a directory with a zero-shot open-vocabulary model — no training, no class supports. SAM3 is the default backend, and the model is swappable through a registry.
+Annotates every image in a directory with a zero-shot open-vocabulary model — no training, no class supports. SAM3 is the default backend, and the model is swappable through a registry. The `insid3` backend adds in-context segmentation: draw exemplars on a few images, and it segments those classes in all the others (see [In-context segmentation (INSID3)](#in-context-segmentation-insid3)).
 
 This is the batch counterpart of `smart-labeller/sam3_service/main.py`, which serves one image per request.
 
@@ -22,7 +22,7 @@ This is the batch counterpart of `smart-labeller/sam3_service/main.py`, which se
 | `zero_shot_annotation.def` | Apptainer/Singularity definition |
 | `requirements.txt` | Python dependencies |
 
-The script is self-contained; it does not import from `smart-labeller/`.
+The script is self-contained; it does not import from `smart-labeller/`. The `insid3` backend imports INSID3 and DINOv3 from source checkouts. The container clones both at pinned commits into `/opt/insid3` and `/opt/dinov3` (override the locations with `INSID3_HOME` / `DINOV3_HOME`).
 
 ## Usage
 
@@ -66,6 +66,10 @@ python zero_shot_annotation.py \
 | `--overlap_ratio` | `0.2` | Fractional overlap between adjacent tiles (with `--is_sahi`) |
 | `--exemplar_tile_mode` | `intersecting` | Which tiles to run for exemplar prompts: `intersecting` or `all` |
 | `--exemplar_min_visibility` | `0.5` | Fraction of an exemplar box that must fall inside a tile to count |
+| `--insid3_weights` | `$DINOV3_WEIGHTS` | DINOv3 `.pth` checkpoint matching `--model_id` (insid3 only) |
+| `--insid3_image_size` | `1024` | Square resolution INSID3 runs at; `768` is faster (insid3 only) |
+| `--reference_box_masks` | `sam3` | How a box-only reference becomes a mask: `sam3` or `box` (insid3 only) |
+| `--min_area` | `0` | Drop INSID3 instances smaller than this many pixels (insid3 only) |
 | `--batch_size` | `8` | Tiles per inference batch |
 | `--confidence` | `0.3` | Score threshold for keeping an instance |
 | `--mask_threshold` | `0.5` | Threshold for binarising predicted masks |
@@ -146,6 +150,57 @@ These two features are in tension: a tile far from the exemplar has no exemplar 
 
 A box counts as visible in a tile when at least `--exemplar_min_visibility` of its area falls inside; the box is then clipped to the tile.
 
+## In-context segmentation (INSID3)
+
+SAM3 exemplars only find more objects in the image they were drawn on. [INSID3](https://github.com/visinf/INSID3) (CVPR 2026) works across images. You give it a reference image and an object mask, and it segments the same concept in any other image. It needs no training, and runs on a single frozen DINOv3 backbone.
+
+```bash
+python zero_shot_annotation.py \
+  --image_dir /path/to/images \
+  --output_dir /path/to/output \
+  --prompt_file prompts.json \
+  --model insid3 \
+  --model_id dinov3_vitl16 \
+  --insid3_weights /path/to/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth
+```
+
+**References come from the same prompt file.** Every positive exemplar becomes a reference for its `label`, and every image under `--image_dir` is segmented for every label. That includes the reference images themselves, so instances you didn't label there are still found. Reference images must be under `--image_dir`, but they don't have to fall inside `--max_images`.
+
+**Masks.** INSID3 needs object masks, not boxes. Add an optional `polygons` list aligned with `boxes`, using `null` for a box with no outline:
+
+```json
+{
+  "exemplars": {
+    "field_03.jpg": [
+      {
+        "label": "weed",
+        "boxes":    [[100, 100, 200, 200], [820, 340, 900, 430]],
+        "polygons": [[[110, 150], [150, 105], [195, 160], [140, 195]], null]
+      }
+    ]
+  }
+}
+```
+
+- An entry may give `polygons` alone; its boxes are then the polygons' bounding boxes.
+- A box with no polygon is segmented by the SAM3 tracker (`--reference_box_masks sam3`, which needs `HF_TOKEN`). With `box`, the filled box is used as the mask, and the background inside it leaks into what the model looks for.
+- The annotation format adapter's `sam3_exemplars` output already writes `polygons` for segmentation-mode Smart Labeler annotations.
+- Negative boxes and the `default` key are ignored, because a reference must be a real object in a real image.
+
+**Output.** INSID3 returns one mask per class. It is split into connected components, and each component becomes one annotation with `prompt_type: "reference"`. Touching objects therefore come out as a single annotation. Each annotation's `score` is its mean similarity to the class's reference prototype. `--confidence` and `--mask_threshold` don't apply, because INSID3 makes its own foreground decision. Use `--min_area` to drop specks.
+
+**SAHI.** With `--is_sahi`, each reference object is cropped to a `--tile_size` window around it. The model then compares objects at the scale it sees them in the target tiles. Each class uses at most 16 reference shots, sampled evenly when there are more.
+
+**Weights.** The DINOv3 checkpoints are behind Meta's license form, so they are not baked into the container. Request access at [facebookresearch/dinov3](https://github.com/facebookresearch/dinov3), download the checkpoint once, and pass its path. In the workflow step, `insid3_weights` is a Tapis URI that gets staged into each job.
+
+| Backbone (`--model_id`) | Checkpoint |
+|---|---|
+| `dinov3_vitl16` *(default)* | `dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth` |
+| `dinov3_vitb16` | `dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth` |
+| `dinov3_vits16` | `dinov3_vits16_pretrain_lvd1689m-08c60483.pth` |
+
+INSID3's optional CRF mask refinement is not included, because it needs `nvcc` to build.
+
 ## Outputs
 
 Saved under `<output_dir>/annotations/`:
@@ -175,7 +230,7 @@ The flat format matches the rest of the repo and is read directly by `smart-labe
 }
 ```
 
-`prompt_type` is `"text"` or `"exemplar"`. `segmentation` is the object's outline as `[x, y]` points (up to 256), omitted under `--no_segmentation`. Every run embeds its full parameter set for provenance.
+`prompt_type` is `"text"`, `"exemplar"`, or `"reference"` (INSID3). `segmentation` is the object's outline as `[x, y]` points (up to 256), omitted under `--no_segmentation`. Every run embeds its full parameter set for provenance.
 
 The COCO file uses standard `images` / `annotations` / `categories` blocks with `bbox` in `[x, y, width, height]` and flattened polygons.
 

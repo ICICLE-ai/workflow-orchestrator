@@ -2,7 +2,7 @@
   "step_type_key": "zero_shot_annotation",
   "resources": { "gpu": true },
   "display_name": "✨ Zero-Shot Annotation",
-  "description": "Annotates every image in a directory with a zero-shot open-vocabulary model (SAM3 by default) — no training, no class supports. Detects with free-text concepts, visual exemplar boxes, or both, optionally tiled (SAHI) for large imagery with small objects, via the zero-shot-annotation Tapis app.",
+  "description": "Annotates every image in a directory with a zero-shot model — no training, no class supports. SAM3 (default) detects with free-text concepts, visual exemplar boxes, or both; INSID3 takes exemplars drawn on a few images as references and segments the same classes in every image. Optionally tiled (SAHI) for large imagery with small objects, via the zero-shot-annotation Tapis app.",
   "category": "Inference",
   "icon": "sparkles",
   "tapis_app_id": "zero-shot-annotation",
@@ -27,8 +27,8 @@
   "config_schema": {
     "prompt_mode": {
       "type": "select",
-      "options": ["text", "exemplar"],
-      "description": "Which kind of prompt drives detection. 'text' uses free-text concepts typed below. 'exemplar' uses visual exemplar boxes (plus optional paired text) from an uploaded prompt file. UI-only — doesn't change what's sent to the job; text_prompts and annotation_file are independently included whenever set, so the two can be combined.",
+      "options": ["text", "exemplar", "reference"],
+      "description": "Which kind of prompt drives detection. 'text' uses free-text concepts typed below. 'exemplar' uses visual exemplar boxes (plus optional paired text) from an uploaded prompt file — SAM3 finds more objects like them in the SAME image. 'reference' (INSID3) reads the same prompt file's exemplars as references and segments those classes in EVERY image; the panel pairs it with model 'insid3'. UI-only — doesn't change what's sent to the job; text_prompts and annotation_file are independently included whenever set, so the two can be combined (insid3 ignores text prompts).",
       "default": "text"
     },
     "text_prompts": {
@@ -39,19 +39,41 @@
     "annotation_file": {
       "type": "json_results",
       "selectType": "file",
-      "description": "Full tapis://system/path URI of a JSON file with per-image exemplar boxes (SAM3 geometry prompts) and/or additional text prompts. Exemplar boxes are absolute pixel coordinates in a specific image, keyed by path relative to the image directory, bare filename, or 'default'. At least one of text_prompts or annotation_file is required. Stored as a URI rather than a bare path + separate 'system' field precisely because this key doubles as an INPUT PORT NAME: when the port is wired, _resolve_inputs overwrites this config value with the upstream output's URI at run time, so the two forms have to be interchangeable. Auto-filled from the wired 'annotation_file' input when connected — see that input's description — but can still be browsed/typed by hand; an explicit edit here always takes precedence over the wired value.",
+      "description": "Full tapis://system/path URI of a JSON file with per-image exemplar boxes (SAM3 geometry prompts; for insid3, the references — optionally with object polygons) and/or additional text prompts. Exemplar boxes are absolute pixel coordinates in a specific image, keyed by path relative to the image directory, bare filename, or 'default'. At least one of text_prompts or annotation_file is required. Stored as a URI rather than a bare path + separate 'system' field precisely because this key doubles as an INPUT PORT NAME: when the port is wired, _resolve_inputs overwrites this config value with the upstream output's URI at run time, so the two forms have to be interchangeable. Auto-filled from the wired 'annotation_file' input when connected — see that input's description — but can still be browsed/typed by hand; an explicit edit here always takes precedence over the wired value.",
       "default": ""
     },
     "model": {
       "type": "select",
-      "options": ["sam3"],
-      "description": "Backend model from the zero-shot registry.",
+      "options": ["sam3", "insid3"],
+      "description": "Backend model from the zero-shot registry. 'sam3': text and exemplar prompts, per image. 'insid3': training-free in-context segmentation on a frozen DINOv3 (github.com/visinf/INSID3) — the prompt file's exemplars are references, and every image is segmented for each class.",
       "default": "sam3"
     },
     "model_id": {
       "type": "string",
-      "description": "HuggingFace checkpoint override for the chosen backend. Blank uses the backend's default (facebook/sam3 for the sam3 backend).",
+      "description": "Checkpoint override for the chosen backend. sam3: a HuggingFace checkpoint, blank uses facebook/sam3. insid3: the DINOv3 backbone — dinov3_vits16, dinov3_vitb16 or dinov3_vitl16 (blank = dinov3_vitl16) — which must match the insid3_weights checkpoint.",
       "default": ""
+    },
+    "insid3_weights": {
+      "type": "string",
+      "selectType": "file",
+      "description": "insid3 only. Full tapis://system/path URI of the DINOv3 .pth checkpoint for the backbone in model_id (dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth for the default). Not bundled with the app: request access at github.com/facebookresearch/dinov3, download it once onto a Tapis system, and point here. Staged into each job (~1.2 GB for vitl16), so clear it when switching back to sam3.",
+      "default": ""
+    },
+    "insid3_image_size": {
+      "type": "int",
+      "description": "insid3 only. Square resolution images (or tiles) are resized to. 1024 is INSID3's default; 768 is faster with a small accuracy drop.",
+      "default": 1024
+    },
+    "reference_box_masks": {
+      "type": "select",
+      "options": ["sam3", "box"],
+      "description": "insid3 only. INSID3 needs an object MASK per reference; polygons in the prompt file are used as-is. For a box with no polygon: 'sam3' segments the object inside the box with the SAM3 tracker (needs the HF token below), 'box' uses the filled box — quicker, but background inside the box leaks into what the model looks for.",
+      "default": "sam3"
+    },
+    "min_area": {
+      "type": "float",
+      "description": "insid3 only. INSID3 returns one mask per class, split into connected components — one annotation each (touching objects come out as one). Components smaller than this many pixels are dropped; 0 keeps all.",
+      "default": 0
     },
     "is_sahi": {
       "type": "boolean",
@@ -86,12 +108,12 @@
     },
     "confidence": {
       "type": "float",
-      "description": "Minimum score (0-1) for keeping a detected instance.",
+      "description": "Minimum score (0-1) for keeping a detected instance. Not used by insid3, which makes its own foreground decision (its scores still rank detections for NMS).",
       "default": 0.3
     },
     "mask_threshold": {
       "type": "float",
-      "description": "Threshold (0-1) for binarising predicted masks before they're turned into polygons.",
+      "description": "Threshold (0-1) for binarising predicted masks before they're turned into polygons. Not used by insid3.",
       "default": 0.5
     },
     "nms_iou": {
@@ -122,7 +144,7 @@
     },
     "hf_token": {
       "type": "secret",
-      "description": "Team secret holding a HuggingFace access token with access to the gated facebook/sam3 checkpoint (huggingface.co/facebook/sam3 — request access, then create a token under HF account settings). Add it via the dashboard's secrets settings, then pick it here; passed to the job as the HF_TOKEN env var. Leave unset only if the checkpoint is already cached on the exec system and HF_HUB_OFFLINE=1 is set.",
+      "description": "Team secret holding a HuggingFace access token with access to the gated facebook/sam3 checkpoint (huggingface.co/facebook/sam3 — request access, then create a token under HF account settings). Add it via the dashboard's secrets settings, then pick it here; passed to the job as the HF_TOKEN env var. Leave unset only if the checkpoint is already cached on the exec system and HF_HUB_OFFLINE=1 is set. insid3 needs it too when reference_box_masks is 'sam3' (the default).",
       "default": ""
     }
   },
@@ -149,6 +171,14 @@
         "autoMountLocal": true,
         "sourceUrl": "${annotation_file}",
         "targetPath": "input/prompts.json"
+      },
+      {
+        "name": "dinov3_weights",
+        "description": "insid3 only: the DINOv3 backbone checkpoint, staged in when insid3_weights is set. sourceUrl is the insid3_weights value verbatim — a full tapis URI, like annotation_file.",
+        "if": "insid3_weights",
+        "autoMountLocal": true,
+        "sourceUrl": "${insid3_weights}",
+        "targetPath": "input/dinov3.pth"
       }
     ],
     "parameterSet": {
@@ -164,6 +194,10 @@
         { "name": "overlap_ratio", "arg": "--overlap_ratio ${overlap_ratio}", "if": "is_sahi" },
         { "name": "exemplar_tile_mode", "arg": "--exemplar_tile_mode ${exemplar_tile_mode}", "if": "annotation_file" },
         { "name": "exemplar_min_visibility", "arg": "--exemplar_min_visibility ${exemplar_min_visibility}", "if": "annotation_file" },
+        { "name": "insid3_weights", "arg": "--insid3_weights /job/input/dinov3.pth", "if": "insid3_weights" },
+        { "name": "insid3_image_size", "arg": "--insid3_image_size ${insid3_image_size}", "if": "model=insid3" },
+        { "name": "reference_box_masks", "arg": "--reference_box_masks ${reference_box_masks}", "if": "model=insid3" },
+        { "name": "min_area", "arg": "--min_area ${min_area}", "if": "model=insid3" },
         { "name": "batch_size", "arg": "--batch_size ${batch_size}" },
         { "name": "confidence", "arg": "--confidence ${confidence}" },
         { "name": "mask_threshold", "arg": "--mask_threshold ${mask_threshold}" },
