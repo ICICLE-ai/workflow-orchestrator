@@ -119,7 +119,26 @@ images with `WF_RUNNER_DOCKER_IMAGE` / `WF_RUNNER_APPTAINER_IMAGE` (see
 
 ## 2. Prepare the node
 
-**Apptainer** on `PATH`, plus:
+**Apptainer** on `PATH` (or Docker, for `run-docker.sh`), plus:
+
+### Installing Docker or Apptainer
+
+A fresh workstation or cloud VM usually has neither, so this is often the first
+step. The Deploy dialog's first numbered step on each tab, and the zip's
+README ("Before you start"), give the commands per OS:
+
+| Runtime | Options |
+| --- | --- |
+| Apptainer | `module load apptainer` on HPC clusters; Ubuntu PPA (`ppa:apptainer/ppa`); the GitHub release `.deb` on Debian; EPEL on RHEL/Rocky/Alma, or the stock repos on Fedora; and an unprivileged install into `$HOME` that needs no root. |
+| Docker | Docker's `get.docker.com` script on Ubuntu/Debian/Fedora; Docker's `dnf` repository on RHEL/Rocky/Alma; Docker Desktop on macOS/Windows. All need root. |
+
+The list lives in `RUNTIME_INSTALL` in `backend/engine/deployment.py`, the one
+place to change it. `WF_APPTAINER_VERSION` sets the Debian `.deb` release.
+`run.sh` stops with these pointers when neither `apptainer` nor `singularity` is on `PATH`,
+and uses `singularity` automatically when that is all the node has.
+`run-docker.sh` does the same when `docker` is missing. GPU steps need the
+NVIDIA driver on the node and the host route (`run.sh`), because the runner
+can't see a GPU from inside Docker.
 
 ### Container images
 

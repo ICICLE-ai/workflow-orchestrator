@@ -51,6 +51,130 @@ RUNNER_SOURCE_DIR = Path(
     or Path(__file__).resolve().parents[2] / "runner"
 )
 
+# Apptainer release whose .deb the Debian instructions fetch from GitHub (Debian
+# has no Apptainer package of its own). Override to move to a newer release.
+APPTAINER_DEB_VERSION = os.getenv("WF_APPTAINER_VERSION", "").strip() or "1.3.6"
+
+# How to get the container runtime onto a node that doesn't have one yet. On a
+# fresh workstation or cloud VM this is the first thing a user has to do, so the
+# Deploy dialog shows it before any run step, the zip's README repeats it, and
+# run.sh / run-docker.sh point at it when the binary is missing.
+#
+# One entry per runtime: `check` confirms it's already there; each option is one
+# OS family. `needs_root` marks the options that need sudo, so the UI can steer a
+# user without it to the ones that don't.
+RUNTIME_INSTALL = {
+    "docker": {
+        "check": "docker --version && docker run --rm hello-world",
+        "options": [
+            {
+                "label": "Ubuntu / Debian / Fedora",
+                "needs_root": True,
+                "commands": (
+                    "curl -fsSL https://get.docker.com | sudo sh\n"
+                    "sudo systemctl enable --now docker\n"
+                    "sudo usermod -aG docker \"$USER\"   # then log out and back in"
+                ),
+                "note": "Docker's official install script; it adds Docker's own package repository.",
+            },
+            {
+                "label": "RHEL / Rocky / Alma",
+                "needs_root": True,
+                "commands": (
+                    "sudo dnf -y install dnf-plugins-core\n"
+                    "sudo dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo\n"
+                    "sudo dnf -y install docker-ce docker-ce-cli containerd.io\n"
+                    "sudo systemctl enable --now docker\n"
+                    "sudo usermod -aG docker \"$USER\"   # then log out and back in"
+                ),
+                "note": None,
+            },
+            {
+                "label": "macOS / Windows",
+                "needs_root": True,
+                "commands": None,
+                "link": "https://docs.docker.com/desktop/",
+                "note": (
+                    "Install Docker Desktop. The images are x86_64-only, so on Apple Silicon they run "
+                    "under emulation and are much slower; a Linux x86_64 node is the better target."
+                ),
+            },
+        ],
+        "no_root": (
+            "Installing Docker needs root. Without it, ask the node's admin, or use Apptainer, "
+            "which can be installed without root and is usually already on HPC clusters."
+        ),
+        "docs": "https://docs.docker.com/engine/install/",
+    },
+    "apptainer": {
+        "check": "apptainer --version && python3 --version",
+        "options": [
+            {
+                "label": "HPC cluster",
+                "needs_root": False,
+                "commands": (
+                    "module avail apptainer singularity   # see what the cluster provides\n"
+                    "module load apptainer                # or: module load singularity"
+                ),
+                "note": (
+                    "Most clusters already have it, sometimes still named singularity; run.sh uses "
+                    "either. Load it on the compute node your job runs on, not only the login node."
+                ),
+            },
+            {
+                "label": "Ubuntu",
+                "needs_root": True,
+                "commands": (
+                    "sudo apt-get update && sudo apt-get install -y software-properties-common\n"
+                    "sudo add-apt-repository -y ppa:apptainer/ppa\n"
+                    "sudo apt-get update && sudo apt-get install -y apptainer python3"
+                ),
+                "note": "The Apptainer project's own PPA.",
+            },
+            {
+                "label": "Debian",
+                "needs_root": True,
+                "commands": (
+                    f"curl -fLO https://github.com/apptainer/apptainer/releases/download/"
+                    f"v{APPTAINER_DEB_VERSION}/apptainer_{APPTAINER_DEB_VERSION}_amd64.deb\n"
+                    f"sudo apt-get install -y ./apptainer_{APPTAINER_DEB_VERSION}_amd64.deb python3"
+                ),
+                "note": "The release .deb from GitHub; Debian doesn't package Apptainer itself.",
+            },
+            {
+                "label": "RHEL / Rocky / Alma / Fedora",
+                "needs_root": True,
+                "commands": (
+                    "sudo dnf -y install epel-release   # RHEL family only; skip on Fedora\n"
+                    "sudo dnf -y install apptainer python3"
+                ),
+                "note": None,
+            },
+            {
+                "label": "Without root",
+                "needs_root": False,
+                "commands": (
+                    "curl -s https://raw.githubusercontent.com/apptainer/apptainer/main/tools/install-unprivileged.sh \\\n"
+                    "  | bash -s - \"$HOME/apptainer\"\n"
+                    "export PATH=\"$HOME/apptainer/bin:$PATH\"   # add to ~/.bashrc to keep it"
+                ),
+                "note": (
+                    "Apptainer's unprivileged install, into your home directory. Needs the kernel to "
+                    "allow unprivileged user namespaces, which most current Linux distributions do."
+                ),
+            },
+        ],
+        "no_root": None,
+        "docs": "https://apptainer.org/docs/admin/main/installation.html",
+    },
+    # Only for GPU steps, and only on the host route (run.sh): a runner inside
+    # Docker can't see the host's GPU (see wf_runner's gpu_problem()).
+    "gpu_note": (
+        "GPU steps need the NVIDIA driver on the node (nvidia-smi should list a GPU) and must run "
+        "with run.sh on the host. The runner can't see the GPU from inside Docker."
+    ),
+}
+
 _SCHEME = re.compile(r"^([a-z][a-z0-9+.-]*)://", re.IGNORECASE)
 _CHUNK = 1024 * 1024
 
@@ -326,7 +450,40 @@ def runner_instructions(data_root: str, workdir: str, images_dir: str, bundle_fi
             "run": host_run,
             "note": "Needs python3 (3.9+) and apptainer on the node; nothing to pull.",
         },
+        "install": RUNTIME_INSTALL,
     }
+
+
+def _install_readme() -> list[str]:
+    """README section: get Docker or Apptainer onto the node first."""
+    lines = [
+        "## Before you start: install Docker or Apptainer",
+        "",
+        "You need one of the two on the node. Check first:",
+        "",
+        "```bash",
+        f"{RUNTIME_INSTALL['apptainer']['check']}   # for run.sh",
+        f"{RUNTIME_INSTALL['docker']['check']}   # for run-docker.sh",
+        "```",
+        "",
+        RUNTIME_INSTALL["gpu_note"],
+        "",
+    ]
+    for key, title in (("apptainer", "Apptainer (for run.sh)"), ("docker", "Docker (for run-docker.sh)")):
+        rt = RUNTIME_INSTALL[key]
+        lines += [f"### {title}", ""]
+        for opt in rt["options"]:
+            lines += [f"**{opt['label']}**" + ("" if opt["needs_root"] else " (no root needed)"), ""]
+            if opt.get("commands"):
+                lines += ["```bash", opt["commands"], "```", ""]
+            if opt.get("link"):
+                lines += [f"See {opt['link']}", ""]
+            if opt.get("note"):
+                lines += [opt["note"], ""]
+        if rt.get("no_root"):
+            lines += [rt["no_root"], ""]
+        lines += [f"Full instructions: {rt['docs']}", ""]
+    return lines
 
 
 # --------------------------------------------------------------------------
@@ -572,6 +729,7 @@ def _readme(bundle: dict, rows: list[dict], included: list[str], failed: dict[st
             "`--images-dir /that/folder`; the runner matches names ignoring case and `-`/`_`.",
             "",
         ]
+    lines += _install_readme()
     lines += [
         "## Your input data",
         "",
@@ -677,8 +835,27 @@ if [ ! -d "$HERE/wf_runner" ]; then
   echo "        or use run-docker.sh / the Apptainer runner image (see README.md)." >&2
   exit 1
 fi
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "run.sh: python3 (3.9+) is not installed on this node." >&2
+  echo "        See 'Before you start' in README.md for how to install it, or use run-docker.sh." >&2
+  exit 1
+fi
+# Older clusters still ship Apptainer under its previous name. A --runtime in
+# "$@" still wins: the runner takes the last one.
+RUNTIME=apptainer
+if ! command -v apptainer >/dev/null 2>&1; then
+  if command -v singularity >/dev/null 2>&1; then
+    RUNTIME=singularity
+  else
+    echo "run.sh: apptainer is not installed (or not on PATH) on this node." >&2
+    echo "        On an HPC cluster try: module load apptainer   (or: module load singularity)" >&2
+    echo "        Otherwise see 'Before you start' in README.md for install commands," >&2
+    echo "        including one that needs no root." >&2
+    exit 1
+  fi
+fi
 {images_sh}PYTHONPATH="$HERE${{PYTHONPATH:+:$PYTHONPATH}}" \\
-  exec python3 -m wf_runner "$HERE/bundle.json" --images-dir "$IMAGES_DIR" "$@"
+  exec python3 -m wf_runner "$HERE/bundle.json" --images-dir "$IMAGES_DIR" --runtime "$RUNTIME" "$@"
 """
     # Credentials are forwarded by NAME (-e NAME), so values stay in the
     # user's environment and never appear in this file or on a command line.
@@ -698,6 +875,12 @@ fi
 #   EXTRA_MOUNTS="-v /data:/data" ./run-docker.sh --data-root /data
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+if ! command -v docker >/dev/null 2>&1; then
+  echo "run-docker.sh: docker is not installed (or not on PATH) on this node." >&2
+  echo "               See 'Before you start' in README.md for install commands, or use run.sh" >&2
+  echo "               with Apptainer, which can be installed without root." >&2
+  exit 1
+fi
 {images_sh}# Created here: Docker would otherwise create a missing bind source as root.
 mkdir -p "$IMAGES_DIR"
 {mount_mkdir}
