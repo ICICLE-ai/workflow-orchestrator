@@ -5,8 +5,10 @@ import {
   Badge,
   Button,
   Code,
+  Collapse,
   Group,
   Loader,
+  Select,
   Stack,
   Table,
   Tabs,
@@ -18,6 +20,7 @@ import {
   IconBrandDocker,
   IconBox,
   IconCheck,
+  IconChevronDown,
   IconCopy,
   IconDownload,
   IconFileZip,
@@ -35,6 +38,20 @@ interface RunnerTarget {
   // Run from inside the unzipped deployment zip.
   run: string;
   note: string;
+}
+
+// One runtime's install instructions (deployment.RUNTIME_INSTALL).
+interface RuntimeInstall {
+  check: string;
+  options: {
+    label: string;
+    needs_root: boolean;
+    commands: string | null;
+    link?: string;
+    note: string | null;
+  }[];
+  no_root: string | null;
+  docs: string;
 }
 
 interface StepImage {
@@ -60,6 +77,9 @@ export interface DeploymentInfo {
     // The zip's run.sh: the node's own python3 + apptainer, nothing nested.
     // Optional: absent from a backend older than this dialog.
     host?: { run: string; note: string };
+    // How to install Docker / Apptainer on a node that has neither. Optional
+    // for the same reason as `host`.
+    install?: { docker: RuntimeInstall; apptainer: RuntimeInstall; gpu_note: string };
   };
   images: StepImage[];
   // Each source node, whether a step reads it on the node, and what it feeds.
@@ -166,6 +186,60 @@ function Step({ n, title, i, children }: { n: number; title: React.ReactNode; i:
   );
 }
 
+// First step on each tab: confirm the runtime is on the node, with per-OS
+// install commands folded away for when it isn't. On a fresh workstation or
+// cloud VM this is the step that takes longest, so it comes before the download.
+function InstallRuntime({ mode, install }: { mode: "docker" | "apptainer"; install: NonNullable<DeploymentInfo["runner"]["install"]> }) {
+  const rt = install[mode];
+  const name = mode === "docker" ? "Docker" : "Apptainer";
+  const [open, setOpen] = useState(false);
+  const [osLabel, setOsLabel] = useState(rt.options[0]?.label ?? "");
+  const opt = rt.options.find((o) => o.label === osLabel) ?? rt.options[0];
+  return (
+    <>
+      <Text size="xs" c="dimmed">
+        {mode === "docker"
+          ? "Check it's there. If both commands succeed, skip ahead."
+          : "Check it's there (run.sh also needs python3 3.9+). If both print a version, skip ahead."}
+      </Text>
+      <Snippet code={rt.check} />
+      <Button
+        size="compact-xs"
+        variant="subtle"
+        style={{ alignSelf: "flex-start" }}
+        rightSection={<IconChevronDown size={12} style={{ transform: open ? "rotate(180deg)" : undefined, transition: "transform 150ms" }} />}
+        onClick={() => setOpen((o) => !o)}
+      >
+        Not installed? How to install {name}
+      </Button>
+      <Collapse expanded={open}>
+        <Stack gap={6}>
+          <Select
+            size="xs"
+            label="Your node"
+            data={rt.options.map((o) => ({ value: o.label, label: o.needs_root ? o.label : `${o.label} (no root needed)` }))}
+            value={opt?.label ?? null}
+            onChange={(v) => v && setOsLabel(v)}
+            allowDeselect={false}
+            maw={320}
+          />
+          {opt?.commands && <Snippet code={opt.commands} />}
+          {opt?.link && (
+            <Anchor href={opt.link} target="_blank" rel="noreferrer" size="xs">{opt.link}</Anchor>
+          )}
+          {opt?.note && <Text size="xs" c="dimmed">{opt.note}</Text>}
+          {opt?.needs_root && rt.no_root && <Text size="xs" c="dimmed">{rt.no_root}</Text>}
+          <Text size="xs" c="dimmed">
+            Then rerun the check above. Full instructions:{" "}
+            <Anchor href={rt.docs} target="_blank" rel="noreferrer" size="xs">{rt.docs}</Anchor>
+          </Text>
+        </Stack>
+      </Collapse>
+      <Text size="xs" c="dimmed">{install.gpu_note}</Text>
+    </>
+  );
+}
+
 // Signed links work for a plain navigation in every auth mode (cookie or
 // TapisUI header), and the browser streams the file straight to disk.
 const openLink = (url?: string) => {
@@ -210,6 +284,8 @@ function RunSteps({
       </Step>
     );
   const after = secrets.length > 0 ? 1 : 0;
+  // Step 1 is "install the runtime" when the backend sends instructions for it.
+  const o = runner.install ? 1 : 0;
   let runStep = 0;
   return (
     <Stack gap="md">
@@ -227,7 +303,12 @@ function RunSteps({
       </Transition>
 
       <div className={classes.timeline}>
-        <Step n={1} i={1} title={<>Download the deployment zip{on}</>}>
+        {runner.install && (
+          <Step n={1} i={1} title={<>Install {mode === "docker" ? "Docker" : "Apptainer"}{on}</>}>
+            <InstallRuntime mode={mode} install={runner.install} />
+          </Step>
+        )}
+        <Step n={1 + o} i={1 + o} title={<>Download the deployment zip{on}</>}>
           <Text size="xs" c="dimmed">
             {imagesInZip ? (
               <>Holds <Code>bundle.json</Code>, every step image in <Code>containers/</Code> and the runner.</>
@@ -260,7 +341,7 @@ function RunSteps({
           </Group>
         </Step>
 
-        <Step n={2} i={2} title="Unzip it and go into the folder">
+        <Step n={2 + o} i={2 + o} title="Unzip it and go into the folder">
           <Snippet code={`unzip ${filename} && cd ${folder}`} />
           <Text size="xs" c="dimmed">Every command below runs from inside this folder.</Text>
           {!imagesInZip && (
@@ -275,12 +356,12 @@ function RunSteps({
 
         {mode === "docker" ? (
           <>
-            <Step n={3} i={3} title="Pull the runner image">
+            <Step n={3 + o} i={3 + o} title="Pull the runner image">
               <Snippet code={runner.docker.get} />
               <Text size="xs" c="dimmed">Public image, so no login or build needed.</Text>
             </Step>
-            {exportStep(4)}
-            <Step n={(runStep = 4 + after)} i={runStep} title="Run the workflow">
+            {exportStep(4 + o)}
+            <Step n={(runStep = 4 + o + after)} i={runStep} title="Run the workflow">
               <Snippet code={runner.docker.run} />
               <Text size="xs" c="dimmed">
                 Your work dir and the folders the workflow reads are mounted at the same paths inside the
@@ -290,10 +371,10 @@ function RunSteps({
           </>
         ) : (
           <>
-            {exportStep(3)}
+            {exportStep(3 + o)}
             {runner.host ? (
             <Step
-              n={(runStep = 3 + after)}
+              n={(runStep = 3 + o + after)}
               i={runStep}
               title={<>Run the workflow <Badge size="xs" variant="light" color="teal" ml={4}>recommended on HPC</Badge></>}
             >

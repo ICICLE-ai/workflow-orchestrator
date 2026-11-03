@@ -298,6 +298,12 @@ Pick a tab and follow its numbered steps. Every command has a copy button.
 | --- | --- |
 | **Apptainer** | Your machine has Apptainer, which most HPC clusters do. Recommended on HPC. |
 | **Docker** | Your machine has Docker and allows privileged containers. |
+
+Neither installed yet? Step 1 on the Docker and Apptainer tabs gives a command
+to check, and **Not installed? How to install** shows the install commands for
+your OS: Ubuntu, Debian, RHEL/Rocky/Alma, Fedora, macOS/Windows, an HPC
+cluster's `module load`, or an Apptainer install that needs no root. The zip's
+README has the same commands under "Before you start".
 | **Offline zip** | Your machine has no network access. Download the zip here and copy it over. |
 
 On the machine, the steps are the same for both Docker and Apptainer:
