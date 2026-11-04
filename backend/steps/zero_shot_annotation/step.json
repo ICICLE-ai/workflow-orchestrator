@@ -50,13 +50,13 @@
     },
     "model_id": {
       "type": "string",
-      "description": "Checkpoint override for the chosen backend. sam3: a HuggingFace checkpoint, blank uses facebook/sam3. insid3: the DINOv3 backbone — dinov3_vits16, dinov3_vitb16 or dinov3_vitl16 (blank = dinov3_vitl16) — which must match the insid3_weights checkpoint.",
+      "description": "Checkpoint override for the chosen backend. sam3: a HuggingFace checkpoint, blank uses facebook/sam3. insid3: the DINOv3 backbone — dinov3_vits16, dinov3_vitb16 or dinov3_vitl16 (blank = dinov3_vitl16) — which must match the insid3_weights checkpoint when one is given.",
       "default": ""
     },
     "insid3_weights": {
       "type": "string",
       "selectType": "file",
-      "description": "insid3 only. Full tapis://system/path URI of the DINOv3 .pth checkpoint for the backbone in model_id (dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth for the default). Not bundled with the app: request access at github.com/facebookresearch/dinov3, download it once onto a Tapis system, and point here. Staged into each job (~1.2 GB for vitl16), so clear it when switching back to sam3.",
+      "description": "insid3 only, optional. Blank downloads the backbone in model_id from the Hugging Face Hub (facebook/dinov3-<backbone>-pretrain-lvd1689m, gated — needs hf_token, see below). To use an original checkpoint instead, give the full tapis://system/path URI of the DINOv3 .pth for that backbone (dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth for the default, from github.com/facebookresearch/dinov3). Staged into each job (~1.2 GB for vitl16), so clear it when switching back to sam3.",
       "default": ""
     },
     "insid3_image_size": {
@@ -144,7 +144,7 @@
     },
     "hf_token": {
       "type": "secret",
-      "description": "Team secret holding a HuggingFace access token with access to the gated facebook/sam3 checkpoint (huggingface.co/facebook/sam3 — request access, then create a token under HF account settings). Add it via the dashboard's secrets settings, then pick it here; passed to the job as the HF_TOKEN env var. Leave unset only if the checkpoint is already cached on the exec system and HF_HUB_OFFLINE=1 is set. insid3 needs it too when reference_box_masks is 'sam3' (the default).",
+      "description": "Team secret holding a HuggingFace access token with access to the gated facebook/sam3 checkpoint (huggingface.co/facebook/sam3 — request access, then create a token under HF account settings). Add it via the dashboard's secrets settings, then pick it here; passed to the job as the HF_TOKEN env var. Leave unset only if the checkpoint is already cached on the exec system and HF_HUB_OFFLINE=1 is set. insid3 needs it too, unless insid3_weights is set and reference_box_masks is 'box': the token's account must also have accepted the DINOv3 license on the backbone's model page (e.g. huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m).",
       "default": ""
     }
   },
