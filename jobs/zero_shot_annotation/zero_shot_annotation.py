@@ -890,6 +890,9 @@ def find_image(key: str, discovered: list[tuple[Path, str]]) -> Optional[Path]:
     for path, rel_key in discovered:
         if rel_key == key:
             return path
+    for path, rel_key in discovered:
+        if key.endswith("/" + rel_key):
+            return path
     basename = Path(key).name
     for path, rel_key in discovered:
         if Path(rel_key).name == basename:
@@ -1031,6 +1034,85 @@ def split_text_prompt(prompt: str) -> tuple[str, str]:
     return text, label or text
 
 
+# A Smart Labeler annotation flagged this way is a "not this" exemplar.
+NEGATIVE_FLAG = "negative"
+
+
+def annotations_to_prompt_data(data: dict) -> dict:
+    """
+    Read an annotation file as a prompt file: every annotation becomes an
+    exemplar, grouped by label per image, with its polygon kept when it has one.
+
+    Accepts Smart Labeler's own {"annotations": {image_path: [...]}} (box items
+    {x, y, width, height}, polygon items {points: [{x, y}, ...]}, flag
+    "negative" for negative boxes) and COCO {"images", "annotations",
+    "categories"}.  Image keys are kept as written — often absolute paths —
+    and matched to the image directory by path suffix, then filename.
+    """
+    raw = data.get("annotations")
+    items_by_image: dict[str, list[dict]] = {}
+    if isinstance(raw, dict):
+        for image_key, items in raw.items():
+            for item in items or []:
+                points = item.get("points")
+                polygon = [[float(p["x"]), float(p["y"])] for p in points] if points else None
+                if polygon:
+                    xs, ys = [x for x, _ in polygon], [y for _, y in polygon]
+                    box = [min(xs), min(ys), max(xs), max(ys)]
+                else:
+                    x, y = float(item.get("x", 0)), float(item.get("y", 0))
+                    box = [x, y, x + float(item.get("width", 0)), y + float(item.get("height", 0))]
+                items_by_image.setdefault(image_key, []).append({
+                    "label": str(item.get("label") or "object"),
+                    "box": box,
+                    "polygon": polygon,
+                    "negative": str(item.get("flag") or "").strip().lower() == NEGATIVE_FLAG,
+                })
+    elif isinstance(raw, list) and isinstance(data.get("images"), list):
+        images = {img["id"]: img for img in data["images"]}
+        categories = {c["id"]: str(c.get("name", c["id"])) for c in data.get("categories") or []}
+        for ann in raw:
+            image = images.get(ann.get("image_id"))
+            if not image or not ann.get("bbox"):
+                continue
+            x, y, w, h = (float(v) for v in ann["bbox"])
+            seg = ann.get("segmentation")
+            polygon = None
+            if isinstance(seg, list) and seg and isinstance(seg[0], list) and len(seg[0]) >= 6:
+                polygon = [[float(seg[0][i]), float(seg[0][i + 1])] for i in range(0, len(seg[0]) - 1, 2)]
+            items_by_image.setdefault(image.get("file_name") or str(ann["image_id"]), []).append({
+                "label": categories.get(ann.get("category_id"), str(ann.get("category_id"))),
+                "box": [x, y, x + w, y + h],
+                "polygon": polygon,
+                "negative": False,
+            })
+    else:
+        raise ValueError(
+            "Prompt file has no 'exemplars' or 'text_prompts', and isn't a Smart Labeler "
+            "or COCO annotation file either"
+        )
+
+    exemplars: dict[str, list[dict]] = {}
+    for image_key, items in items_by_image.items():
+        by_label: dict[str, dict] = {}
+        for item in items:
+            entry = by_label.setdefault(item["label"], {
+                "label": item["label"], "text": item["label"],
+                "boxes": [], "box_labels": [], "polygons": [],
+            })
+            entry["boxes"].append(item["box"])
+            entry["box_labels"].append(0 if item["negative"] else 1)
+            entry["polygons"].append(item["polygon"])
+        exemplars[image_key] = list(by_label.values())
+
+    n_items = sum(len(items) for items in items_by_image.values())
+    logger.info(
+        f"Read prompt file as an annotation file: {n_items} annotation(s) on "
+        f"{len(exemplars)} image(s) become exemplars"
+    )
+    return {"exemplars": exemplars}
+
+
 def load_prompt_file(path: Path) -> tuple[list[str], dict[str, list[Prompt]]]:
     """
     Parse a prompt file into ``(text_prompts, exemplars_by_image_key)``.
@@ -1040,8 +1122,12 @@ def load_prompt_file(path: Path) -> tuple[list[str], dict[str, list[Prompt]]]:
     """
     with open(path) as f:
         data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError(f"Prompt file must be a JSON object, got {type(data).__name__}")
+    if "exemplars" not in data and "text_prompts" not in data:
+        data = annotations_to_prompt_data(data)
 
-    text_prompts = [str(t).strip() for t in data.get("text_prompts", []) if str(t).strip()]
+    text_prompts =[str(t).strip() for t in data.get("text_prompts", []) if str(t).strip()]
 
     exemplars: dict[str, list[Prompt]] = {}
     for image_key, entries in (data.get("exemplars") or {}).items():
@@ -1091,13 +1177,21 @@ def load_prompt_file(path: Path) -> tuple[list[str], dict[str, list[Prompt]]]:
 
 
 def resolve_exemplars(rel_key: str, exemplars: dict[str, list[Prompt]]) -> list[Prompt]:
-    """Look up exemplars by relative key, then bare filename, then 'default'."""
+    """
+    Look up exemplars by relative key, then a key ending in it (an absolute
+    path, as Smart Labeler writes), then bare filename, then 'default'.
+    """
     if rel_key in exemplars:
         return exemplars[rel_key]
 
+    for key, prompts in exemplars.items():
+        if key.endswith("/" + rel_key):
+            return prompts
+
     basename = Path(rel_key).name
-    if basename in exemplars:
-        return exemplars[basename]
+    for key, prompts in exemplars.items():
+        if key != "default" and Path(key).name == basename:
+            return prompts
 
     return exemplars.get("default", [])
 
