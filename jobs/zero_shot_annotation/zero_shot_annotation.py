@@ -73,6 +73,10 @@ one annotation each.  Touching objects therefore come out as one annotation.
 Each component's score is its mean similarity to the reference prototype.
 `--confidence` and `--mask_threshold` do not apply; INSID3 makes its own
 foreground decision.
+The DINOv3 backbone is downloaded from the Hugging Face Hub
+(facebook/dinov3-<backbone>-pretrain-lvd1689m, gated: HF_TOKEN must belong to
+an account that accepted the license there), unless `--insid3_weights` points
+at an original .pth checkpoint.
 
 SAHI (tiled inference)
 ----------------------
@@ -112,9 +116,9 @@ Usage
         --prompt_file prompts.json
 
     # in-context segmentation: exemplars on a few images, segments on the rest
-    python zero_shot_annotation.py --image_dir ./images --output_dir ./out \
-        --prompt_file prompts.json --model insid3 \
-        --insid3_weights pretrain/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth
+    # (backbone from the Hugging Face Hub; or add --insid3_weights <.pth>)
+    HF_TOKEN=hf_... python zero_shot_annotation.py --image_dir ./images \
+        --output_dir ./out --prompt_file prompts.json --model insid3
 """
 
 from __future__ import annotations
@@ -537,6 +541,31 @@ class Sam3Backend(ZeroShotBackend):
         return batch_detections
 
 
+class HFDinov3Encoder(torch.nn.Module):
+    """
+    Wraps a ``transformers`` DINOv3ViTModel in the one call INSID3 makes on its
+    encoder: ``get_intermediate_layers(x, n=1, reshape=True)[0]``, the final
+    layer-normed patch tokens as a (B, C, h, w) map.
+    """
+
+    def __init__(self, model: torch.nn.Module):
+        super().__init__()
+        self.model = model
+        self.patch_size = model.config.patch_size
+        self.n_prefix_tokens = 1 + model.config.num_register_tokens
+
+    def get_intermediate_layers(self, x: torch.Tensor, n: int = 1, reshape: bool = False, **_):
+        if n != 1:
+            raise NotImplementedError("Only the last layer is exposed")
+        # last_hidden_state is already passed through the final norm.
+        tokens = self.model(pixel_values=x).last_hidden_state[:, self.n_prefix_tokens:]
+        if reshape:
+            B, _, H, W = x.shape
+            tokens = tokens.reshape(B, H // self.patch_size, W // self.patch_size, -1)
+            tokens = tokens.permute(0, 3, 1, 2).contiguous()
+        return (tokens,)
+
+
 @register_backend("insid3")
 class Insid3Backend(ZeroShotBackend):
     """
@@ -550,8 +579,10 @@ class Insid3Backend(ZeroShotBackend):
     score each output instance.  Those steps are private INSID3 methods, which
     is why the container pins the INSID3 commit.
 
-    ``model_id`` names the DINOv3 backbone; ``weights`` must be that
-    backbone's checkpoint.
+    ``model_id`` names the DINOv3 backbone.  ``weights`` is that backbone's
+    original .pth checkpoint; without one, the backbone is downloaded from the
+    Hugging Face Hub (gated: needs HF_TOKEN for an account that has accepted
+    the DINOv3 license on the model page).
     """
 
     default_model_id = "dinov3_vitl16"
@@ -575,6 +606,8 @@ class Insid3Backend(ZeroShotBackend):
                 f"INSID3 backbone must be one of {', '.join(self.BACKBONES)}, got '{self.model_id}'"
             )
         self.weights = weights or os.environ.get("DINOV3_WEIGHTS", "")
+        # dinov3_vitl16 -> facebook/dinov3-vitl16-pretrain-lvd1689m
+        self.hf_repo = f"facebook/{self.model_id.replace('_', '-')}-pretrain-lvd1689m"
         self.image_size = image_size
         self.min_area = min_area
         self.model = None
@@ -583,10 +616,11 @@ class Insid3Backend(ZeroShotBackend):
     def load(self) -> None:
         if cv2 is None:
             raise RuntimeError("INSID3 needs opencv-python to split masks into instances")
-        if not self.weights or not Path(self.weights).is_file():
+        if self.weights and not Path(self.weights).is_file():
             raise RuntimeError(
                 f"DINOv3 weights not found at '{self.weights}'. Pass --insid3_weights with the "
-                f"{self.model_id} .pth checkpoint from github.com/facebookresearch/dinov3."
+                f"{self.model_id} .pth checkpoint from github.com/facebookresearch/dinov3, "
+                f"or omit it to download {self.hf_repo} from the Hugging Face Hub."
             )
 
         # Neither repo is pip-installable; the container clones both (see .def).
@@ -595,16 +629,30 @@ class Insid3Backend(ZeroShotBackend):
             if home not in sys.path:
                 sys.path.insert(0, home)
 
-        from dinov3.hub import backbones
         from models.insid3 import INSID3
 
-        logger.info(f"Loading INSID3 on {self.model_id} ({self.weights}) on {self.device}...")
-        # Load the checkpoint ourselves: handed a path, the hub builder copies it
-        # into $TORCH_HOME on every run.
-        encoder = getattr(backbones, self.model_id)(pretrained=False)
-        encoder.load_state_dict(
-            torch.load(self.weights, map_location="cpu", weights_only=True), strict=True
-        )
+        if self.weights:
+            from dinov3.hub import backbones
+
+            logger.info(f"Loading INSID3 on {self.model_id} ({self.weights}) on {self.device}...")
+            # Load the checkpoint ourselves: handed a path, the hub builder copies
+            # it into $TORCH_HOME on every run.
+            encoder = getattr(backbones, self.model_id)(pretrained=False)
+            encoder.load_state_dict(
+                torch.load(self.weights, map_location="cpu", weights_only=True), strict=True
+            )
+        else:
+            from transformers import DINOv3ViTModel
+
+            logger.info(f"Loading INSID3 on {self.hf_repo} (Hugging Face Hub) on {self.device}...")
+            try:
+                encoder = HFDinov3Encoder(DINOv3ViTModel.from_pretrained(self.hf_repo))
+            except OSError as e:
+                raise RuntimeError(
+                    f"Could not download {self.hf_repo}: {e}. The repo is gated — set HF_TOKEN "
+                    f"for an account that has accepted the DINOv3 license on "
+                    f"huggingface.co/{self.hf_repo}, or pass --insid3_weights."
+                ) from e
         self.model = INSID3(
             encoder=encoder,
             image_size=self.image_size,
@@ -1422,8 +1470,8 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
 
     # INSID3 (in-context segmentation)
     parser.add_argument("--insid3_weights", type=str, default=None,
-                        help="DINOv3 .pth checkpoint matching --model_id "
-                             "(default: $DINOV3_WEIGHTS)")
+                        help="DINOv3 .pth checkpoint matching --model_id (default: "
+                             "$DINOV3_WEIGHTS; if unset, download from the Hugging Face Hub)")
     parser.add_argument("--insid3_image_size", type=int, default=1024,
                         help="Square resolution INSID3 runs at; 768 is faster, slightly less accurate")
     parser.add_argument("--reference_box_masks", type=str, default="sam3",
@@ -1699,6 +1747,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             "exemplar_min_visibility": args.exemplar_min_visibility,
             **({
                 "insid3_image_size": args.insid3_image_size,
+                "insid3_weights": backend.weights or backend.hf_repo,
                 "reference_box_masks": args.reference_box_masks,
                 "min_area": args.min_area,
             } if reference_shots else {}),

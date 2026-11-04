@@ -66,7 +66,7 @@ python zero_shot_annotation.py \
 | `--overlap_ratio` | `0.2` | Fractional overlap between adjacent tiles (with `--is_sahi`) |
 | `--exemplar_tile_mode` | `intersecting` | Which tiles to run for exemplar prompts: `intersecting` or `all` |
 | `--exemplar_min_visibility` | `0.5` | Fraction of an exemplar box that must fall inside a tile to count |
-| `--insid3_weights` | `$DINOV3_WEIGHTS` | DINOv3 `.pth` checkpoint matching `--model_id` (insid3 only) |
+| `--insid3_weights` | `$DINOV3_WEIGHTS` | DINOv3 `.pth` checkpoint matching `--model_id`; if unset, the backbone downloads from the Hugging Face Hub (insid3 only) |
 | `--insid3_image_size` | `1024` | Square resolution INSID3 runs at; `768` is faster (insid3 only) |
 | `--reference_box_masks` | `sam3` | How a box-only reference becomes a mask: `sam3` or `box` (insid3 only) |
 | `--min_area` | `0` | Drop INSID3 instances smaller than this many pixels (insid3 only) |
@@ -160,9 +160,10 @@ python zero_shot_annotation.py \
   --output_dir /path/to/output \
   --prompt_file prompts.json \
   --model insid3 \
-  --model_id dinov3_vitl16 \
-  --insid3_weights /path/to/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth
+  --model_id dinov3_vitl16
 ```
+
+The backbone downloads from the Hugging Face Hub, so `HF_TOKEN` must be set (see **Weights** below).
 
 **References come from the same prompt file.** Every positive exemplar becomes a reference for its `label`, and every image under `--image_dir` is segmented for every label. That includes the reference images themselves, so instances you didn't label there are still found. Reference images must be under `--image_dir`, but they don't have to fall inside `--max_images`.
 
@@ -191,13 +192,18 @@ python zero_shot_annotation.py \
 
 **SAHI.** With `--is_sahi`, each reference object is cropped to a `--tile_size` window around it. The model then compares objects at the scale it sees them in the target tiles. Each class uses at most 16 reference shots, sampled evenly when there are more.
 
-**Weights.** The DINOv3 checkpoints are behind Meta's license form, so they are not baked into the container. Request access at [facebookresearch/dinov3](https://github.com/facebookresearch/dinov3), download the checkpoint once, and pass its path. In the workflow step, `insid3_weights` is a Tapis URI that gets staged into each job.
+**Weights.** The DINOv3 weights are gated by Meta's license, so they are not baked into the container. There are two ways to supply them:
 
-| Backbone (`--model_id`) | Checkpoint |
-|---|---|
-| `dinov3_vitl16` *(default)* | `dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth` |
-| `dinov3_vitb16` | `dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth` |
-| `dinov3_vits16` | `dinov3_vits16_pretrain_lvd1689m-08c60483.pth` |
+- **Hugging Face Hub (default).** Accept the license on the backbone's model page with the account whose token you use, then set `HF_TOKEN`. The weights download on first use and are cached like SAM3's. In the workflow step, pick the team secret in `hf_token` and leave `insid3_weights` blank.
+- **Original checkpoint.** Request access at [facebookresearch/dinov3](https://github.com/facebookresearch/dinov3), download the `.pth` once, and pass it with `--insid3_weights`. In the workflow step, `insid3_weights` is a Tapis URI that gets staged into each job.
+
+The Hub copy is loaded through `transformers` and wrapped to give INSID3 the same features. On identical weights the two match to within float rounding.
+
+| Backbone (`--model_id`) | Hugging Face repo | Original checkpoint |
+|---|---|---|
+| `dinov3_vitl16` *(default)* | `facebook/dinov3-vitl16-pretrain-lvd1689m` | `dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth` |
+| `dinov3_vitb16` | `facebook/dinov3-vitb16-pretrain-lvd1689m` | `dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth` |
+| `dinov3_vits16` | `facebook/dinov3-vits16-pretrain-lvd1689m` | `dinov3_vits16_pretrain_lvd1689m-08c60483.pth` |
 
 INSID3's optional CRF mask refinement is not included, because it needs `nvcc` to build.
 

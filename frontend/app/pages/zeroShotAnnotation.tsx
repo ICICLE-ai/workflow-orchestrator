@@ -357,7 +357,7 @@ export default function ZeroShotAnnotationPanel({ config, onChange, step, connec
           {isInsid3 && (
             <Stack gap="sm" mt="sm">
               <TapisPathField
-                label="DINOv3 weights"
+                label="DINOv3 weights (optional)"
                 description={tip("insid3_weights")}
                 system={weightsSystem}
                 path={weightsPath}
@@ -366,8 +366,8 @@ export default function ZeroShotAnnotationPanel({ config, onChange, step, connec
                 onPathChange={(v) => setWeights(weightsSystem, v)}
               />
               {!weightsUri.trim() && (
-                <Badge size="xs" variant="light" color="yellow">
-                  No DINOv3 checkpoint selected — INSID3 can't run without one.
+                <Badge size="xs" variant="light" color="gray">
+                  No checkpoint selected — the backbone is downloaded from the Hugging Face Hub (needs the HF token below).
                 </Badge>
               )}
               <Group grow align="flex-start">
@@ -398,8 +398,9 @@ export default function ZeroShotAnnotationPanel({ config, onChange, step, connec
               </Group>
             </Stack>
           )}
-          {/* INSID3 only touches SAM3 to turn box-only references into masks. */}
-          {(!isInsid3 || boxMasks === "sam3") && (
+          {/* INSID3 needs the Hub for its DINOv3 backbone (unless a checkpoint is
+              given) and for SAM3, which turns box-only references into masks. */}
+          {(!isInsid3 || !weightsUri.trim() || boxMasks === "sam3") && (
             <>
               <Select
                 mt="sm"
@@ -414,7 +415,9 @@ export default function ZeroShotAnnotationPanel({ config, onChange, step, connec
               />
               {!hfToken && (
                 <Badge mt={4} size="xs" variant="light" color="yellow">
-                  {isInsid3
+                  {isInsid3 && !weightsUri.trim()
+                    ? "No HF token selected — the DINOv3 backbone is gated and the job will fail to download it unless it is already cached with HF_HUB_OFFLINE=1 on the exec system."
+                    : isInsid3
                     ? "No HF token selected — box-only references fall back to filled-box masks unless facebook/sam3 is already cached with HF_HUB_OFFLINE=1 on the exec system."
                     : "No HF token selected — facebook/sam3 is gated and the job will fail to load it unless the checkpoint is already cached with HF_HUB_OFFLINE=1 on the exec system."}
                 </Badge>
