@@ -135,7 +135,14 @@ Exemplar boxes are **absolute pixel coordinates in a specific image**, so they a
 | `box_labels` | no | `1` positive, `0` negative — defaults to all positive |
 | `text` | no | Concept name SAM3 pairs with the exemplar (default `"visual"`) |
 
-Image keys are matched in this order: path relative to `--image_dir`, then bare filename, then the `default` entry. `default` applies to every image without its own entry — only meaningful when the imagery is uniform, since the boxes are absolute coordinates.
+**Annotation files work as prompt files.** A file with no `exemplars` or `text_prompts` key is read as an annotation file:
+
+- **Formats:** Smart Labeler's own JSON, or COCO.
+- **Exemplars:** every annotation becomes an exemplar for its label. Polygon annotations keep their outline as `polygons`.
+- **Negative exemplars:** Smart Labeler annotations flagged `negative` become negative boxes.
+- **Image paths:** kept as written. Smart Labeler writes absolute paths, and these are matched by the matching rules below.
+
+Image keys are matched in this order: path relative to `--image_dir`, then a key ending in that path (e.g. an absolute path), then bare filename, then the `default` entry. `default` applies to every image without its own entry — only meaningful when the imagery is uniform, since the boxes are absolute coordinates.
 
 Text prompts given on the command line override those in the prompt file; exemplars only ever come from the file.
 
