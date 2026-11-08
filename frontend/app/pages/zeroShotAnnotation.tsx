@@ -74,6 +74,20 @@ export default function ZeroShotAnnotationPanel({ config, onChange, step, connec
       nextSystem && nextPath ? `tapis://${nextSystem}/${nextPath.replace(/^\/+/, "")}` : nextPath,
     );
   const boxMasks = String(field("reference_box_masks") ?? "sam3");
+  const refiner = String(field("insid3_mask_refiner") ?? "bilinear");
+  // Recommended INSID3 setup for small, low-contrast targets (leaf lesions):
+  // tau / merge threshold are left alone — they need tuning on labelled data.
+  const applySmallTargetPreset = () =>
+    onChange({
+      ...config,
+      model_id: "",
+      insid3_image_size: 1024,
+      is_sahi: true,
+      tile_size: 512,
+      overlap_ratio: 0.25,
+      insid3_mask_refiner: "crf",
+      insid3_crf_size: 1024,
+    });
 
   // annotation_file is stored as a FULL tapis://system/path URI, not a bare
   // path alongside a separate `system` field. It has to be: the key doubles as
@@ -395,6 +409,67 @@ export default function ZeroShotAnnotationPanel({ config, onChange, step, connec
                   min={0}
                   step={50}
                 />
+              </Group>
+              <Group grow align="flex-start">
+                <NumberInput
+                  label="Max reference shots"
+                  description={tip("max_shots")}
+                  value={Number(field("max_shots") ?? 16)}
+                  onChange={(v) => set("max_shots", v)}
+                  min={1}
+                  step={1}
+                />
+                <Select
+                  label="Mask refiner"
+                  description={tip("insid3_mask_refiner")}
+                  data={schema.insid3_mask_refiner?.options || ["bilinear", "crf"]}
+                  value={refiner}
+                  onChange={(v) => set("insid3_mask_refiner", v ?? "bilinear")}
+                  allowDeselect={false}
+                />
+                {refiner === "crf" && (
+                  <NumberInput
+                    label="CRF size (px)"
+                    description={tip("insid3_crf_size")}
+                    value={Number(field("insid3_crf_size") ?? 640)}
+                    onChange={(v) => set("insid3_crf_size", v)}
+                    min={128}
+                    step={64}
+                  />
+                )}
+              </Group>
+              <Group grow align="flex-start">
+                <NumberInput
+                  label="Clustering tau"
+                  description={tip("insid3_tau")}
+                  value={Number(field("insid3_tau") ?? 0.6)}
+                  onChange={(v) => set("insid3_tau", v)}
+                  min={0.05}
+                  max={2}
+                  step={0.05}
+                  decimalScale={2}
+                />
+                <NumberInput
+                  label="Merge threshold"
+                  description={tip("insid3_merge_threshold")}
+                  value={Number(field("insid3_merge_threshold") ?? 0.2)}
+                  onChange={(v) => set("insid3_merge_threshold", v)}
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  decimalScale={2}
+                />
+              </Group>
+              <Group gap="xs" align="center">
+                <Button size="xs" variant="light" onClick={applySmallTargetPreset}>
+                  Small-lesion preset
+                </Button>
+                <Text size="xs" c="dimmed" style={{ flex: 1 }}>
+                  Large backbone, SAHI with 512 px tiles each run at 1024 (a lesion then spans several model patches),
+                  and CRF borders at 1024. Annotate 5+ references covering different sizes, light and growth stages,
+                  and tune tau / merge threshold on a few labelled images: the paper's values were set for objects,
+                  not spots.
+                </Text>
               </Group>
             </Stack>
           )}

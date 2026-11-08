@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, Suspense, lazy } from "react";
-import { Group, TextInput, Button, Loader, Stack, Popover, Select, Paper, Text, Alert, CloseButton, Progress, Overlay, Center } from "@mantine/core";
-import { IconDeviceFloppy, IconSettings, IconAlertTriangle, IconCheck } from "@tabler/icons-react";
+import { Group, TextInput, Button, Loader, Stack, Popover, Select, Paper, Text, Alert, CloseButton, Progress, Overlay, Center, Switch } from "@mantine/core";
+import { IconDeviceFloppy, IconSettings, IconAlertTriangle, IconCheck, IconFiles } from "@tabler/icons-react";
 import { notifications } from "@mantine/notifications";
 import type { StepPanelProps } from "./types";
 import { apiFetch } from "../lib/api";
@@ -21,6 +21,12 @@ const ImagePlayground = lazy(async () => {
 // apiFetch, not a bare fetch: it carries whichever credential this deployment
 // uses — the session cookie standalone, the host's X-Tapis-Token when embedded.
 const studioFetch = (path: string, init?: RequestInit) => apiFetch(path, init);
+
+// Height of the playground's own AppShell header (its `header: { height: 52 }`).
+const PLAYGROUND_HEADER_PX = 52;
+
+// Same image test as TapisDirectoryBrowser; everything else is a "non-image" file.
+const IMAGE_EXT = /\.(jpe?g|png|bmp|tiff?|webp|gif)$/i;
 
 const qs = (system: string, path: string) =>
   `system=${encodeURIComponent(system)}&path=${encodeURIComponent(path)}`;
@@ -288,6 +294,44 @@ export default function ImagePreprocessStudioPanel({ config, onChange, step, con
     [dirSource, handlePipelineChange]
   );
 
+  // The job writes only the images it transforms, so anything else in the
+  // source directory (YOLO .txt labels, classes.txt, data.yaml, COCO .json) is
+  // silently left behind unless copy_all_files is on. Look for such files so the
+  // toolbar can warn and offer the switch right where the user sees it. The
+  // listing API is one level deep, so check the source dir and its immediate
+  // subfolders (labels/, annotations/, ...) — enough for the usual dataset
+  // layouts without walking a whole tree from the browser.
+  const copyAllFiles = Boolean(config.copy_all_files ?? step.config_schema.copy_all_files?.default);
+  const [otherFiles, setOtherFiles] = useState<string[]>([]);
+  useEffect(() => {
+    const dir = sourceDir.trim().replace(/\/+$/, "");
+    setOtherFiles([]);
+    if (!system || !dir) return;
+    let cancelled = false;
+    const list = async (path: string): Promise<RemoteFile[]> => {
+      const res = await studioFetch(`/api/tapis-files/list?${qs(system, path)}`);
+      return res.ok ? ((await res.json()).result || []) : [];
+    };
+    const isOther = (e: RemoteFile) =>
+      e.type === "file" && !IMAGE_EXT.test(e.name) && !(e.mimeType || "").startsWith("image/") &&
+      e.name !== "operations.json";
+    (async () => {
+      try {
+        const top = await list(dir);
+        const found = top.filter(isOther).map((e) => e.name);
+        const subdirs = top.filter((e) => e.type === "dir").slice(0, 10);
+        const nested = await Promise.all(subdirs.map((d) => list(`${dir}/${d.name}`).catch(() => [])));
+        nested.forEach((entries, i) =>
+          entries.filter(isOther).forEach((e) => found.push(`${subdirs[i].name}/${e.name}`))
+        );
+        if (!cancelled) setOtherFiles(found);
+      } catch {
+        // A failed scan just means no warning; the switch only adds files.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [system, sourceDir]);
+
   // Manual save to a chosen location. NOT what feeds the job any more — the run
   // writes operations.json itself from `config.operations`, so a pipeline built
   // here reaches the job whether or not this button is ever pressed. Kept for
@@ -349,8 +393,34 @@ export default function ImagePreprocessStudioPanel({ config, onChange, step, con
     }
   };
 
+  // The toolbar floats over the playground's right sidebar (its pipeline
+  // steps). Alone it fits inside the 52px header, but a save result or the
+  // non-image warning makes it taller and it would cover the first steps. So
+  // while it reaches past the header, start the sidebar below it instead;
+  // the sidebar's top/height otherwise come from Mantine's header offset.
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  const [asideTop, setAsideTop] = useState<number | null>(null);
+  useEffect(() => {
+    const el = toolbarRef.current;
+    if (!el) return;
+    const measure = () => {
+      const bottom = Math.ceil(el.getBoundingClientRect().bottom) + 8;
+      setAsideTop(bottom > PLAYGROUND_HEADER_PX ? bottom : null);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
   return (
-    <div ref={containerRef} style={{ height: "100%" }}>
+    <div ref={containerRef} data-preprocess-studio style={{ height: "100%" }}>
+      {asideTop !== null && (
+        <style>{`[data-preprocess-studio] .mantine-AppShell-aside {
+          top: ${asideTop}px !important;
+          height: calc(100dvh - ${asideTop}px) !important;
+        }`}</style>
+      )}
       {mounted ? (
         <Suspense fallback={<Group justify="center" p="xl"><Loader /></Group>}>
           {playground}
@@ -408,6 +478,7 @@ export default function ImagePreprocessStudioPanel({ config, onChange, step, con
           system Select stays interactive — the library's headerActions did not
           re-render reactively, which made the dropdown go stale after one pick. */}
       <Paper
+        ref={toolbarRef}
         shadow="sm"
         p={6}
         radius="md"
@@ -456,6 +527,7 @@ export default function ImagePreprocessStudioPanel({ config, onChange, step, con
                     "Leave blank to save beside your images; the run always writes its " +
                     "own copy to this step's archive dir either way."
                   }
+                  styles={{ description: { overflowWrap: "anywhere" } }}
                   placeholder={saveTarget || "/full/path/to/operations.json"}
                   value={pipelinePath}
                   onChange={(e) => setField("pipeline_path", e.currentTarget.value)}
@@ -463,7 +535,7 @@ export default function ImagePreprocessStudioPanel({ config, onChange, step, con
                 {/* The single most useful line here: where the button will
                     actually write, resolved the same way savePipeline resolves
                     it, so "blank" is never a mystery. */}
-                <Text size="xs" c={saveTarget ? "dimmed" : "orange"}>
+                <Text size="xs" c={saveTarget ? "dimmed" : "orange"} style={{ overflowWrap: "anywhere" }}>
                   {saveTarget
                     ? `Save writes to: ${saveTarget}`
                     : "No target yet — browse to an image, or type a full path above."}
@@ -510,6 +582,55 @@ export default function ImagePreprocessStudioPanel({ config, onChange, step, con
             </Group>
           </Alert>
         )}
+
+        {/* The switch is always here; it gets a warning around it when the
+            source holds non-image files that would otherwise be left out,
+            or a reminder of what it does once it's on. */}
+        {(() => {
+          const copySwitch = (
+            <Switch
+              size="xs"
+              label="Copy all files"
+              description={
+                otherFiles.length > 0 || copyAllFiles
+                  ? undefined
+                  : "Also copy labels and other non-image files to the output."
+              }
+              checked={copyAllFiles}
+              onChange={(e) => onChange({ ...config, copy_all_files: e.currentTarget.checked })}
+            />
+          );
+          if (otherFiles.length === 0 && !copyAllFiles) {
+            return <div style={{ marginTop: 6, padding: "0 4px" }}>{copySwitch}</div>;
+          }
+          return (
+            <Alert
+              mt={6}
+              py={6}
+              px={8}
+              variant="light"
+              color={copyAllFiles ? "blue" : "yellow"}
+              icon={copyAllFiles ? <IconFiles size={16} /> : <IconAlertTriangle size={16} />}
+              title={
+                copyAllFiles
+                  ? "All files will be copied to the output"
+                  : `${otherFiles.length} non-image file${otherFiles.length === 1 ? "" : "s"} won't reach the output`
+              }
+              styles={{ title: { fontSize: 12, marginBottom: 2 }, body: { maxWidth: 420 } }}
+            >
+              <Stack gap={6}>
+                <Text size="xs">
+                  {copyAllFiles
+                    ? "Labels and other files are copied unchanged next to the processed images. " +
+                      "Crop, rotate, flip or padding would leave label coordinates out of place."
+                    : "Only processed images are written by default, so labels and other files " +
+                      `(e.g. ${otherFiles.slice(0, 3).join(", ")}) would be left out.`}
+                </Text>
+                {copySwitch}
+              </Stack>
+            </Alert>
+          );
+        })()}
       </Paper>
 
       <TapisDirectoryBrowser

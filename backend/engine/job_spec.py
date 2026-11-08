@@ -200,8 +200,8 @@ def _normalize_archive_dir(rendered: dict, context: dict) -> None:
     '/tapis:/expanse-tapis-static/users/x/out'.
 
     A template hits this whenever it points archiveSystemDir at a config field
-    or port rather than at ${archive_dir} (image_preprocess_studio's
-    ${output_path}, say): those values are full tapis://system/path URIs at run
+    or port rather than at ${archive_dir} (as image_preprocess_studio's
+    ${output_path} once did): those values are full tapis://system/path URIs at run
     time, because that's what every other consumer of them — fileInput
     sourceUrls, downstream edges — requires.
 

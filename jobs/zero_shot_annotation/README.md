@@ -70,6 +70,11 @@ python zero_shot_annotation.py \
 | `--insid3_image_size` | `1024` | Square resolution INSID3 runs at; `768` is faster (insid3 only) |
 | `--reference_box_masks` | `sam3` | How a box-only reference becomes a mask: `sam3` or `box` (insid3 only) |
 | `--min_area` | `0` | Drop INSID3 instances smaller than this many pixels (insid3 only) |
+| `--max_shots` | `16` | Most reference shots per class, sampled evenly beyond this (insid3 only) |
+| `--insid3_mask_refiner` | `bilinear` | `bilinear` upsampling, or `crf` to snap mask borders to image edges (insid3 only) |
+| `--insid3_crf_size` | `640` | Resolution the CRF refines at; higher is sharper and slower (insid3 only) |
+| `--insid3_tau` | `0.6` | Clustering distance threshold; lower gives finer clusters (insid3 only) |
+| `--insid3_merge_threshold` | `0.2` | Cluster aggregation threshold; higher keeps fewer clusters (insid3 only) |
 | `--batch_size` | `8` | Tiles per inference batch |
 | `--confidence` | `0.3` | Score threshold for keeping an instance |
 | `--mask_threshold` | `0.5` | Threshold for binarising predicted masks |
@@ -197,7 +202,7 @@ The backbone downloads from the Hugging Face Hub, so `HF_TOKEN` must be set (see
 
 **Output.** INSID3 returns one mask per class. It is split into connected components, and each component becomes one annotation with `prompt_type: "reference"`. Touching objects therefore come out as a single annotation. Each annotation's `score` is its mean similarity to the class's reference prototype. `--confidence` and `--mask_threshold` don't apply, because INSID3 makes its own foreground decision. Use `--min_area` to drop specks.
 
-**SAHI.** With `--is_sahi`, each reference object is cropped to a `--tile_size` window around it. The model then compares objects at the scale it sees them in the target tiles. Each class uses at most 16 reference shots, sampled evenly when there are more.
+**SAHI.** With `--is_sahi`, each reference object is cropped to a `--tile_size` window around it. The model then compares objects at the scale it sees them in the target tiles. Each class uses at most `--max_shots` reference shots (16 by default), sampled evenly when there are more.
 
 **Weights.** The DINOv3 weights are gated by Meta's license, so they are not baked into the container. There are two ways to supply them:
 
@@ -212,7 +217,19 @@ The Hub copy is loaded through `transformers` and wrapped to give INSID3 the sam
 | `dinov3_vitb16` | `facebook/dinov3-vitb16-pretrain-lvd1689m` | `dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth` |
 | `dinov3_vits16` | `facebook/dinov3-vits16-pretrain-lvd1689m` | `dinov3_vits16_pretrain_lvd1689m-08c60483.pth` |
 
-INSID3's optional CRF mask refinement is not included, because it needs `nvcc` to build.
+**Small targets (e.g. leaf lesions).** The paper's setup was tuned for objects. For small, low-contrast spots:
+
+| Setting | Recommendation | Why |
+|---|---|---|
+| Backbone | `--model_id dinov3_vitl16` (the default) | Small, low-contrast targets need the best features |
+| Tiling | `--is_sahi --tile_size 384`–`512`, with `--insid3_image_size 1024` | Each tile is upscaled to 1024, so a 16 px model patch covers about 6–8 image px and a lesion spans 2–5 patches |
+| Shots | 5 or more references per class | Cover different lesion sizes, sun and shade, young and mature lesions. The job warns below 5 |
+| Refinement | `--insid3_mask_refiner crf` with a higher `--insid3_crf_size` (e.g. 1024) | Sharpens lesion borders a lot. Slower |
+| Hyperparameters | Tune `--insid3_tau` and `--insid3_merge_threshold` on a few labelled images | The defaults are the paper's values, tuned for objects, not small spots |
+
+The workflow panel's **Small-lesion preset** button applies the first, second and fourth rows. Shots and the two hyperparameters depend on your data.
+
+**CRF.** The CRF refiner is [netw0rkf10w/CRF](https://github.com/netw0rkf10w/CRF), a PyTorch C++/CUDA extension. The container builds it against CUDA 12.6 for V100, A100 and H100 GPUs, then removes the compiler. It runs on GPU only: the package's CPU kernel is broken, so `crf` on CPU stops with an error. Outside the container, install the package yourself (building it needs `nvcc`).
 
 ## Outputs
 

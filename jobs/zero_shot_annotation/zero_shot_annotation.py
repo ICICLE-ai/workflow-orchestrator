@@ -170,6 +170,9 @@ SAM3_BOX_MODEL_ID = "facebook/sam3"
 # Reference shots per class INSID3 is given.  Every shot adds a full
 # (patches x patches) similarity map per target, so memory grows linearly.
 MAX_REFERENCE_SHOTS = 16
+# Below this many shots per class, INSID3's prototype rests on too few looks at
+# the object (sizes, lighting, growth stages) — warn rather than refuse.
+MIN_RECOMMENDED_SHOTS = 5
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -599,8 +602,14 @@ class Insid3Backend(ZeroShotBackend):
         weights: Optional[str] = None,
         image_size: int = 1024,
         min_area: float = 0.0,
+        tau: float = 0.6,
+        merge_threshold: float = 0.2,
+        mask_refiner: str = "bilinear",
+        crf_size: int = 640,
     ):
         super().__init__(model_id=model_id, device=device)
+        if mask_refiner not in ("bilinear", "crf"):
+            raise ValueError(f"INSID3 mask refiner must be 'bilinear' or 'crf', got '{mask_refiner}'")
         if self.model_id not in self.BACKBONES:
             raise ValueError(
                 f"INSID3 backbone must be one of {', '.join(self.BACKBONES)}, got '{self.model_id}'"
@@ -610,6 +619,10 @@ class Insid3Backend(ZeroShotBackend):
         self.hf_repo = f"facebook/{self.model_id.replace('_', '-')}-pretrain-lvd1689m"
         self.image_size = image_size
         self.min_area = min_area
+        self.tau = tau
+        self.merge_threshold = merge_threshold
+        self.mask_refiner = mask_refiner
+        self.crf_size = crf_size
         self.model = None
         self._references: dict[str, dict] = {}
 
@@ -630,6 +643,23 @@ class Insid3Backend(ZeroShotBackend):
                 sys.path.insert(0, home)
 
         from models.insid3 import INSID3
+
+        if self.mask_refiner == "crf":
+            # The CRF package's CPU kernel reads its channels-last input as
+            # channels-first and segfaults; only the CUDA kernel works.
+            if not str(self.device).startswith("cuda"):
+                raise RuntimeError(
+                    "--insid3_mask_refiner crf needs a GPU (the CRF package's CPU kernel is "
+                    "broken). Run on a GPU node, or use --insid3_mask_refiner bilinear."
+                )
+            try:
+                import CRF  # noqa: F401  (INSID3 imports it lazily, mid-construction)
+            except ImportError as e:
+                raise RuntimeError(
+                    f"--insid3_mask_refiner crf needs the CRF package "
+                    f"(github.com/netw0rkf10w/CRF), which failed to import: {e}. "
+                    f"Rebuild the container, or use --insid3_mask_refiner bilinear."
+                ) from e
 
         if self.weights:
             from dinov3.hub import backbones
@@ -656,7 +686,10 @@ class Insid3Backend(ZeroShotBackend):
         self.model = INSID3(
             encoder=encoder,
             image_size=self.image_size,
-            mask_refiner="bilinear",
+            tau=self.tau,
+            merge_threshold=self.merge_threshold,
+            mask_refiner=self.mask_refiner,
+            crf_size=self.crf_size,
             # Masks come back at image_size x image_size; instances are split
             # there and scaled to each tile, rather than upsampling every mask
             # to full resolution first.
@@ -918,6 +951,7 @@ def build_reference_shots(
     device: str,
     is_sahi: bool,
     tile_size: int,
+    max_shots: int = MAX_REFERENCE_SHOTS,
 ) -> dict[str, list[ReferenceShot]]:
     """
     Turn prompt-file exemplars into INSID3 reference shots, grouped by label.
@@ -1007,11 +1041,14 @@ def build_reference_shots(
         logger.info(f"Ignored {ignored_negatives} negative exemplar box(es) — INSID3 uses positives only")
 
     for label, label_shots in shots.items():
-        if len(label_shots) > MAX_REFERENCE_SHOTS:
-            idx = np.round(np.linspace(0, len(label_shots) - 1, MAX_REFERENCE_SHOTS)).astype(int)
+        if len(label_shots) > max_shots:
+            idx = np.round(np.linspace(0, len(label_shots) - 1, max_shots)).astype(int)
             shots[label] = [label_shots[i] for i in idx]
-            logger.info(
-                f"'{label}': using {MAX_REFERENCE_SHOTS} of {len(label_shots)} reference shots"
+            logger.info(f"'{label}': using {max_shots} of {len(label_shots)} reference shots")
+        elif len(label_shots) < MIN_RECOMMENDED_SHOTS:
+            logger.warning(
+                f"'{label}' has only {len(label_shots)} reference shot(s) — {MIN_RECOMMENDED_SHOTS}+ "
+                f"covering different sizes, lighting and stages usually segment better"
             )
     return shots
 
@@ -1574,6 +1611,20 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
                              "the SAM3 tracker, or the filled box")
     parser.add_argument("--min_area", type=float, default=0.0,
                         help="Drop INSID3 instances smaller than this many pixels")
+    parser.add_argument("--max_shots", type=int, default=MAX_REFERENCE_SHOTS,
+                        help="Most reference shots per class (sampled evenly beyond this)")
+    parser.add_argument("--insid3_tau", type=float, default=0.6,
+                        help="INSID3 clustering distance threshold: lower splits the target into "
+                             "finer clusters (paper value 0.6, tuned for objects, not small spots)")
+    parser.add_argument("--insid3_merge_threshold", type=float, default=0.2,
+                        help="INSID3 cluster aggregation threshold: higher keeps fewer clusters "
+                             "as foreground (paper value 0.2)")
+    parser.add_argument("--insid3_mask_refiner", type=str, default="bilinear",
+                        choices=["bilinear", "crf"],
+                        help="Upsample masks bilinearly, or refine their borders with a dense CRF "
+                             "(sharper edges, slower)")
+    parser.add_argument("--insid3_crf_size", type=int, default=640,
+                        help="Resolution the CRF refines at; higher is sharper and slower")
 
     # Inference
     parser.add_argument("--batch_size", type=int, default=8,
@@ -1614,6 +1665,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 1
     if args.is_sahi and args.tile_size <= 0:
         logger.error("--tile_size must be > 0")
+        return 1
+    if args.max_shots < 1:
+        logger.error("--max_shots must be >= 1")
         return 1
 
     # ── Prompts ──────────────────────────────────────────────────────────────
@@ -1675,6 +1729,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             "weights": args.insid3_weights,
             "image_size": args.insid3_image_size,
             "min_area": args.min_area,
+            "tau": args.insid3_tau,
+            "merge_threshold": args.insid3_merge_threshold,
+            "mask_refiner": args.insid3_mask_refiner,
+            "crf_size": args.insid3_crf_size,
         }
     try:
         backend = get_backend(args.model, model_id=args.model_id, device=device, **backend_kwargs)
@@ -1724,6 +1782,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             device=device,
             is_sahi=args.is_sahi,
             tile_size=args.tile_size,
+            max_shots=args.max_shots,
         )
         if not reference_shots:
             logger.error("No usable reference masks — check the prompt file's image keys")
@@ -1842,6 +1901,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             **({
                 "insid3_image_size": args.insid3_image_size,
                 "insid3_weights": backend.weights or backend.hf_repo,
+                "insid3_tau": args.insid3_tau,
+                "insid3_merge_threshold": args.insid3_merge_threshold,
+                "insid3_mask_refiner": args.insid3_mask_refiner,
+                "insid3_crf_size": args.insid3_crf_size,
+                "max_shots": args.max_shots,
                 "reference_box_masks": args.reference_box_masks,
                 "min_area": args.min_area,
             } if reference_shots else {}),

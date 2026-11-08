@@ -75,6 +75,32 @@
       "description": "insid3 only. INSID3 returns one mask per class, split into connected components — one annotation each (touching objects come out as one). Components smaller than this many pixels are dropped; 0 keeps all.",
       "default": 0
     },
+    "max_shots": {
+      "type": "int",
+      "description": "insid3 only. Most reference shots used per class (one per annotated image, or one per object with SAHI); beyond this they are sampled evenly. 5+ shots covering different sizes, lighting and growth stages usually segment better — the job warns below 5.",
+      "default": 16
+    },
+    "insid3_mask_refiner": {
+      "type": "select",
+      "options": ["bilinear", "crf"],
+      "description": "insid3 only. How the coarse patch-level mask is brought up to pixel resolution: 'bilinear' upsampling, or 'crf' — a dense CRF that snaps borders to image edges. CRF helps a lot for small objects with sharp borders (e.g. leaf lesions) but is slower.",
+      "default": "bilinear"
+    },
+    "insid3_crf_size": {
+      "type": "int",
+      "description": "insid3 with mask refiner 'crf' only. Resolution the CRF refines at (INSID3 default 640); higher can sharpen borders further at the cost of speed. Keep it at or below the image size.",
+      "default": 640
+    },
+    "insid3_tau": {
+      "type": "float",
+      "description": "insid3 only. Clustering distance threshold for grouping target patches (paper value 0.6). Lower splits targets into finer clusters, which can help small spots. The paper's values were tuned for objects, not small spots — tune on a few labelled images.",
+      "default": 0.6
+    },
+    "insid3_merge_threshold": {
+      "type": "float",
+      "description": "insid3 only. Cluster aggregation threshold (paper value 0.2): how strongly a cluster must match the reference to be kept as foreground. Higher is stricter (fewer false regions, may drop faint targets).",
+      "default": 0.2
+    },
     "is_sahi": {
       "type": "boolean",
       "description": "Slice each image into overlapping tiles before inference (SAHI) — improves detection of small objects in large imagery. Tile count grows quickly: images x prompts x tiles inferences per run.",
@@ -82,7 +108,7 @@
     },
     "tile_size": {
       "type": "int",
-      "description": "Tile size in pixels. Only used when SAHI is enabled.",
+      "description": "Tile size in pixels. Only used when SAHI is enabled. For small targets with insid3, 384-512 px tiles (each upscaled to insid3_image_size) put a 16 px model patch at ~6-8 image px, so a small lesion spans several patches.",
       "default": 960
     },
     "overlap_ratio": {
@@ -198,6 +224,11 @@
         { "name": "insid3_image_size", "arg": "--insid3_image_size ${insid3_image_size}", "if": "model=insid3" },
         { "name": "reference_box_masks", "arg": "--reference_box_masks ${reference_box_masks}", "if": "model=insid3" },
         { "name": "min_area", "arg": "--min_area ${min_area}", "if": "model=insid3" },
+        { "name": "max_shots", "arg": "--max_shots ${max_shots}", "if": "model=insid3" },
+        { "name": "insid3_mask_refiner", "arg": "--insid3_mask_refiner ${insid3_mask_refiner}", "if": "model=insid3" },
+        { "name": "insid3_crf_size", "arg": "--insid3_crf_size ${insid3_crf_size}", "if": "insid3_mask_refiner=crf" },
+        { "name": "insid3_tau", "arg": "--insid3_tau ${insid3_tau}", "if": "model=insid3" },
+        { "name": "insid3_merge_threshold", "arg": "--insid3_merge_threshold ${insid3_merge_threshold}", "if": "model=insid3" },
         { "name": "batch_size", "arg": "--batch_size ${batch_size}" },
         { "name": "confidence", "arg": "--confidence ${confidence}" },
         { "name": "mask_threshold", "arg": "--mask_threshold ${mask_threshold}" },

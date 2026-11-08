@@ -20,3 +20,5 @@ accelerate
 einops
 scikit-learn
 pycocotools
+# imported by the CRF mask refiner (built in the .def)
+matplotlib
