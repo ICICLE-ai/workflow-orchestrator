@@ -29,6 +29,7 @@ from engine.transactions import (
 from engine.tapis import TapisV3, copy_tapis_path, resolve_latest_file, use_real_tapis
 from engine import inline_steps
 from engine import job_spec
+from engine.bind_inputs import localize_file_inputs
 from engine import secrets as secrets_store
 from engine import single_job
 
@@ -335,6 +336,10 @@ def execute_node_workflow(node_key: str, run_id: int, orchestrator_workflow_id: 
         # node's own config alongside its business params.
         job_spec.apply_resource_overrides(rendered, resolved)
         rendered.setdefault("name", f"run-{run_id}-{node_key}")
+        # Inputs already on the exec system's filesystem are bind-mounted into
+        # the container instead of copied in by Tapis (see engine.bind_inputs);
+        # only cross-site inputs are still staged.
+        rendered = localize_file_inputs(rendered, run_id)
 
         # 3. Submit and poll.
         job_uuid = TapisV3.submit_job(rendered, run_id, redact=secret_values)
