@@ -190,7 +190,7 @@ def _warn_on_empty_placeholders(template: dict, ctx: dict, label: str, warnings:
         """
         return [
             item for item in (items or [])
-            if not (isinstance(item, dict) and "if" in item and not ctx.get(item["if"]))
+            if not (isinstance(item, dict) and "if" in item and not job_spec.condition_met(item["if"], ctx))
         ]
 
     # fileInputs are deliberately excluded: an empty sourceUrl there is an
@@ -609,7 +609,7 @@ def build_bundle(
                     if isinstance(v, dict) and v.get("key")
                 },
                 "outputs": {
-                    p["name"]: f"{output_dir}/{p['output_path']}" if p["output_path"] else output_dir
+                    p["name"]: f"{output_dir}/{job_spec.render_path(p['output_path'], ctx)}" if p["output_path"] else output_dir
                     for p in out_ports
                 },
             })

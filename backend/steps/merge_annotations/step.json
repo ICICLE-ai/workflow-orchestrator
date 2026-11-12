@@ -1,0 +1,188 @@
+{
+  "step_type_key": "merge_annotations",
+  "resources": {
+    "gpu": false
+  },
+  "display_name": "Merge Annotations",
+  "description": "Combines 2–6 annotation files (Zero-Shot Annotation output and/or Smart Labeler annotations.json, in any mix) into one. Annotations for the same image are combined, e.g. two zero-shot runs on one folder with different prompts. The result feeds Annotations to YOLO Dataset or the Smart Labeler.",
+  "category": "Post-processing",
+  "icon": "file-text",
+  "tapis_app_id": "wf-utils",
+  "inputs": [
+    {
+      "name": "annotations_1",
+      "type": "json_results",
+      "required": true
+    },
+    {
+      "name": "annotations_2",
+      "type": "json_results",
+      "required": true
+    },
+    {
+      "name": "annotations_3",
+      "type": "json_results",
+      "required": false,
+      "description": "Optional: another annotation file, used only when wired."
+    },
+    {
+      "name": "annotations_4",
+      "type": "json_results",
+      "required": false,
+      "description": "Optional: another annotation file, used only when wired."
+    },
+    {
+      "name": "annotations_5",
+      "type": "json_results",
+      "required": false,
+      "description": "Optional: another annotation file, used only when wired."
+    },
+    {
+      "name": "annotations_6",
+      "type": "json_results",
+      "required": false,
+      "description": "Optional: another annotation file, used only when wired."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "annotations",
+      "type": "json_results",
+      "output_path": "annotations.json",
+      "description": "The combined annotations, in the format chosen in the settings."
+    },
+    {
+      "name": "summary",
+      "type": "json_results",
+      "output_path": "merge_annotations_summary.json",
+      "description": "Annotations and images per input file, the combined totals, and duplicates dropped."
+    }
+  ],
+  "config_schema": {
+    "output_format": {
+      "type": "select",
+      "options": [
+        "zero_shot",
+        "smart_labeler"
+      ],
+      "default": "zero_shot",
+      "description": "Format of the combined file: zero-shot's flat format, or the Smart Labeler's annotations.json. Annotations to YOLO Dataset and the Smart Labeler read both."
+    },
+    "dedupe_iou": {
+      "type": "float",
+      "default": 0.0,
+      "description": "Drop an annotation that overlaps a higher-scored one of the same class on the same image by at least this IoU (0–1), for files that found the same objects. 0 keeps everything; try 0.7."
+    },
+    "prefix_folders": {
+      "type": "boolean",
+      "default": false,
+      "description": "The files describe DIFFERENT image folders that Merge Folders combined with 'into subfolders' on: keys file N's images under folder_N/, to match. Wire annotations_N to the file for that step's folder_N."
+    },
+    "exec_queue": {
+      "type": "string",
+      "default": "cpu",
+      "description": "Scheduler queue. This is a CPU-only job, so it defaults to a CPU queue (overrides the run-level queue)."
+    }
+  },
+  "tapis_job": {
+    "name": "merge-annotations",
+    "appId": "wf-utils",
+    "appVersion": "1.0.0",
+    "description": "Combine annotation files",
+    "execSystemId": "${exec_system}",
+    "execSystemLogicalQueue": "${exec_queue}",
+    "archiveSystemId": "${archive_system}",
+    "archiveSystemDir": "${archive_dir}",
+    "nodeCount": 1,
+    "coresPerNode": 2,
+    "memoryMB": 8000,
+    "maxMinutes": 60,
+    "fileInputs": [
+      {
+        "name": "annotations_1",
+        "autoMountLocal": true,
+        "sourceUrl": "${annotations_1}",
+        "targetPath": "input/annotations_1.json"
+      },
+      {
+        "name": "annotations_2",
+        "autoMountLocal": true,
+        "sourceUrl": "${annotations_2}",
+        "targetPath": "input/annotations_2.json"
+      },
+      {
+        "name": "annotations_3",
+        "autoMountLocal": true,
+        "sourceUrl": "${annotations_3}",
+        "targetPath": "input/annotations_3.json",
+        "if": "annotations_3"
+      },
+      {
+        "name": "annotations_4",
+        "autoMountLocal": true,
+        "sourceUrl": "${annotations_4}",
+        "targetPath": "input/annotations_4.json",
+        "if": "annotations_4"
+      },
+      {
+        "name": "annotations_5",
+        "autoMountLocal": true,
+        "sourceUrl": "${annotations_5}",
+        "targetPath": "input/annotations_5.json",
+        "if": "annotations_5"
+      },
+      {
+        "name": "annotations_6",
+        "autoMountLocal": true,
+        "sourceUrl": "${annotations_6}",
+        "targetPath": "input/annotations_6.json",
+        "if": "annotations_6"
+      }
+    ],
+    "parameterSet": {
+      "appArgs": [
+        {
+          "name": "tool",
+          "arg": "merge_annotations",
+          "description": "The shared wf-utils container runs several small tools; this picks which one (jobs/wf_utils/)."
+        },
+        {
+          "name": "inputs",
+          "arg": "--inputs_root /job/input"
+        },
+        {
+          "name": "output",
+          "arg": "--output /job/output/annotations.json --summary /job/output/merge_annotations_summary.json"
+        },
+        {
+          "name": "format",
+          "arg": "--format ${output_format}"
+        },
+        {
+          "name": "dedupe_iou",
+          "arg": "--dedupe_iou ${dedupe_iou}"
+        },
+        {
+          "name": "prefix_folders",
+          "arg": "--prefix_folders",
+          "if": "prefix_folders"
+        }
+      ],
+      "containerArgs": [
+        {
+          "name": "binding",
+          "arg": "--bind $PWD:/job"
+        }
+      ],
+      "schedulerOptions": [
+        {
+          "arg": "-A ${slurm_account}",
+          "name": "slurm account"
+        }
+      ],
+      "archiveFilter": {
+        "includeLaunchFiles": false
+      }
+    }
+  }
+}

@@ -15,3 +15,10 @@ Pillow
 transformers>=5.12.0
 tqdm
 accelerate
+
+# INSID3 backend (in-context segmentation; model code cloned in the .def)
+einops
+scikit-learn
+pycocotools
+# imported by the CRF mask refiner (built in the .def)
+matplotlib

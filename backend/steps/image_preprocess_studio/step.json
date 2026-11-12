@@ -6,8 +6,7 @@
    "category": "Data Pre-processing",
    "tapis_app_id": "opencv-preprocess",
    "inputs": [
-      { "name": "source_dir", "type": "image_dir" },
-      { "name": "output_path", "type": "image_dir" }
+      { "name": "source_dir", "type": "image_dir" }
    ],
    "outputs": [{ "name": "output_path", "type": "image_dir" }],
    "config_schema": {
@@ -21,10 +20,10 @@
          "description": "Optional Tapis path for the operations.json this step stages. Leave it blank and the run writes the pipeline built in the panel to this step's own archive dir automatically; set it only to keep the file somewhere specific, or to point at an operations.json maintained outside this app. Either way the run rewrites it to a full tapis://system/path URI before submitting — see engine/inline_steps.py. The empty default is load-bearing: get_config_schema_defaults skips any field with no 'default' at all, so this key never entered the render context and the job spec went out carrying a literal '${pipeline_path}'.",
          "default": ""
       },
-      "output_path": {
-         "type": "image_dir",
-         "description": "Directory the preprocessed images are archived to — this step's archiveSystemDir as well as its output port. Being a port, it resolves to a full tapis://system/path URI at run time, which archiveSystemDir must NOT be (Tapis names the system separately in archiveSystemId, and mangles a URI into '/tapis:/<system>/<dir>'); job_spec._normalize_archive_dir strips it back to a plain path and moves the system onto archiveSystemId. Leaving this unset is also handled there — it falls back to the run's own archive_dir rather than archiving into a literal '${output_path}'.",
-         "default": ""
+      "copy_all_files": {
+         "type": "boolean",
+         "description": "Also copy every non-image file (YOLO .txt labels, classes.txt, data.yaml, COCO .json, ...) from the source directory into the output, keeping its relative path, so an annotated dataset comes out of this step still usable. Off by default: only the transformed images are written. Sent to the container as --copy-non-images (the flag's name inside the opencv-preprocess image), so this needs an image that understands it. The studio panel offers this switch in a warning when it finds non-image files in the source directory.",
+         "default": false
       }
    },
    "tapis_job": {
@@ -35,7 +34,7 @@
       "execSystemId": "${exec_system}",
       "execSystemLogicalQueue": "${exec_queue}",
       "archiveSystemId": "${archive_system}",
-      "archiveSystemDir": "${output_path}",
+      "archiveSystemDir": "${archive_dir}",
       "archiveOnAppError": true,
       "nodeCount": 1,
       "coresPerNode": 1,
@@ -45,10 +44,12 @@
          "appArgs": [
             { "name": "input-dir", "arg": "--input input" },
             { "name": "output-dir", "arg": "--output output" },
-            { "name": "pipeline", "arg": "--pipeline operations.json" }
+            { "name": "pipeline", "arg": "--pipeline operations.json" },
+            { "name": "copy-all-files", "arg": "--copy-non-images", "if": "copy_all_files" }
          ],
          "envVariables": [],
-         "schedulerOptions": [{ "name": "slurm account", "arg": "-A ${slurm_account}" }]
+         "schedulerOptions": [{ "name": "slurm account", "arg": "-A ${slurm_account}" }],
+         "archiveFilter": { "includeLaunchFiles": false }
       },
       "fileInputs": [
          {

@@ -18,19 +18,40 @@ given node, directly on the host with nothing but python3.
 from __future__ import annotations
 
 import argparse
+import codecs
 import fnmatch
 import json
 import os
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import time
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+try:
+    from wf_runner import __version__
+except ImportError:  # run as a plain script: python3 runner/wf_runner/runner.py
+    __version__ = "unknown"
+
 SUPPORTED_BUNDLE_VERSION = 1
+
+# What the upload package (run-<id>-report.zip) carries of each step's outputs.
+# Only small, viewable files: the platform renders them in the run's panels,
+# and nothing a panel can't show (weights, image folders) is worth the upload.
+# Anything left out is still listed in the report, by its path on this node.
+UPLOAD_EXTS = {
+    ".json", ".jsonl", ".csv", ".tsv", ".txt", ".md", ".yaml", ".yml", ".xml", ".log",
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg",
+    ".geojson", ".gpkg", ".kml",
+}
+UPLOAD_LOG_BYTES = 200_000      # tail of each step's runner.log
+UPLOAD_FILES_PER_PORT = 200
+UPLOAD_SKIPPED_LISTED = 50      # per port; the rest are only counted
 
 
 class BundleError(RuntimeError):
@@ -55,6 +76,98 @@ def redact(text: str) -> str:
 
 def log(msg: str) -> None:
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {redact(msg)}", flush=True)
+
+
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07")
+
+
+class LiveTail:
+    """The last few lines of a running step's output, shown under its exec line.
+
+    On a terminal the window is redrawn in place (a progress bar written with
+    \\r updates its one line rather than scrolling) and erased when the step
+    ends, leaving the DAG-level log as it was; the full output is always in
+    the step's runner.log. Off a terminal (redirected to a file, a batch job)
+    there is nothing to redraw, so the newest line is printed every
+    `quiet_every` seconds instead, as a heartbeat.
+    """
+
+    def __init__(self, lines: int, quiet_every: float = 30.0):
+        self.size = max(0, lines)
+        self.tty = sys.stdout.isatty()
+        self.quiet_every = quiet_every
+        self.done: list[str] = []      # finished lines, newest last
+        self.partial = ""              # the line being written now
+        self.overwrite = False         # last line ended in \r: the next replaces it
+        self.drawn = 0
+        self.last_draw = 0.0
+        self.last_quiet = time.time()
+        self.last_quiet_line = ""
+
+    def feed(self, text: str) -> None:
+        if not self.size:
+            return
+        for piece in re.split(r"(\r\n|\r|\n)", text):
+            if piece in ("\n", "\r\n"):
+                self._commit()
+                self.overwrite = False
+            elif piece == "\r":
+                # \r then more text redraws the same line (tqdm and friends);
+                # only a \r with nothing after it before the next \n is a no-op.
+                if self.partial:
+                    self._commit()
+                    self.overwrite = True
+            else:
+                self.partial += piece
+        self._show()
+
+    def _commit(self) -> None:
+        line = _ANSI.sub("", self.partial).rstrip()
+        self.partial = ""
+        if not line:
+            return  # a blank line (or a bare \r) never wipes the line above
+        if self.overwrite and self.done:
+            self.done[-1] = line
+        else:
+            self.done.append(line)
+        del self.done[:-self.size]
+
+    def _window(self) -> list[str]:
+        live = _ANSI.sub("", self.partial).rstrip()
+        lines = self.done[:-1] + [live] if (live and self.overwrite and self.done) else self.done + ([live] if live else [])
+        return [redact(l) for l in lines[-self.size:]]
+
+    def _show(self, force: bool = False) -> None:
+        now = time.time()
+        if not self.tty:
+            lines = self._window()
+            if lines and now - self.last_quiet >= self.quiet_every and lines[-1] != self.last_quiet_line:
+                self.last_quiet, self.last_quiet_line = now, lines[-1]
+                print(f"    | {lines[-1]}", flush=True)
+            return
+        if not force and now - self.last_draw < 0.1:
+            return
+        self.last_draw = now
+        # Truncated to the terminal width: a wrapped line takes two rows, and
+        # moving back up by the line count would then leave stray rows behind.
+        width = max(20, shutil.get_terminal_size((100, 20)).columns - 7)
+        out = [f"\x1b[{self.drawn}F"] if self.drawn else []
+        lines = self._window()
+        for line in lines:
+            out.append(f"\x1b[2K    \x1b[2m| {line[:width]}\x1b[0m\n")
+        for _ in range(self.drawn - len(lines)):
+            out.append("\x1b[2K\n")
+        if self.drawn > len(lines):
+            out.append(f"\x1b[{self.drawn - len(lines)}F")
+        self.drawn = len(lines)
+        sys.stdout.write("".join(out))
+        sys.stdout.flush()
+
+    def close(self) -> None:
+        if self.tty and self.drawn:
+            sys.stdout.write(f"\x1b[{self.drawn}F\x1b[J")
+            sys.stdout.flush()
+            self.drawn = 0
 
 
 def _normalized_image_name(name: str) -> str:
@@ -82,6 +195,60 @@ def resolve_image(images_dir: Path, name: str) -> Path | None:
         if candidate.is_file() and _normalized_image_name(candidate.name) == target:
             return candidate
     return None
+
+
+def _gpu_listed() -> bool:
+    """nvidia-smi lists a GPU (or, without nvidia-smi, the driver's /proc entries do)."""
+    if shutil.which("nvidia-smi"):
+        try:
+            out = subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True, timeout=30)
+            return out.returncode == 0 and any(l.startswith("GPU") for l in out.stdout.splitlines())
+        except (OSError, subprocess.SubprocessError):
+            return False
+    gpus = Path("/proc/driver/nvidia/gpus")
+    return gpus.is_dir() and any(gpus.iterdir())
+
+
+def _nv_libs_found() -> bool:
+    """The driver library `apptainer --nv` mounts into a step is in the
+    ldconfig cache, where Apptainer looks for it. Without it Apptainer warns
+    "Could not find any nv libraries on this host" and the step gets no GPU,
+    even when nvidia-smi lists one. True when ldconfig can't be asked, so a
+    missing tool never raises a false alarm."""
+    ldconfig = shutil.which("ldconfig") or next(
+        (p for p in ("/sbin/ldconfig", "/usr/sbin/ldconfig") if Path(p).exists()), None)
+    if not ldconfig:
+        return True
+    try:
+        out = subprocess.run([ldconfig, "-p"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return out.returncode != 0 or "libnvidia-ml.so" in out.stdout
+
+
+def gpu_problem() -> str | None:
+    """None when a step's `apptainer --nv` will get a GPU, else why it won't.
+
+    Without one, a GPU step silently falls back to the CPU: hours instead of
+    minutes.
+    """
+    if not _gpu_listed():
+        if inside_container():
+            return ("no GPU is visible: this runner is itself running inside a container, which can't "
+                    "see the host's GPU or driver. Start it on the host with ./run.sh instead")
+        return ("no GPU is visible on this node (nvidia-smi lists none). On a GPU node, make sure the "
+                "job requested one, e.g. `salloc --gpus-per-node=1 ...` or `#SBATCH --gpus-per-node=1`")
+    if not _nv_libs_found():
+        return ("a GPU is listed, but the NVIDIA driver library Apptainer's --nv mounts into each step "
+                "(libnvidia-ml.so) isn't in this node's ldconfig cache, so the steps won't see the GPU"
+                + ("; this runner is running inside a container, so start it on the host with ./run.sh"
+                   if inside_container() else ""))
+    return None
+
+
+# Set by preflight: whether steps will get a GPU, so each GPU step can repeat
+# the warning when it starts (preflight's scrolls away during a long run).
+_GPU_VISIBLE = True
 
 
 def inside_container() -> bool:
@@ -179,15 +346,41 @@ def fetch_input(url: str, target: Path) -> None:
     import urllib.request
 
     target.parent.mkdir(parents=True, exist_ok=True)
+    # Written beside the target and renamed into place only once complete: a
+    # cut-off download of a cached image would otherwise sit at its final name,
+    # and every later run would take it for the real thing and fail to mount it.
+    partial = target.with_name(target.name + ".part")
     try:
-        with urllib.request.urlopen(url, timeout=120) as response, open(target, "wb") as out:
+        with urllib.request.urlopen(url, timeout=120) as response, open(partial, "wb") as out:
             shutil.copyfileobj(response, out)
+        partial.replace(target)
     except (urllib.error.URLError, OSError) as e:
+        partial.unlink(missing_ok=True)
         raise BundleError(
             f"could not download {url.split('?')[0]}: {e}\n"
             f"        If this is a platform-signed link it has probably expired — host the file\n"
             f"        yourself and re-export the bundle, or place it at {target} by hand."
         )
+
+
+def staged_image_in(images_dir: Path, node: dict, item: dict) -> Path | None:
+    """The images-directory copy of a node's staged container, if this input is
+    that container and the copy exists."""
+    if not node.get("image_is_staged") or item.get("target") != node.get("image"):
+        return None
+    return resolve_image(images_dir, node["image"])
+
+
+def link_image(image: Path, target: Path) -> None:
+    """Point the job directory's staged-image path at an images-directory file.
+
+    A symlink, not a copy: a .sif is gigabytes, and the runtime is handed this
+    path on the host, where the link resolves.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.is_symlink() or target.exists():
+        target.unlink()
+    target.symlink_to(image.resolve())
 
 
 def stage_input(source: str, target: Path, copy: bool) -> None:
@@ -299,8 +492,31 @@ def build_command(node: dict, job_dir: Path, images_dir: Path, data_root: Path,
     return cmd
 
 
+# Host variables that name tools or Python paths on the HOST and break a step
+# when Apptainer forwards them into the container. An HPC compiler module sets
+# CC to its own icc/gcc, which triton (torch's GPU kernel compiler) then tries
+# to run inside the image; PYTHONPATH/PYTHONHOME point the image's Python at
+# host packages. Dropped from the environment the runtime inherits, not blanked
+# (an empty CC is still "a compiler" to triton). A step that really wants one
+# can still get it via its own env, or APPTAINERENV_<NAME> on the host.
+_HOST_ONLY_ENV = ("CC", "CXX", "FC", "F77", "F90", "CPP", "PYTHONPATH", "PYTHONHOME")
+
+
+def step_env(host: dict) -> dict:
+    """The environment a step's container runtime is started with.
+
+    The host's, minus _HOST_ONLY_ENV, and with Python's user site off: Apptainer
+    mounts $HOME, so packages pip-installed into ~/.local would otherwise shadow
+    the image's own (a host triton/torch running against the image's CUDA).
+    """
+    env = {k: v for k, v in host.items() if k not in _HOST_ONLY_ENV}
+    env.update({"PYTHONNOUSERSITE": "1",
+                "APPTAINERENV_PYTHONNOUSERSITE": "1", "SINGULARITYENV_PYTHONNOUSERSITE": "1"})
+    return env
+
+
 def run_job_node(node: dict, images_dir: Path, data_root: Path, workdir: Path,
-                 runtime: str, copy_inputs: bool, dry_run: bool) -> dict:
+                 runtime: str, copy_inputs: bool, dry_run: bool, log_lines: int = 10) -> dict:
     job_dir = Path(node["job_dir"])
     output_dir = job_dir / "output"
 
@@ -317,10 +533,18 @@ def run_job_node(node: dict, images_dir: Path, data_root: Path, workdir: Path,
             log(f"    write {target}")
         for item in node.get("stage_in", []):
             target = job_dir / item["target"]
-            log(f"    stage {item['name']}: {item['source']} -> {target}")
-            if item.get("fetch"):
+            # The step's own container (trainer.sif etc.): use the copy in the
+            # images directory — put there by hand, by the zip, or by
+            # preflight's one-time download — before redeeming the URL again.
+            cached = staged_image_in(images_dir, node, item)
+            if cached is not None:
+                log(f"    stage {item['name']}: {cached} -> {target}")
+                link_image(cached, target)
+            elif item.get("fetch"):
+                log(f"    stage {item['name']}: {item['source']} -> {target}")
                 fetch_input(item["source"], target)
             else:
+                log(f"    stage {item['name']}: {item['source']} -> {target}")
                 stage_input(item["source"], target, copy_inputs)
 
     cmd = build_command(node, job_dir, images_dir, data_root, workdir, runtime)
@@ -337,10 +561,33 @@ def run_job_node(node: dict, images_dir: Path, data_root: Path, workdir: Path,
     with open(log_path, "w") as log_file:
         log_file.write(redact(f"# {shlex.join(cmd)}") + "\n\n")
         log_file.flush()
-        # Output is streamed to the step's own log file rather than this
+        # Output goes in full to the step's own log file rather than this
         # process's stdout: a long-running step (training, inference) otherwise
-        # buries the DAG-level progress this runner prints.
-        proc = subprocess.run(cmd, cwd=str(job_dir), stdout=log_file, stderr=subprocess.STDOUT)
+        # buries the DAG-level progress this runner prints. Only its last few
+        # lines are shown here, in a window that slides (see LiveTail).
+        tail = LiveTail(log_lines)
+        # Python in the container block-buffers output that isn't a terminal,
+        # which would leave both the window and runner.log empty for minutes.
+        # The *ENV_ forms reach the container even under --cleanenv.
+        env = {**step_env(os.environ), "PYTHONUNBUFFERED": "1",
+               "APPTAINERENV_PYTHONUNBUFFERED": "1", "SINGULARITYENV_PYTHONUNBUFFERED": "1"}
+        proc = subprocess.Popen(cmd, cwd=str(job_dir), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        try:
+            # read1: whatever has arrived, so a progress bar that never ends
+            # its line still shows up as it updates.
+            for chunk in iter(lambda: proc.stdout.read1(65536), b""):
+                text = decoder.decode(chunk)
+                log_file.write(text)
+                log_file.flush()
+                tail.feed(text)
+            proc.wait()
+        except BaseException:
+            proc.kill()
+            proc.wait()
+            raise
+        finally:
+            tail.close()
     elapsed = time.time() - started
 
     if proc.returncode != 0:
@@ -391,12 +638,26 @@ def run_sink_node(node: dict, dry_run: bool) -> dict:
     src, dst = Path(source), Path(dest)
     if not src.exists():
         raise BundleError(f"sink source does not exist: {src}")
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    # replace=True semantics, matching _run_sink_node on the platform: the
-    # destination reflects only this run, with no residue from an earlier one.
-    if dst.exists():
-        shutil.rmtree(dst) if dst.is_dir() else dst.unlink()
-    shutil.copytree(src, dst) if src.is_dir() else shutil.copy2(src, dst)
+    # The same rules as the platform's copy (engine.tapis.copy_tapis_path):
+    #   * a folder output replaces the destination folder's contents, so it
+    #     reflects only this run;
+    #   * a file output goes INTO an existing folder (or a path ending in "/")
+    #     under its own name, leaving the rest of that folder alone;
+    #   * otherwise a file output is written at exactly the destination path.
+    if src.is_dir():
+        if dst.exists() and not dst.is_dir():
+            dst.unlink()
+        dst.mkdir(parents=True, exist_ok=True)
+        for child in dst.iterdir():
+            shutil.rmtree(child) if child.is_dir() and not child.is_symlink() else child.unlink()
+        shutil.copytree(src, dst, dirs_exist_ok=True)
+    else:
+        if dst.is_dir() or dest.endswith("/"):
+            dst.mkdir(parents=True, exist_ok=True)
+            dst = dst / src.name
+        else:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
     return {"status": "completed", "dest": str(dst)}
 
 
@@ -404,7 +665,7 @@ def run_sink_node(node: dict, dry_run: bool) -> dict:
 
 def preflight(bundle: dict, images_dir: Path, data_root: Path, workdir: Path,
               runtime: str, skip_unsupported: bool, no_download: bool = False,
-              dry_run: bool = False) -> None:
+              dry_run: bool = False, require_gpu: bool = False) -> None:
     """Fail before running anything, listing every problem at once.
 
     A workflow's first step can take hours; discovering a missing image or an
@@ -466,6 +727,28 @@ def preflight(bundle: dict, images_dir: Path, data_root: Path, workdir: Path,
                 continue
             missing_images.remove(name)
 
+    # A staged container (training's trainer.sif, ...) missing from the images
+    # directory is downloaded there once too, rather than into every job
+    # directory on every run. With --no-download (or a failed download) the
+    # step still fetches it itself when it runs.
+    staged_urls = {
+        n["image"]: item["source"]
+        for n in bundle["nodes"] if n.get("kind") == "job" and n.get("image_is_staged")
+        for item in n.get("stage_in", [])
+        if item.get("target") == n["image"] and item.get("fetch")
+    }
+    if not no_download and not dry_run:
+        for name, url in sorted(staged_urls.items()):
+            if resolve_image(images_dir, name) is not None:
+                continue
+            images_dir.mkdir(parents=True, exist_ok=True)
+            log(f"downloading image {name} (once; cached in {images_dir})")
+            try:
+                fetch_input(url, images_dir / name)
+            except BundleError as e:
+                (images_dir / name).unlink(missing_ok=True)
+                log(f"WARNING: could not cache {name}: {e}")
+
     if missing_images:
         # List what IS there. The overwhelmingly common cause is a file that's
         # present under a different spelling, and showing both lists side by
@@ -495,6 +778,22 @@ def preflight(bundle: dict, images_dir: Path, data_root: Path, workdir: Path,
             log("WARNING: " + detail.splitlines()[0] + " (continuing: --dry-run)")
         else:
             problems.append(detail)
+
+    global _GPU_VISIBLE
+    gpu_steps = [n for n in bundle["nodes"] if n.get("kind") == "job" and n.get("gpu")]
+    reason = gpu_problem() if gpu_steps else None
+    _GPU_VISIBLE = reason is None
+    if not _GPU_VISIBLE:
+        names = ", ".join(f"{n['label']} ({n['step_type']})" for n in gpu_steps)
+        detail = (
+            f"these steps need a GPU: {names}.\n"
+            f"        {reason[0].upper() + reason[1:]}.\n"
+            f"        They would run on the CPU, often hours instead of minutes."
+        )
+        if require_gpu and not dry_run:
+            problems.append(detail + "\n        (--require-gpu is set; drop it to run on the CPU anyway.)")
+        else:
+            log("WARNING: " + detail + "\n        Continuing on the CPU. Pass --require-gpu to stop instead.")
 
     unsupported = [n for n in bundle["nodes"] if n.get("kind") == "unsupported"]
     if unsupported and not skip_unsupported:
@@ -577,7 +876,7 @@ def execute(bundle: dict, args) -> dict:
 
     workdir.mkdir(parents=True, exist_ok=True)
     preflight(bundle, images_dir, data_root, workdir, args.runtime,
-              args.skip_unsupported, args.no_download, args.dry_run)
+              args.skip_unsupported, args.no_download, args.dry_run, args.require_gpu)
 
     for warning in bundle.get("warnings", []):
         log(f"WARNING: {warning}")
@@ -610,11 +909,14 @@ def execute(bundle: dict, args) -> dict:
         node = nodes_by_id[node_id]
         kind = node.get("kind")
         log(f"[{position}/{len(order)}] {node['label']} ({node['step_type']}, {kind})")
+        if kind == "job" and node.get("gpu") and not _GPU_VISIBLE:
+            log("    WARNING: this step needs a GPU, but it won't get one (see the warning at the start); "
+                "it will run on the CPU")
         apply_rewrites(node)
         try:
             if kind == "job":
                 result = run_job_node(node, images_dir, data_root, workdir,
-                                      args.runtime, args.copy_inputs, args.dry_run)
+                                      args.runtime, args.copy_inputs, args.dry_run, args.log_lines)
             elif kind == "sink":
                 result = run_sink_node(node, args.dry_run)
             elif kind == "unsupported":
@@ -633,8 +935,9 @@ def execute(bundle: dict, args) -> dict:
                 log(f"    path: {path or '(none)'}" + ("  (does not exist yet)" if missing else ""))
         except BundleError as e:
             log(f"    FAILED: {e}")
-            results[node_id] = {"status": "failed", "error": str(e)}
-            write_report(workdir, run_id, bundle, results, started, "failed")
+            results[node_id] = {"status": "failed", "error": redact(str(e))}
+            report = write_report(workdir, run_id, bundle, results, started, "failed", upload_limits(args))
+            log(f"failed — report: {report}")
             raise
 
         for port, actual in (result.get("outputs") or {}).items():
@@ -646,33 +949,165 @@ def execute(bundle: dict, args) -> dict:
         log(f"    {result['status']}" + (f" in {result['seconds']}s" if "seconds" in result else ""))
 
     status = "dry-run" if args.dry_run else "completed"
-    report = write_report(workdir, run_id, bundle, results, started, status)
+    report = write_report(workdir, run_id, bundle, results, started, status,
+                          None if args.dry_run else upload_limits(args))
     log(f"{status} in {time.time() - started:.0f}s — report: {report}")
+    if not args.dry_run:
+        log(f"to view this run on the platform, upload {report.with_suffix('.zip')} "
+            "from Runs → Import local run")
     return results
 
 
+def upload_limits(args) -> tuple[int, int]:
+    """(per-file, total) byte caps for output files in the upload package."""
+    mb = 1024 * 1024
+    return int(args.upload_max_file_mb * mb), int(args.upload_max_mb * mb)
+
+
 def write_report(workdir: Path, run_id: str, bundle: dict, results: dict,
-                 started: float, status: str) -> Path:
+                 started: float, status: str, upload: tuple[int, int] | None = None) -> Path:
     """Persist what ran and where every artifact landed.
 
     This is the local stand-in for the platform's run detail page: without it,
     finding a completed step's outputs means guessing at the workspace layout.
+
+    With `upload` (the output-file caps), also packs run-<id>-report.zip: this
+    report, each step's log tail and its small output files, which the
+    platform's "Import local run" turns into a run you can open in Runs. The
+    template id and node ids it carries are the platform's own, from the
+    bundle, so the import lands on the same canvas the bundle was exported
+    from.
     """
-    path = workdir / f"run-{run_id}-report.json"
-    path.write_text(json.dumps({
+    nodes = {n["node_id"]: n for n in bundle["nodes"]}
+    report = {
         "run_id": run_id,
         "status": status,
         "template": bundle.get("template"),
+        "bundle_version": bundle.get("bundle_version"),
+        "runner_version": __version__,
+        "host": socket.gethostname(),
         "started_at": datetime.fromtimestamp(started, timezone.utc).isoformat(),
         "finished_at": datetime.now(timezone.utc).isoformat(),
         "seconds": round(time.time() - started, 1),
+        "edges": bundle.get("edges", []),
         "steps": [
-            {"node_id": nid, "label": next((n["label"] for n in bundle["nodes"] if n["node_id"] == nid), nid),
+            {"node_id": nid, "label": nodes.get(nid, {}).get("label", nid),
+             "step_type": nodes.get(nid, {}).get("step_type"), "kind": nodes.get(nid, {}).get("kind"),
              **res}
             for nid, res in results.items()
         ],
-    }, indent=2))
+    }
+    if upload:
+        try:
+            write_upload_package(workdir / f"run-{run_id}-report.zip", report, nodes, *upload)
+        except OSError as e:
+            # The JSON report below still records the run; only the upload is lost.
+            log(f"WARNING: could not write the upload package: {e}")
+    path = workdir / f"run-{run_id}-report.json"
+    path.write_text(json.dumps(report, indent=2))
     return path
+
+
+def write_upload_package(path: Path, report: dict, nodes: dict, max_file: int, max_total: int) -> None:
+    """Pack the report, log tails and small outputs into one zip to upload.
+
+    Each step in `report` gains `log_file` and `artifacts` (per output port:
+    the files packed under artifacts/<node>/<port>/, and what was left out and
+    why), so the platform knows exactly what it received.
+    """
+    budget = [max_total]
+    tmp = path.with_suffix(".zip.part")
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
+        for step in report["steps"]:
+            nid = step["node_id"]
+            node = nodes.get(nid, {})
+            # A failed step has no outputs but does have a log, and the log is
+            # the part of a failed run worth looking at.
+            if node.get("kind") == "job" and node.get("job_dir"):
+                tail = _log_tail(Path(node["job_dir"]) / "runner.log")
+                if tail is not None:
+                    name = f"logs/{nid}.log"
+                    zf.writestr(name, tail)
+                    step["log_file"] = name
+            artifacts = {
+                port: _pack_port(zf, f"artifacts/{nid}/{port}", Path(location), max_file, budget)
+                for port, location in (step.get("outputs") or {}).items()
+                if location
+            }
+            if artifacts:
+                step["artifacts"] = artifacts
+        zf.writestr("report.json", json.dumps(report, indent=2))
+    tmp.replace(path)
+
+
+def _log_tail(log_path: Path) -> str | None:
+    try:
+        with open(log_path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - UPLOAD_LOG_BYTES))
+            data = f.read()
+    except OSError:
+        return None
+    text = data.decode("utf-8", errors="replace")
+    if size > UPLOAD_LOG_BYTES:
+        text = f"[… first {size - UPLOAD_LOG_BYTES} bytes not included …]\n" + text.split("\n", 1)[-1]
+    # Container output can echo a credential back; the command line already
+    # had them masked, this catches the rest.
+    return redact(text)
+
+
+def _pack_port(zf: zipfile.ZipFile, prefix: str, location: Path, max_file: int, budget: list[int]) -> dict:
+    entry: dict = {"path": str(location), "files": [], "skipped": [], "skipped_total": 0}
+    if location.is_file():
+        entry["kind"] = "file"
+        candidates = [(location, location.name)]
+    elif location.is_dir():
+        entry["kind"] = "dir"
+        candidates = []
+        # Symlinks are not followed: a job dir holds links to its staged
+        # inputs, and packing those would upload the user's source data.
+        for root, dirs, files in os.walk(location):
+            dirs[:] = sorted(d for d in dirs if not (Path(root) / d).is_symlink())
+            for name in sorted(files):
+                src = Path(root) / name
+                if not src.is_symlink():
+                    candidates.append((src, src.relative_to(location).as_posix()))
+    else:
+        entry["kind"] = "missing"
+        return entry
+
+    def skip(rel: str, reason: str) -> None:
+        entry["skipped_total"] += 1
+        if len(entry["skipped"]) < UPLOAD_SKIPPED_LISTED:
+            entry["skipped"].append({"file": rel, "reason": reason})
+
+    for src, rel in candidates:
+        if src.suffix.lower() not in UPLOAD_EXTS:
+            skip(rel, "type")
+            continue
+        if len(entry["files"]) >= UPLOAD_FILES_PER_PORT:
+            skip(rel, "file count")
+            continue
+        try:
+            size = src.stat().st_size
+        except OSError:
+            skip(rel, "unreadable")
+            continue
+        if size > max_file:
+            skip(rel, "size")
+            continue
+        if size > budget[0]:
+            skip(rel, "total size")
+            continue
+        try:
+            zf.write(src, f"{prefix}/{rel}")
+        except OSError:
+            skip(rel, "unreadable")
+            continue
+        budget[0] -= size
+        entry["files"].append(rel)
+    return entry
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -699,6 +1134,20 @@ def main(argv: list[str] | None = None) -> int:
                         help="Continue past steps that can only run on the platform")
     parser.add_argument("--no-download", action="store_true",
                         help="Never fetch container images, even when the bundle knows a URL for them")
+    parser.add_argument("--require-gpu", action="store_true",
+                        default=os.environ.get("WF_REQUIRE_GPU", "").lower() in ("1", "true", "yes"),
+                        help="Stop before running anything if a step needs a GPU and none is visible "
+                             "(by default the run continues on the CPU, with a warning)")
+    parser.add_argument("--log-lines", type=int, default=int(os.environ.get("WF_LOG_LINES", "10")),
+                        help="Lines of a running step's output to show live under it (0 hides them; "
+                             "the full output is always in the step's runner.log)")
+    parser.add_argument("--upload-max-file-mb", type=float,
+                        default=float(os.environ.get("WF_UPLOAD_MAX_FILE_MB", "5")),
+                        help="Largest output file packed into the run's upload zip (default 5)")
+    parser.add_argument("--upload-max-mb", type=float,
+                        default=float(os.environ.get("WF_UPLOAD_MAX_MB", "50")),
+                        help="Total output-file size packed into the upload zip (default 50; "
+                             "0 packs only the report and logs)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print the plan and the exact container commands without running anything")
     args = parser.parse_args(argv)

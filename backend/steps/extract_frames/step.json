@@ -5,7 +5,7 @@
   "description": "Decodes a video into sampled image frames. The source can be a public video link, a video on a Tapis file system, or a live RTSP/RTSPS stream.",
   "category": "Data Collection",
   "icon": "video",
-  "tapis_app_id": "extract-frames",
+  "tapis_app_id": "extract_frames",
   "inputs": [
     {
       "name": "video",
@@ -55,8 +55,8 @@
   },
   "tapis_job": {
     "name": "extract-frames",
-    "appId": "extract-frames",
-    "appVersion": "1.0",
+    "appId": "extract_frames",
+    "appVersion": "1.0.0",
     "description": "Decode a video file, public link, or RTSP stream into sampled frames",
     "execSystemId": "${exec_system}",
     "execSystemLogicalQueue": "${exec_queue}",

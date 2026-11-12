@@ -1,5 +1,5 @@
 Bootstrap: docker
-From: python:3.12-bullseye
+From: python:3.12-bookworm
 
 %files
     class_histogram.py /app/class_histogram.py

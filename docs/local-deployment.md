@@ -79,7 +79,7 @@ commands in them already use the paths you entered above:
      anyone holding it can download the zip until then.
   2. `unzip <name>-deploy.zip && cd <name>`. The folder has `bundle.json` and
      every step image in `containers/`.
-  3. `docker pull ghcr.io/icicle-ai/workflow-runner:v0.1.2`. The runner image is
+  3. `docker pull ghcr.io/icicle-ai/workflow-runner:v0.1.3`. The runner image is
      public, so there's nothing to build or log in to.
   4. The full `docker run` command. It mounts the current folder, your data root
      and your work dir, each at the same path inside the container, and points
@@ -119,7 +119,26 @@ images with `WF_RUNNER_DOCKER_IMAGE` / `WF_RUNNER_APPTAINER_IMAGE` (see
 
 ## 2. Prepare the node
 
-**Apptainer** on `PATH`, plus:
+**Apptainer** on `PATH` (or Docker, for `run-docker.sh`), plus:
+
+### Installing Docker or Apptainer
+
+A fresh workstation or cloud VM usually has neither, so this is often the first
+step. The Deploy dialog's first numbered step on each tab, and the zip's
+README ("Before you start"), give the commands per OS:
+
+| Runtime | Options |
+| --- | --- |
+| Apptainer | `module load apptainer` on HPC clusters; Ubuntu PPA (`ppa:apptainer/ppa`); the GitHub release `.deb` on Debian; EPEL on RHEL/Rocky/Alma, or the stock repos on Fedora; and an unprivileged install into `$HOME` that needs no root. |
+| Docker | Docker's `get.docker.com` script on Ubuntu/Debian/Fedora; Docker's `dnf` repository on RHEL/Rocky/Alma; Docker Desktop on macOS/Windows. All need root. |
+
+The list lives in `RUNTIME_INSTALL` in `backend/engine/deployment.py`, the one
+place to change it. `WF_APPTAINER_VERSION` sets the Debian `.deb` release.
+`run.sh` stops with these pointers when neither `apptainer` nor `singularity` is on `PATH`,
+and uses `singularity` automatically when that is all the node has.
+`run-docker.sh` does the same when `docker` is missing. GPU steps need the
+NVIDIA driver on the node and the host route (`run.sh`), because the runner
+can't see a GPU from inside Docker.
 
 ### Container images
 
@@ -242,6 +261,7 @@ without executing any of them.
 ```
 <workdir>/
   run-<run-id>-report.json            what ran, how long, where each output is
+  run-<run-id>-report.zip             the same, packed to upload to the platform
   wf_runs/<run-id>/<step>/<node>/
       input/ data/ ...                staged inputs
       output/                         the step's artifacts
@@ -250,6 +270,39 @@ without executing any of them.
 
 The report is the local equivalent of the platform's run detail page — without
 it, finding a step's outputs means guessing at the workspace layout.
+
+### Viewing the run on the platform
+
+Every run, failed ones included, also ends with `run-<run-id>-report.zip`. On
+the platform, open **Runs → Import local run** and upload it. It becomes an
+ordinary run of the template version the bundle came from, marked **local**
+with the node's hostname. It opens on the same canvas, with each step's status
+and its log (the tail of `runner.log`). Panels such as **Visualization** show
+that run's results, because they read the files that came in the zip.
+
+What the zip carries:
+
+| | |
+|---|---|
+| `report.json` | the report above, plus the bundle's template id and edges |
+| `logs/<node>.log` | the last 200 KB of each job step's `runner.log`, with credentials masked |
+| `artifacts/<node>/<port>/` | that step's small output files: JSON, CSV, text, YAML, images, GeoJSON/GeoPackage/KML |
+
+Anything else, such as model weights, very large files and symlinks (staged
+inputs), stays on the node. The report lists each such file by its node path
+and why it was left out. Output files are capped at 5 MB each and 50 MB in
+total (`--upload-max-file-mb`, `--upload-max-mb`, or `WF_UPLOAD_MAX_FILE_MB` /
+`WF_UPLOAD_MAX_MB`). `--upload-max-mb 0` uploads only the report and logs.
+
+Uploading the same zip twice opens the run it already created. An imported run
+can't be resumed or re-run from the platform, because its outputs are on your
+node. Run it again with the runner and import the new zip.
+
+On the backend, the uploaded files are stored under `WF_LOCAL_RUNS_DIR`
+(default `backend/data/local_runs/`; in a container, mount a volume there) and
+uploads are capped at `WF_LOCAL_RUN_MAX_UPLOAD_MB` (default 200). They are
+served only to the run's owner, under the system id `wf-local-run-<run_id>` on
+the existing `/api/tapis-files/{list,content}` endpoints.
 
 ## How it stays correct
 

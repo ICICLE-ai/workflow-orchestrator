@@ -69,9 +69,12 @@ Useful flags:
 |---|---|
 | `--dry-run` | Print the plan and the exact `apptainer` command for every step, run nothing. |
 | `--run-id LABEL` | Name this run's workspace (default: a timestamp). |
+| `--require-gpu` | Stop before running anything if a step needs a GPU and won't get one (or set `WF_REQUIRE_GPU=1`). Without it, the runner warns at the start and at each such step, then runs it on the CPU. It checks that `nvidia-smi` lists a GPU and that the driver library `apptainer --nv` mounts (`libnvidia-ml.so`) is in the ldconfig cache, and says when the runner itself is inside a container, which can't see the host's GPU. |
+| `--log-lines N` | Lines of a running step's output shown live under it, in a window that slides (default 10, or `WF_LOG_LINES`; `0` hides it). Off a terminal, e.g. in a batch job, the newest line is printed every 30 s instead. The full output is always in the step's `runner.log`. |
 | `--copy-inputs` | Copy staged inputs instead of symlinking them. |
 | `--skip-unsupported` | Continue past steps that can only run on the platform. |
 | `--runtime PATH` | Use a different container runtime binary (e.g. `singularity`). |
+| `--upload-max-file-mb N` / `--upload-max-mb N` | Caps on the output files packed into the upload zip (default 5 per file, 50 in total; or `WF_UPLOAD_MAX_FILE_MB` / `WF_UPLOAD_MAX_MB`). `0` total packs only the report and logs. |
 
 `--data-root`, `--workdir` and `--images-dir` also read from `WF_DATA_ROOT`,
 `WF_WORKDIR` and `WF_IMAGES_DIR`, and fall back to the defaults recorded in the
@@ -107,6 +110,12 @@ For each node, in dependency order:
 Nothing in that is step-specific — every detail comes from the step's own
 definition, carried in the bundle. Per-step output goes to `<jobdir>/runner.log`,
 and a summary of the whole run to `<workdir>/run-<run-id>-report.json`.
+
+Alongside the report, the runner writes `<workdir>/run-<run-id>-report.zip`,
+also when a run fails. It holds the report, each step's log tail and its small
+output files. Upload it on the platform from **Runs → Import local run** to see
+the run on its canvas, with logs and results panels. See
+[docs/local-deployment.md](../docs/local-deployment.md#viewing-the-run-on-the-platform).
 
 ## Limitations
 

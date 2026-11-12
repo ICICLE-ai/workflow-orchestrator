@@ -1,6 +1,6 @@
 import type { Route } from "./+types/runs";
-import { AppShell, Container, Title, Text, Button, Group, Card, ThemeIcon, ActionIcon, Badge, Stack, Collapse, Loader, Modal, Code, ScrollArea, TextInput, Select, Tooltip } from "@mantine/core";
-import { IconActivity, IconArrowLeft, IconRefresh, IconChevronDown, IconChevronRight, IconPlayerStop, IconFileText, IconSearch, IconPlayerPlay } from "@tabler/icons-react";
+import { AppShell, Container, Title, Text, Button, Group, Card, ThemeIcon, ActionIcon, Badge, Stack, Collapse, Loader, Modal, Code, ScrollArea, TextInput, Select, Tooltip, FileButton } from "@mantine/core";
+import { IconActivity, IconArrowLeft, IconRefresh, IconChevronDown, IconChevronRight, IconPlayerStop, IconFileText, IconSearch, IconPlayerPlay, IconUpload, IconServer } from "@tabler/icons-react";
 import { notifications } from "@mantine/notifications";
 import { useNavigate } from "react-router";
 import { useState, useEffect, useCallback, useMemo } from "react";
@@ -91,7 +91,7 @@ export function StepLogsModal({ runId, nodeId, stepType, config, opened, onClose
 
           {logs.job_output && (
             <div>
-              <Text size="sm" fw={600}>Container output (tapisjob.out, tail)</Text>
+              <Text size="sm" fw={600}>Container output ({logs.job_output_source || 'tapisjob.out'}, tail)</Text>
               <ScrollArea.Autosize mah={360}>
                 <Code block style={{ fontSize: 11, whiteSpace: 'pre-wrap' }}>{logs.job_output}</Code>
               </ScrollArea.Autosize>
@@ -128,6 +128,8 @@ function RunDetail({ runId }: { runId: number }) {
   }, [load]);
 
   if (!detail) return <Loader size="sm" my="sm" />;
+  // An imported run's job steps have their runner.log instead of a Tapis job.
+  const isLocal = detail.frozen_config?.source === "local";
 
   return (
     <Stack gap={6} mt="sm">
@@ -139,7 +141,7 @@ function RunDetail({ runId }: { runId: number }) {
             {s.error_message && <Text size="xs" c="red" lineClamp={2}>{s.error_message}</Text>}
           </div>
           <Group gap={6} wrap="nowrap">
-            {(s.status === 'failed' || s.tapis_job_uuid) && (
+            {(s.status === 'failed' || s.tapis_job_uuid || (isLocal && s.status !== 'pending')) && (
               <Button size="compact-xs" variant="subtle" color="gray"
                 leftSection={<IconFileText size={12} />}
                 onClick={() => setLogStep({ nodeId: s.node_id, stepType: s.step_type, config: s.config })}>
@@ -172,6 +174,7 @@ export default function Runs({ loaderData }: Route.ComponentProps) {
 
   const [stopping, setStopping] = useState<number | null>(null);
   const [resuming, setResuming] = useState<number | null>(null);
+  const [importing, setImporting] = useState(false);
 
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
@@ -205,6 +208,34 @@ export default function Runs({ loaderData }: Route.ComponentProps) {
     } catch { /* ignore */ }
     setRefreshing(false);
   }, []);
+
+  // A run executed on the user's own node, from the run-<id>-report.zip the
+  // runner writes at the end (see backend/engine/local_import.py). The zip is
+  // sent as the raw body; the backend has no multipart parser.
+  const handleImport = useCallback(async (file: File | null) => {
+    if (!file) return;
+    setImporting(true);
+    try {
+      const r = await apiFetch("/api/pipeline-runs/import-local", {
+        method: "POST",
+        headers: { "Content-Type": "application/zip" },
+        body: file,
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err.detail || `Could not import the run (HTTP ${r.status}).`);
+      }
+      const result = await r.json();
+      if (result.already_imported) {
+        notifications.show({ color: "blue", title: "Already imported", message: `This package is run #${result.run_id}.` });
+      }
+      navigate(`/runs/${result.run_id}`);
+      return;
+    } catch (e: any) {
+      notifications.show({ color: "red", title: "Could not import", message: e?.message || "Unknown error" });
+    }
+    setImporting(false);
+  }, [navigate]);
 
   // One-click "carry on from where it stopped" — no checkpoint, so nothing that
   // already succeeded is redone. Choosing a checkpoint (and changing a step's
@@ -282,9 +313,21 @@ export default function Runs({ loaderData }: Route.ComponentProps) {
         <Container size="lg" py="xl">
           <Group justify="space-between" mb="xl">
             <Title order={2}>Past Runs</Title>
-            <Button variant="light" leftSection={refreshing ? <Loader size={14} /> : <IconRefresh size={16} />} onClick={refresh}>
-              Refresh
-            </Button>
+            <Group gap="sm">
+              <FileButton onChange={handleImport} accept=".zip,application/zip">
+                {(props) => (
+                  <Tooltip label="Upload the run-<id>-report.zip the runner wrote after running this workflow on your own node">
+                    <Button {...props} variant="default" disabled={importing}
+                      leftSection={importing ? <Loader size={14} /> : <IconUpload size={16} />}>
+                      {importing ? 'Importing…' : 'Import local run'}
+                    </Button>
+                  </Tooltip>
+                )}
+              </FileButton>
+              <Button variant="light" leftSection={refreshing ? <Loader size={14} /> : <IconRefresh size={16} />} onClick={refresh}>
+                Refresh
+              </Button>
+            </Group>
           </Group>
 
           {runs.length === 0 ? (
@@ -322,7 +365,8 @@ export default function Runs({ loaderData }: Route.ComponentProps) {
                 <Stack gap="sm">
                   {visibleRuns.map((r: any) => {
                 const isRunning = (r.status || '').toUpperCase() === 'RUNNING';
-                const canResume = ['FAILED', 'CANCELLED'].includes((r.status || '').toUpperCase());
+                const isLocal = r.source === 'local';
+                const canResume = !isLocal && ['FAILED', 'CANCELLED'].includes((r.status || '').toUpperCase());
                 return (
                 <Card key={r.run_id} shadow="sm" padding="md" radius="md" withBorder
                   style={isRunning ? { borderColor: '#3b82f6' } : undefined}>
@@ -337,6 +381,7 @@ export default function Runs({ loaderData }: Route.ComponentProps) {
                         <Text size="xs" c="dimmed">
                           run #{r.run_id}
                           {r.created_at ? ` · ${new Date(r.created_at).toLocaleString()}` : ''}
+                          {isLocal ? ` · ran on ${r.host || 'your node'}` : ''}
                         </Text>
                       </div>
                     </Group>
@@ -364,11 +409,16 @@ export default function Runs({ loaderData }: Route.ComponentProps) {
                         onClick={() => navigate(`/runs/${r.run_id}`)}>
                         {isRunning ? 'View Live Graph' : 'View Graph'}
                       </Button>
+                      {isLocal && (
+                        <Tooltip label="Ran on your own node with the runner, then imported">
+                          <Badge color="grape" variant="light" size="lg" leftSection={<IconServer size={12} />}>local</Badge>
+                        </Tooltip>
+                      )}
                       <Badge color={runColor(r.status)} variant="light" size="lg">{r.status}</Badge>
                     </Group>
                   </Group>
                   {!isRunning && (
-                    <Collapse in={expanded === r.run_id}>
+                    <Collapse expanded={expanded === r.run_id}>
                       {expanded === r.run_id && <RunDetail runId={r.run_id} />}
                     </Collapse>
                   )}

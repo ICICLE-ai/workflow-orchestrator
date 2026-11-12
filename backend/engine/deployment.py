@@ -30,12 +30,12 @@ import httpx
 
 from engine import tapis_auth
 
-RUNNER_VERSION = "0.1.2"
+RUNNER_VERSION = "0.1.3"
 
 # The published, public runner image (built from runner/Dockerfile), so users
 # only ever pull it. Override to point a deployment at another tag or mirror.
 RUNNER_DOCKER_IMAGE = (
-    os.getenv("WF_RUNNER_DOCKER_IMAGE", "").strip() or "ghcr.io/icicle-ai/workflow-runner:v0.1.2"
+    os.getenv("WF_RUNNER_DOCKER_IMAGE", "").strip() or "ghcr.io/icicle-ai/workflow-runner:v0.1.3"
 )
 # Any URI `apptainer pull` accepts (oras://, library://, docker://, https://).
 # Defaults to the Docker image above, which Apptainer converts itself.
@@ -51,11 +51,151 @@ RUNNER_SOURCE_DIR = Path(
     or Path(__file__).resolve().parents[2] / "runner"
 )
 
+# Apptainer release whose .deb the Debian instructions fetch from GitHub (Debian
+# has no Apptainer package of its own). Override to move to a newer release.
+APPTAINER_DEB_VERSION = os.getenv("WF_APPTAINER_VERSION", "").strip() or "1.3.6"
+
+# How to get the container runtime onto a node that doesn't have one yet. On a
+# fresh workstation or cloud VM this is the first thing a user has to do, so the
+# Deploy dialog shows it before any run step, the zip's README repeats it, and
+# run.sh / run-docker.sh point at it when the binary is missing.
+#
+# One entry per runtime: `check` confirms it's already there; each option is one
+# OS family. `needs_root` marks the options that need sudo, so the UI can steer a
+# user without it to the ones that don't.
+RUNTIME_INSTALL = {
+    "docker": {
+        "check": "docker --version && docker run --rm hello-world",
+        "options": [
+            {
+                "label": "Ubuntu / Debian / Fedora",
+                "needs_root": True,
+                "commands": (
+                    "curl -fsSL https://get.docker.com | sudo sh\n"
+                    "sudo systemctl enable --now docker\n"
+                    "sudo usermod -aG docker \"$USER\"   # then log out and back in"
+                ),
+                "note": "Docker's official install script; it adds Docker's own package repository.",
+            },
+            {
+                "label": "RHEL / Rocky / Alma",
+                "needs_root": True,
+                "commands": (
+                    "sudo dnf -y install dnf-plugins-core\n"
+                    "sudo dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo\n"
+                    "sudo dnf -y install docker-ce docker-ce-cli containerd.io\n"
+                    "sudo systemctl enable --now docker\n"
+                    "sudo usermod -aG docker \"$USER\"   # then log out and back in"
+                ),
+                "note": None,
+            },
+            {
+                "label": "macOS / Windows",
+                "needs_root": True,
+                "commands": None,
+                "link": "https://docs.docker.com/desktop/",
+                "note": (
+                    "Install Docker Desktop. The images are x86_64-only, so on Apple Silicon they run "
+                    "under emulation and are much slower; a Linux x86_64 node is the better target."
+                ),
+            },
+        ],
+        "no_root": (
+            "Installing Docker needs root. Without it, ask the node's admin, or use Apptainer, "
+            "which can be installed without root and is usually already on HPC clusters."
+        ),
+        "docs": "https://docs.docker.com/engine/install/",
+    },
+    "apptainer": {
+        "check": "apptainer --version && python3 --version",
+        "options": [
+            {
+                "label": "HPC cluster",
+                "needs_root": False,
+                "commands": (
+                    "module avail apptainer singularity   # see what the cluster provides\n"
+                    "module load apptainer                # or: module load singularity"
+                ),
+                "note": (
+                    "Most clusters already have it, sometimes still named singularity; run.sh uses "
+                    "either. Load it on the compute node your job runs on, not only the login node."
+                ),
+            },
+            {
+                "label": "Ubuntu",
+                "needs_root": True,
+                "commands": (
+                    "sudo apt-get update && sudo apt-get install -y software-properties-common\n"
+                    "sudo add-apt-repository -y ppa:apptainer/ppa\n"
+                    "sudo apt-get update && sudo apt-get install -y apptainer python3"
+                ),
+                "note": "The Apptainer project's own PPA.",
+            },
+            {
+                "label": "Debian",
+                "needs_root": True,
+                "commands": (
+                    f"curl -fLO https://github.com/apptainer/apptainer/releases/download/"
+                    f"v{APPTAINER_DEB_VERSION}/apptainer_{APPTAINER_DEB_VERSION}_amd64.deb\n"
+                    f"sudo apt-get install -y ./apptainer_{APPTAINER_DEB_VERSION}_amd64.deb python3"
+                ),
+                "note": "The release .deb from GitHub; Debian doesn't package Apptainer itself.",
+            },
+            {
+                "label": "RHEL / Rocky / Alma / Fedora",
+                "needs_root": True,
+                "commands": (
+                    "sudo dnf -y install epel-release   # RHEL family only; skip on Fedora\n"
+                    "sudo dnf -y install apptainer python3"
+                ),
+                "note": None,
+            },
+            {
+                "label": "Without root",
+                "needs_root": False,
+                "commands": (
+                    "curl -s https://raw.githubusercontent.com/apptainer/apptainer/main/tools/install-unprivileged.sh \\\n"
+                    "  | bash -s - \"$HOME/apptainer\"\n"
+                    "export PATH=\"$HOME/apptainer/bin:$PATH\"   # add to ~/.bashrc to keep it"
+                ),
+                "note": (
+                    "Apptainer's unprivileged install, into your home directory. Needs the kernel to "
+                    "allow unprivileged user namespaces, which most current Linux distributions do."
+                ),
+            },
+        ],
+        "no_root": None,
+        "docs": "https://apptainer.org/docs/admin/main/installation.html",
+    },
+    # Only for GPU steps, and only on the host route (run.sh): a runner inside
+    # Docker can't see the host's GPU (see wf_runner's gpu_problem()).
+    "gpu_note": (
+        "GPU steps need the NVIDIA driver on the node (nvidia-smi should list a GPU) and must run "
+        "with run.sh on the host. The runner can't see the GPU from inside Docker."
+    ),
+}
+
 _SCHEME = re.compile(r"^([a-z][a-z0-9+.-]*)://", re.IGNORECASE)
 _CHUNK = 1024 * 1024
 
 # Folder inside the deployment zip holding the step .sif files.
 CONTAINERS_DIR = "containers"
+
+
+def node_images_dir(images_dir: str | None) -> str | None:
+    """The folder on the node the user chose for step images, or None for the
+    default: containers/ inside the unzipped zip.
+
+    A chosen folder is absolute, so every command and script means the same
+    place wherever it is run from; one folder can then serve every workflow,
+    and an image downloaded once is reused by all of them.
+    """
+    d = (images_dir or "").strip().rstrip("/")
+    if d in ("", ".", CONTAINERS_DIR, f"./{CONTAINERS_DIR}", "./images"):
+        return None
+    if not d.startswith("/"):
+        raise ValueError(f"Images folder must be an absolute path on the node (got {images_dir!r}).")
+    return d
 
 # How long a signed zip download link stays valid. It is a bearer link (whoever
 # holds it can download the zip), so short; generating another is one click.
@@ -79,11 +219,14 @@ def _link_serializer():
 
 
 def make_download_token(user_id: int, template_version_id: int,
-                        data_root: str, workdir: str, images_dir: str, kind: str = "zip") -> str:
+                        data_root: str, workdir: str, images_dir: str, kind: str = "zip",
+                        include_images: bool = True) -> str:
     """`kind` is "zip" (the whole deployment) or "bundle" (bundle.json alone,
-    for a node that already has the images and only needs new paths)."""
+    for a node that already has the images and only needs new paths).
+    `include_images` false leaves the step images out of the zip."""
     return _link_serializer().dumps(
-        {"k": kind, "u": user_id, "t": template_version_id, "d": data_root, "w": workdir, "i": images_dir}
+        {"k": kind, "u": user_id, "t": template_version_id, "d": data_root, "w": workdir, "i": images_dir,
+         "x": include_images}
     )
 
 
@@ -195,27 +338,56 @@ def _source_mounts(data_root: str, sources: list[str]) -> list[str]:
     return [resolve_source(data_root, p) for p in sources]
 
 
+def sink_mounts(bundle: dict, data_root: str) -> list[str]:
+    """Host folders the bundle's sinks write into, to mount into the runner's
+    container. Without them a containerised runner writes a sink's output
+    inside the container, where it is lost when the container exits.
+
+    The folder mounted is the destination's parent (or the destination itself
+    when it ends in "/"), which covers both "a file at this path" and "into
+    this folder" (see the runner's run_sink_node). Paths under a relative data
+    root live below $PWD, which is mounted anyway.
+    """
+    from engine import local_bundle
+
+    root = data_root.rstrip("/")
+    out: list[str] = []
+    for n in bundle.get("nodes") or []:
+        if n.get("kind") != "sink" or not n.get("dest"):
+            continue
+        dest = str(n["dest"]).replace(local_bundle.DATA_ROOT, root)
+        if not dest.startswith("/"):
+            continue
+        folder = dest.rstrip("/") if dest.endswith("/") else dest.rsplit("/", 1)[0]
+        if folder and folder not in out:
+            out.append(folder)
+    return out
+
+
 def runner_instructions(data_root: str, workdir: str, images_dir: str, bundle_file: str,
-                        secrets: list[str] | None = None, sources: list[str] | None = None) -> dict:
+                        secrets: list[str] | None = None, sources: list[str] | None = None,
+                        outputs: list[str] | None = None) -> dict:
     """Copy-paste commands for running the deployment zip, three ways.
 
     All three run from inside the unzipped zip, so the bundle is ./bundle.json
-    and the step images are ./containers — which is why `images_dir` and
-    `bundle_file` no longer appear in any command (kept in the signature for
+    and the step images are ./containers unless the user chose their own
+    folder (see node_images_dir), which is then passed and mounted.
+    `bundle_file` no longer appears in any command (kept in the signature for
     callers). `sources` are the platform paths a step actually READS (see
     analyze_sources), mounted so the runner can see them; anything else, an
     unused output folder especially, is left out because a missing bind
-    source stops Apptainer from starting at all.
+    source stops Apptainer from starting at all. `outputs` are the folders
+    sinks write into (see sink_mounts): created up front, then mounted.
     """
+    images = node_images_dir(images_dir)
     data_mounts = _source_mounts(data_root, sources or [])
-    mounts = _mounts([data_root, workdir, *data_mounts])
-    flags = (
-        f"--data-root {shlex.quote(data_root)} --workdir {shlex.quote(workdir)} "
-        f'--images-dir "$PWD/{CONTAINERS_DIR}"'
-    )
+    outputs = [o for o in (outputs or []) if o.startswith("/")]
+    mounts = _mounts([data_root, workdir, *data_mounts, *([images] if images else []), *outputs])
+    images_flag = f"--images-dir {shlex.quote(images)}" if images else f'--images-dir "$PWD/{CONTAINERS_DIR}"'
+    flags = f"--data-root {shlex.quote(data_root)} --workdir {shlex.quote(workdir)} {images_flag}"
     # Created up front: Docker would otherwise create a missing bind source as
     # root, and Apptainer refuses to start without it.
-    mkdir = f"mkdir -p {shlex.quote(workdir)}\n"
+    mkdir = "mkdir -p " + " ".join(shlex.quote(p) for p in [workdir, *([images] if images else []), *outputs]) + "\n"
 
     # `-e NAME` with no value forwards the host's variable, so credentials go
     # from the user's shell straight into the container and never onto the
@@ -245,10 +417,17 @@ def runner_instructions(data_root: str, workdir: str, images_dir: str, bundle_fi
     host_run = (
         mkdir
         + f"./run.sh --data-root {shlex.quote(data_root)} --workdir {shlex.quote(workdir)}"
+        + (f" \\\n    --images-dir {shlex.quote(images)}" if images else "")
     )
 
     return {
         "version": RUNNER_VERSION,
+        # Host folders the containerised runner needs (sources, work dir,
+        # images, sink destinations), also baked into the zip's run-docker.sh,
+        # and the ones to create first: the work dir and sink folders only, as
+        # sources must already exist (and may be files).
+        "mounts": mounts,
+        "create": [workdir, *outputs],
         "docker": {
             "image": RUNNER_DOCKER_IMAGE,
             "get": f"docker pull {RUNNER_DOCKER_IMAGE}",
@@ -271,7 +450,40 @@ def runner_instructions(data_root: str, workdir: str, images_dir: str, bundle_fi
             "run": host_run,
             "note": "Needs python3 (3.9+) and apptainer on the node; nothing to pull.",
         },
+        "install": RUNTIME_INSTALL,
     }
+
+
+def _install_readme() -> list[str]:
+    """README section: get Docker or Apptainer onto the node first."""
+    lines = [
+        "## Before you start: install Docker or Apptainer",
+        "",
+        "You need one of the two on the node. Check first:",
+        "",
+        "```bash",
+        f"{RUNTIME_INSTALL['apptainer']['check']}   # for run.sh",
+        f"{RUNTIME_INSTALL['docker']['check']}   # for run-docker.sh",
+        "```",
+        "",
+        RUNTIME_INSTALL["gpu_note"],
+        "",
+    ]
+    for key, title in (("apptainer", "Apptainer (for run.sh)"), ("docker", "Docker (for run-docker.sh)")):
+        rt = RUNTIME_INSTALL[key]
+        lines += [f"### {title}", ""]
+        for opt in rt["options"]:
+            lines += [f"**{opt['label']}**" + ("" if opt["needs_root"] else " (no root needed)"), ""]
+            if opt.get("commands"):
+                lines += ["```bash", opt["commands"], "```", ""]
+            if opt.get("link"):
+                lines += [f"See {opt['link']}", ""]
+            if opt.get("note"):
+                lines += [opt["note"], ""]
+        if rt.get("no_root"):
+            lines += [rt["no_root"], ""]
+        lines += [f"Full instructions: {rt['docs']}", ""]
+    return lines
 
 
 # --------------------------------------------------------------------------
@@ -475,20 +687,51 @@ def _runner_files() -> list[tuple[str, Path]]:
 
 
 def _readme(bundle: dict, rows: list[dict], included: list[str], failed: dict[str, str],
-            has_runner: bool, runner: dict) -> str:
+            has_runner: bool, runner: dict, images: str | None = None, images_in_zip: bool = True) -> str:
     t = bundle["template"]
+    where = f"`{images}`" if images else "`containers/`"
     lines = [
-        f"# {t['name']} v{t['version']} — offline deployment",
+        f"# {t['name']} v{t['version']} — {'offline ' if images_in_zip else ''}deployment",
         "",
         "Everything needed to run this workflow on a node you own: the execution plan",
-        "(`bundle.json`), the step container images (`containers/`), and the runner.",
+        ("(`bundle.json`), the step container images (`containers/`), and the runner."
+         if images_in_zip else
+         "(`bundle.json`) and the runner. The step container images are NOT in this zip."),
         "",
         "## Where things go",
         "",
         "Unzip anywhere and keep the layout: `run.sh` and `run-docker.sh` look for",
-        "`bundle.json` and `containers/` next to themselves. To keep images somewhere shared",
-        "instead (one copy for many workflows), move the `.sif` files into that directory",
-        "and pass `--images-dir <dir>`; the runner matches names ignoring case and `-`/`_`.",
+        "`bundle.json` next to themselves.",
+        "",
+        "## Where the container images go",
+        "",
+    ]
+    if images:
+        lines += [
+            f"Step images are kept in {where} on this node, the folder chosen when this zip",
+            "was made. `run.sh`, `run-docker.sh` and `pull-images.sh` all use it. Any image",
+            "missing from it is downloaded there the first time a run needs it, and kept, so",
+            "later runs (and other workflows pointed at the same folder) reuse it.",
+            "",
+            "To use a different folder, set `WF_IMAGES_DIR=/path/to/images` or pass",
+            "`--images-dir /path/to/images` to `run.sh`.",
+            "",
+        ]
+    else:
+        lines += [
+            "Step images go in `containers/` next to `run.sh`."
+            + ("" if images_in_zip else " It starts empty: any image missing from it is downloaded"
+               " there the first time a run needs it, and kept for later runs. On a node"
+               " without network access, run `pull-images.sh` somewhere that has it first."),
+            "",
+            "To keep images somewhere shared instead (one copy for many workflows), put the",
+            "`.sif` files in one folder and set `WF_IMAGES_DIR=/that/folder` or pass",
+            "`--images-dir /that/folder`; the runner matches names ignoring case and `-`/`_`.",
+            "",
+        ]
+    lines += _install_readme()
+    lines += [
+        "## Your input data",
         "",
         "Your input data must sit under one directory that mirrors the platform's paths",
         "(a source reading `tapis://<system>/users/you/farm` is read from `<data-root>/users/you/farm`).",
@@ -531,6 +774,8 @@ def _readme(bundle: dict, rows: list[dict], included: list[str], failed: dict[st
             state = "yes"
         elif r["sif"] in failed:
             state = f"no — {failed[r['sif']]}"
+        elif not images_in_zip and r.get("download_url"):
+            state = f"no — downloaded into {where} on first run"
         else:
             state = "no — see below"
         lines.append(f"| `{r['sif']}` | {', '.join(r['steps'])} | {src} | {state} |")
@@ -548,7 +793,7 @@ def _readme(bundle: dict, rows: list[dict], included: list[str], failed: dict[st
     if missing:
         lines += ["### Images you still need", "",
                   "`pull-images.sh` fetches the ones that have a source. Anything left over must",
-                  "be copied into `containers/` by hand:", ""]
+                  f"be copied into {where} by hand:", ""]
         for r in missing:
             how = "fetched by pull-images.sh" if pull_command(r, "containers") else (r.get("note") or "obtain it from the step's maintainer")
             lines.append(f"- `{r['sif']}` — {how}")
@@ -565,42 +810,104 @@ def _readme(bundle: dict, rows: list[dict], included: list[str], failed: dict[st
     return "\n".join(lines)
 
 
-def _run_sh(runner_image: str, secrets: list[str]) -> tuple[str, str]:
+def _images_dir_sh(images: str | None) -> str:
+    """Shell lines setting IMAGES_DIR: WF_IMAGES_DIR, else the folder chosen at
+    export, else containers/ next to the script. Assigned in two steps so a
+    quoted path never sits inside a "${...:-...}" expansion."""
+    default = shlex.quote(images) if images else f'"$HERE/{CONTAINERS_DIR}"'
+    return f'IMAGES_DIR="${{WF_IMAGES_DIR:-}}"\n[ -n "$IMAGES_DIR" ] || IMAGES_DIR={default}\n'
+
+
+def _run_sh(runner_image: str, secrets: list[str], images: str | None = None,
+            mounts: list[str] | None = None, create: list[str] | None = None) -> tuple[str, str]:
     # Neither script cd's: relative --data-root / --workdir must keep meaning
     # "relative to where the user ran it", exactly as with the runner itself.
-    host = """#!/usr/bin/env bash
+    # A later --images-dir in "$@" still wins: the runner takes the last one.
+    images_sh = _images_dir_sh(images)
+    host = f"""#!/usr/bin/env bash
 # Run this workflow on the host. Extra flags (--data-root, --workdir, --dry-run, ...)
 # are passed straight to the runner; see README.md.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-PYTHONPATH="$HERE${PYTHONPATH:+:$PYTHONPATH}" \\
-  exec python3 -m wf_runner "$HERE/bundle.json" --images-dir "$HERE/containers" "$@"
+if [ ! -d "$HERE/wf_runner" ]; then
+  echo "run.sh: $HERE/wf_runner is missing; this zip was exported without the runner." >&2
+  echo "        Copy runner/wf_runner/ from the Workflow Orchestrator repo next to run.sh," >&2
+  echo "        or use run-docker.sh / the Apptainer runner image (see README.md)." >&2
+  exit 1
+fi
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "run.sh: python3 (3.9+) is not installed on this node." >&2
+  echo "        See 'Before you start' in README.md for how to install it, or use run-docker.sh." >&2
+  exit 1
+fi
+# Older clusters still ship Apptainer under its previous name. A --runtime in
+# "$@" still wins: the runner takes the last one.
+RUNTIME=apptainer
+if ! command -v apptainer >/dev/null 2>&1; then
+  if command -v singularity >/dev/null 2>&1; then
+    RUNTIME=singularity
+  else
+    echo "run.sh: apptainer is not installed (or not on PATH) on this node." >&2
+    echo "        On an HPC cluster try: module load apptainer   (or: module load singularity)" >&2
+    echo "        Otherwise see 'Before you start' in README.md for install commands," >&2
+    echo "        including one that needs no root." >&2
+    exit 1
+  fi
+fi
+{images_sh}PYTHONPATH="$HERE${{PYTHONPATH:+:$PYTHONPATH}}" \\
+  exec python3 -m wf_runner "$HERE/bundle.json" --images-dir "$IMAGES_DIR" --runtime "$RUNTIME" "$@"
 """
     # Credentials are forwarded by NAME (-e NAME), so values stay in the
     # user's environment and never appear in this file or on a command line.
     env_flags = "".join(f" -e {shlex.quote(k)}" for k in secrets)
+    # The folders the workflow reads and its sinks write, as chosen when the zip
+    # was made: mounted at their own paths. The work dir and sink folders are
+    # created first (Docker would otherwise create a missing bind source as
+    # root); sources must already exist, and a file source can't be mkdir'd.
+    mounts = mounts or []
+    create = [c for c in (create or []) if c.startswith("/")]
+    mount_mkdir = ("mkdir -p " + " ".join(shlex.quote(c) for c in create) + "\n") if create else ""
+    mount_flags = "".join(f" -v {shlex.quote(m)}:{shlex.quote(m)}" for m in mounts)
     docker = f"""#!/usr/bin/env bash
-# Run this workflow inside the runner's Docker image. This directory and the
-# current one are mounted at their own paths; mount your data too, e.g.
+# Run this workflow inside the runner's Docker image. This directory, the
+# current one and the images folder are mounted at their own paths; mount your
+# data too, e.g.
 #   EXTRA_MOUNTS="-v /data:/data" ./run-docker.sh --data-root /data
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+if ! command -v docker >/dev/null 2>&1; then
+  echo "run-docker.sh: docker is not installed (or not on PATH) on this node." >&2
+  echo "               See 'Before you start' in README.md for install commands, or use run.sh" >&2
+  echo "               with Apptainer, which can be installed without root." >&2
+  exit 1
+fi
+{images_sh}# Created here: Docker would otherwise create a missing bind source as root.
+mkdir -p "$IMAGES_DIR"
+{mount_mkdir}
 IMAGE="${{WF_RUNNER_IMAGE:-{runner_image}}}"
 exec docker run --rm --privileged \\
-  -v "$HERE":"$HERE" -v "$PWD":"$PWD" -w "$PWD" ${{EXTRA_MOUNTS:-}}{env_flags} \\
-  "$IMAGE" "$HERE/bundle.json" --images-dir "$HERE/containers" "$@"
+  -v "$HERE":"$HERE" -v "$PWD":"$PWD" -v "$IMAGES_DIR":"$IMAGES_DIR"{mount_flags} -w "$PWD" ${{EXTRA_MOUNTS:-}}{env_flags} \\
+  "$IMAGE" "$HERE/bundle.json" --images-dir "$IMAGES_DIR" "$@"
 """
     return host, docker
 
 
-def stream_zip(bundle: dict, rows: list[dict], token: str | None, runner: dict) -> Iterator[bytes]:
-    """Yield the offline deployment zip chunk by chunk.
+def stream_zip(bundle: dict, rows: list[dict], token: str | None, runner: dict,
+               include_images: bool = True, images_dir: str | None = None) -> Iterator[bytes]:
+    """Yield the deployment zip chunk by chunk.
 
     Images are downloaded and written through as they arrive (STORED: a .sif
     is already compressed). One that fails to download is left out and named
     in the README rather than aborting the whole archive, since by then the
     response has started and there is no way to report an error status.
+
+    With `include_images` false, or a folder of the user's own as
+    `images_dir`, the zip holds no images: the runner downloads each into that
+    folder (or containers/) on first use. A chosen folder never gets images
+    from the zip, since they would land in containers/ where nothing looks.
     """
+    images = node_images_dir(images_dir)
+    include_images = include_images and images is None
     sink = _Sink()
     included: list[str] = []
     failed: dict[str, str] = {}
@@ -620,14 +927,15 @@ def stream_zip(bundle: dict, rows: list[dict], token: str | None, runner: dict) 
 
         for arcname, path in runner_files:
             entry(zf, arcname, path.read_bytes())
-        host_sh, docker_sh = _run_sh(runner["docker"]["image"], bundle.get("secrets_required") or [])
+        host_sh, docker_sh = _run_sh(runner["docker"]["image"], bundle.get("secrets_required") or [], images,
+                                     runner.get("mounts"), runner.get("create"))
         entry(zf, "run.sh", host_sh.encode(), 0o755)
         entry(zf, "run-docker.sh", docker_sh.encode(), 0o755)
         yield sink.drain()
 
         for row in rows:
             url = row.get("download_url")
-            if row.get("staged") or not url:
+            if not include_images or row.get("staged") or not url:
                 continue
             try:
                 resp = _open_download(url, token)
@@ -649,12 +957,15 @@ def stream_zip(bundle: dict, rows: list[dict], token: str | None, runner: dict) 
                 resp.close()
                 resp._wf_client.close()
 
-        pulls = [c for r in rows if r["sif"] not in included and (c := pull_command(r, "$HERE/containers", shell_dir=True))]
+        pulls = [c for r in rows if r["sif"] not in included and (c := pull_command(r, "$IMAGES_DIR", shell_dir=True))]
         pull_sh = (
             "#!/usr/bin/env bash\n# Fetch the images that are not in this zip. Needs network access.\n"
-            "set -euo pipefail\nHERE=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\nmkdir -p \"$HERE/containers\"\n"
-            + ("\n".join(pulls) if pulls else "echo 'Nothing to fetch: every image is already in containers/.'") + "\n"
+            "# Into WF_IMAGES_DIR when set, else the folder run.sh uses (see README.md).\n"
+            "set -euo pipefail\nHERE=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\n" + _images_dir_sh(images)
+            + "mkdir -p \"$IMAGES_DIR\"\n"
+            + ("\n".join(pulls) if pulls else "echo \"Nothing to fetch: every image is already in $IMAGES_DIR.\"") + "\n"
         )
         entry(zf, "pull-images.sh", pull_sh.encode(), 0o755)
-        entry(zf, "README.md", _readme(bundle, rows, included, failed, bool(runner_files), runner).encode())
+        entry(zf, "README.md", _readme(bundle, rows, included, failed, bool(runner_files), runner,
+                                       images, include_images).encode())
     yield sink.drain()

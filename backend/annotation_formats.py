@@ -354,6 +354,11 @@ def build_sam3_exemplars(
     (segmentation-mode annotation) contributes its bounding box, since a
     geometry prompt is a box either way.
 
+    The polygon itself is kept too, in a "polygons" list aligned with "boxes"
+    (null for a plain box), and only when the entry has at least one: SAM3
+    ignores it, but the job's INSID3 backend uses it as the reference mask
+    instead of segmenting the box itself.
+
     Note there is deliberately no 'default' key: exemplar boxes are pixel
     coordinates inside ONE specific image, so promoting them to apply to every
     image is only meaningful if the job crops the exemplar from a reference
@@ -372,11 +377,15 @@ def build_sam3_exemplars(
             if not bbox:
                 continue
             label = d.get("label") or "object"
-            group = by_label.setdefault(label, {"boxes": [], "box_labels": []})
+            group = by_label.setdefault(label, {"boxes": [], "box_labels": [], "polygons": []})
             x1, y1, x2, y2 = _xyxy(bbox)
             group["boxes"].append([round(x1), round(y1), round(x2), round(y2)])
             is_negative = str(d.get("flag") or "").strip().lower() == NEGATIVE_FLAG
             group["box_labels"].append(0 if is_negative else 1)
+            polygon = d.get("polygon")
+            group["polygons"].append(
+                [[round(x), round(y)] for x, y in polygon] if polygon else None
+            )
         if not by_label:
             continue
         key = relpath_within(file_path, image_dir)
@@ -389,13 +398,23 @@ def build_sam3_exemplars(
             if existing:
                 existing["boxes"].extend(group["boxes"])
                 existing["box_labels"].extend(group["box_labels"])
+                existing["_polygons"].extend(group["polygons"])
             else:
                 entries.append({
                     "label": label,
                     "text": label,
                     "boxes": group["boxes"],
                     "box_labels": group["box_labels"],
+                    "_polygons": group["polygons"],
                 })
+
+    # Polygons are collected per box throughout (so merged entries stay
+    # aligned) and only written for entries that actually have one.
+    for entries in exemplars.values():
+        for entry in entries:
+            polygons = entry.pop("_polygons")
+            if any(polygons):
+                entry["polygons"] = polygons
 
     out = {}
     if text_prompts:

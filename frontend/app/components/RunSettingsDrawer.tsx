@@ -33,7 +33,7 @@ import {
   IconStack2,
   IconWebhook,
 } from "@tabler/icons-react";
-import { TAPIS_SYSTEMS } from "../lib/tapis";
+import { TAPIS_SYSTEMS, preferredQueue } from "../lib/tapis";
 import { apiFetch } from "../lib/api";
 import SingleJobPanel, { type ExecutionMode, type SingleJobPlan } from "./SingleJobPanel";
 import WebhookTriggerPanel from "./WebhookTriggerPanel";
@@ -47,6 +47,7 @@ export interface RunOptions {
   work_dir: string;
   archive_system: string;
   archive_dir: string;
+  containers_dir: string;
   slurm_account: string;
 }
 
@@ -354,7 +355,7 @@ export default function RunSettingsDrawer({
       queueState={cpuQueues}
       // Archive system follows the CPU system by default; Storage below can
       // still point it elsewhere afterwards.
-      onSystem={(v) => set({ exec_system: v, archive_system: v })}
+      onSystem={(v) => set({ exec_system: v, archive_system: v, ...(preferredQueue(v, "cpu") ? { exec_queue: preferredQueue(v, "cpu") } : {}) })}
       onQueue={(v) => set({ exec_queue: v })}
     />
   );
@@ -366,7 +367,7 @@ export default function RunSettingsDrawer({
       system={runOptions.gpu_exec_system}
       queue={runOptions.gpu_exec_queue}
       queueState={gpuQueues}
-      onSystem={(v) => set({ gpu_exec_system: v })}
+      onSystem={(v) => set({ gpu_exec_system: v, ...(preferredQueue(v, "gpu") ? { gpu_exec_queue: preferredQueue(v, "gpu") } : {}) })}
       onQueue={(v) => set({ gpu_exec_queue: v })}
     />
   );
@@ -520,10 +521,9 @@ export default function RunSettingsDrawer({
                 <TextInput
                   size="xs"
                   label="Work dir"
-                  description="Derived from the CPU system, charge account and Tapis username."
+                  description="Base dir on the archive system: steps running there execute under it, and outputs archive to …/wf_runs. Reset to the default when the archive system, charge account or user changes."
                   value={runOptions.work_dir}
-                  readOnly
-                  variant="filled"
+                  onChange={(e) => set({ work_dir: e.currentTarget.value })}
                 />
                 <Select
                   size="xs"
@@ -542,6 +542,14 @@ export default function RunSettingsDrawer({
                   placeholder={runOptions.work_dir ? `${runOptions.work_dir.replace(/\/$/, "")}/wf_runs` : "wf_runs"}
                   value={runOptions.archive_dir}
                   onChange={(e) => set({ archive_dir: e.currentTarget.value })}
+                />
+                <TextInput
+                  size="xs"
+                  label="Containers dir (optional)"
+                  description="Folder on the exec system holding step container images (trainer.sif, inf.sif, …). A step that ships its container as an input binds the copy found here instead of downloading it every run."
+                  placeholder="e.g. /fs/ess/PAS2699/containers"
+                  value={runOptions.containers_dir}
+                  onChange={(e) => set({ containers_dir: e.currentTarget.value })}
                 />
               </Stack>
             </Accordion.Panel>

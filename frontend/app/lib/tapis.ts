@@ -7,7 +7,18 @@ export const TAPIS_SYSTEMS = [
   "cardinal-tapis",
   "ascend-tapis",
   "expanse-tapis-static",
+  "aws-tapis",
 ];
+
+// Queue to pick on a system whose own Tapis default isn't the right one for a
+// CPU or GPU target. A system not listed falls back to its Tapis default queue.
+const PREFERRED_QUEUES: Record<string, { cpu: string; gpu: string }> = {
+  "aws-tapis": { cpu: "cpu-partition", gpu: "a10g-partition" },
+};
+
+export function preferredQueue(system: string, kind: "cpu" | "gpu"): string | undefined {
+  return PREFERRED_QUEUES[system]?.[kind];
+}
 
 // The `system` a path field stores for data on the user's own node rather
 // than on a Tapis system. Never joined into a tapis:// URI; only runnable via

@@ -7,4 +7,5 @@ export default [
   route("templates/:id/edit", "routes/WorkflowCanvas.tsx", { id: "template-edit" }),
   route("runs", "routes/runs.tsx"),
   route("runs/:runId", "routes/runs.$runId.tsx"),
+  route("groups", "routes/groups.tsx"),
 ] satisfies RouteConfig;

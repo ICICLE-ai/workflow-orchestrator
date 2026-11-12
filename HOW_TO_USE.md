@@ -128,10 +128,47 @@ redirects you to your Tapis tenant, and back to the app with a session cookie.
 Embedded inside TapisUI, the host already holds your token — you're signed in
 automatically and the widget shows your username with no login/logout controls.
 
+### Set your run defaults (once)
+
+Before your first run, tell the Studio where you usually run. Click **Run
+defaults** in the header of the dashboard or the Templates page.
+
+
+| Field | What to enter |
+| --- | --- |
+| **System** | The Tapis system your jobs run on, e.g. `pitzer-tapis` or `aws-tapis`. Picking one fills in its usual queues. |
+| **CPU queue** | The queue for steps with no GPU, e.g. `cpu-partition` on `aws-tapis`. |
+| **GPU queue** | The queue for GPU steps (training, zero-shot annotation, …), e.g. `a10g-partition` on `aws-tapis`. |
+| **Work dir** | Your base folder on that system. Jobs run under it, and outputs go to `…/wf_runs`. |
+| **Containers dir** | The folder on that system that holds the step container images (`trainer.sif`, `inf.sif`, …). Jobs then use these images in place instead of copying them in each run. See [How inputs reach a job](#how-inputs-reach-a-job). |
+
+![Run defaults dialog](./docs/images/run_defaults_modal.png)
+
+Click **Save defaults**. From then on, these values are used everywhere a
+system, queue or folder is filled in for you:
+
+- the **Run workflow** drawer of every workflow,
+- each step's 🖥 **Run Configuration**,
+- the **System** box of every file or folder field (data sources, sinks,
+  preprocessing, zero-shot annotation, …), so **Browse** opens on your system.
+
+Your defaults never overwrite something you chose yourself. The order is:
+
+1. A value saved on the step itself (or wired in from an upstream step).
+2. The settings you last launched **this workflow** with. Launching a workflow
+   with different settings keeps them for that workflow only.
+3. Your **Run defaults**.
+4. The Studio's built-in default (`expanse-tapis-static`).
+
+Leave a field blank to use the built-in default for it. Saving updates any
+dialog that's already open, with no reload.
+
 ### Configure the run
 
 With a saved template open, click **Run Workflow** (green, top right). The **Run
-workflow** drawer opens, with three numbered sections.
+workflow** drawer opens, with three numbered sections. They start from your
+[run defaults](#set-your-run-defaults-once), or from the settings this workflow
+was last launched with.
 
 <img width="1907" height="1020" alt="Screenshot 2026-08-14 200409" src="https://github.com/user-attachments/assets/abba229d-68ff-4533-bb39-db70dbd9b496" />
 
@@ -154,7 +191,9 @@ workflow** drawer opens, with three numbered sections.
 Two optional sections sit below, closed by default:
 
 - **Storage & archive:** where outputs are written (work dir, archive system,
-  archive dir). The defaults are usually right.
+  archive dir), and the **containers dir**. The defaults are usually right.
+
+![Storage & archive section](./docs/images/run_drawer_storage.png)
 - **Trigger with a webhook:** a URL that starts this workflow from outside the
   Studio. See [Trigger a workflow from outside
   (webhook)](#trigger-a-workflow-from-outside-webhook).
@@ -222,6 +261,8 @@ each node tinted by its live status.
 A second, smaller badge carries the raw **Tapis job status** — the full
 vocabulary (`STAGING_INPUTS`, `QUEUED`, `RUNNING`, `ARCHIVING`, `FINISHED`, …) —
 so a step that looks stuck can be told apart from one merely sitting in a queue.
+`STAGING_INPUTS` is usually brief: inputs already on the job's filesystem are
+mounted, not copied (see [How inputs reach a job](#how-inputs-reach-a-job)).
 The page polls every 2.5 s while the run is `RUNNING`; ⟳ in the header refreshes
 on demand.
 
@@ -275,10 +316,6 @@ The dialog has three steps.
 3. **Work dir:** the folder where results are written. It's created if it doesn't
    exist.
 
-Use **Browse** to pick folders (Tapis systems only). Below the fields, a preview
-shows exactly where each input will be read from. Check it before going on.
-
-![Input path preview](./docs/images/users_node/path_preview.png)
 
 Your choices are saved for this workflow (you'll see *Saved for this workflow ✓*),
 so they're filled in next time, on any browser, and for new versions.
@@ -298,6 +335,12 @@ Pick a tab and follow its numbered steps. Every command has a copy button.
 | --- | --- |
 | **Apptainer** | Your machine has Apptainer, which most HPC clusters do. Recommended on HPC. |
 | **Docker** | Your machine has Docker and allows privileged containers. |
+
+Neither installed yet? Step 1 on the Docker and Apptainer tabs gives a command
+to check, and **Not installed? How to install** shows the install commands for
+your OS: Ubuntu, Debian, RHEL/Rocky/Alma, Fedora, macOS/Windows, an HPC
+cluster's `module load`, or an Apptainer install that needs no root. The zip's
+README has the same commands under "Before you start".
 | **Offline zip** | Your machine has no network access. Download the zip here and copy it over. |
 
 On the machine, the steps are the same for both Docker and Apptainer:
@@ -355,7 +398,16 @@ path, and downstream steps receive the full `tapis://system/path` URI rather tha
 a bare path.
 
 Available systems: `pitzer-tapis`, `cardinal-tapis`, `ascend-tapis`,
-`expanse-tapis`, `expanse-tapis-static`.
+`expanse-tapis`, `expanse-tapis-static`, `aws-tapis`.
+
+A field with no system chosen yet shows the system from your
+[run defaults](#set-your-run-defaults-once). Once you pick a path, the system
+shown is saved with it, so the step keeps pointing at the same place even if you
+change your defaults later.
+
+Inputs on the same filesystem as the step's job are mounted into its container,
+not copied, so large image folders don't slow the job's start. See
+[How inputs reach a job](#how-inputs-reach-a-job).
 
 ![Path field](./docs/images/path_field.png)
 
@@ -388,10 +440,107 @@ Both lists have a search box, a filter and a sort order:
 
 | List | Search by | Filter by | Sort by |
 | --- | --- | --- | --- |
-| **Templates** | name or description | category | name (A–Z, Z–A), newest or oldest |
+| **Templates** | name or description | category; All / Mine / Shared with me / Public | name (A–Z, Z–A), newest or oldest |
 | **Past Runs** | workflow name or run number | status | newest or oldest, name (A–Z, Z–A) |
 
 ![Templates search, filter and sort](./docs/images/templates_search_filter.png)
+
+## Share a workflow
+
+A new workflow is **private**: only you can see it. To share it:
+
+1. Save the workflow. Only a saved workflow can be shared.
+2. Click **Share** in the canvas header, or the share icon on the workflow's card
+   in the Templates list.
+
+   ![Share button](./docs/images/share_button.png)
+
+3. Choose who can see it:
+
+   | Option | Who can see it |
+   | --- | --- |
+   | **Private** | Only you. |
+   | **Specific people** | The groups and people you pick. |
+   | **Public** | Every signed-in user. |
+
+4. For **Specific people**, pick from **Groups** (only groups you belong to are
+   listed) and add people by username under **People**. Remove someone with the
+   ✕ on their name.
+5. Click **Save**.
+
+![Share dialog](./docs/images/share_dialog.png)
+
+Good to know:
+
+- **Every version is shared,** including the versions you save later. You don't
+  need to share again after editing.
+- **People appear in the picker once they've signed in** to the Studio at least
+  once. Ask a colleague to sign in first if you can't find them.
+- **Switching to Public keeps your list.** The groups and people you picked are
+  kept, so switching back to **Specific people** restores them.
+- **Only you can change the sharing.** People you share with can't re-share it.
+- **To stop sharing,** open **Share** again and choose **Private**, or remove the
+  person or group. They lose access straight away. Copies they already made stay
+  theirs.
+
+### What people you share with can do
+
+| Action | Owner (you) | Shared with them / Public |
+| --- | --- | --- |
+| Open it and look at every step's settings | ✓ | ✓ |
+| Run it | ✓ | ✓, as themselves |
+| Set up a webhook for it | ✓ | ✓, their own webhook, firing as them |
+| Save a new version | ✓ | ✗, they use **Save as my copy** |
+| Change who it's shared with | ✓ | ✗ |
+| See the other person's runs | ✗ | ✗ |
+
+A run always belongs to the person who launched it. It uses **their** Tapis
+login, **their** charge account and **their** [run
+defaults](#set-your-run-defaults-once), and appears only in **their** *Past
+Runs*. Sharing a workflow never shares your allocation or your runs.
+
+### Use a workflow shared with you
+
+Open **Templates** and filter by **Shared with me** (or **Public**). Each card
+shows who shared it.
+
+![Shared with me filter](./docs/images/templates_shared_with_me.png)
+
+When you open it, a banner says it was shared with you and that you can view and
+run it.
+
+
+- **Run it as it is:** click **Run Workflow**. If you changed something on the
+  canvas, you're asked to either **Run the published version as-is** (your
+  changes are ignored) or cancel and make a copy.
+- **Change it:** click **Save as my copy**. You get version 1 of a new workflow
+  that you own, copied from the last saved version. Your copy starts **private**,
+  whatever the original was, and later changes to the original don't affect it.
+
+### Badges in the Templates list
+
+| Badge | On | Means |
+| --- | --- | --- |
+| **Private** | Your workflow | Only you can see it. |
+| **Shared** | Your workflow | Shared with specific people or groups. |
+| **Public** | Any workflow | Every signed-in user can see it. |
+| **Shared with you** | Someone else's | Someone shared it with you, or with a group you're in. Hover to see who. |
+
+## Create a user group
+
+Groups let you share with a whole team at once. Click **Groups** in the top
+navigation, then **New Group**. You become the group's first admin.
+
+![Groups page](./docs/images/groups_page.png)
+
+- **Admins** can rename or delete the group, add and remove members, and make
+  other members admins.
+- **Members** can see who's in the group, share their own workflows with it,
+  and leave it.
+
+A group always keeps at least one admin, so the last admin has to promote
+someone else before leaving. Deleting a group, or leaving it, removes access to
+workflows that were shared only through that group.
 
 ## Switch between light and dark mode
 
@@ -443,13 +592,18 @@ CPU steps on OSC still writes all its artifacts to one place.
 | 2. Where each step runs | **CPU steps: System, Queue** | Where steps with no GPU requirement run. Queues are loaded live from the system, with each queue's limits shown. The system also becomes the default archive system. |
 | | **GPU steps: System, Queue** | Where steps declaring a GPU requirement run. Only shown when the canvas has one. |
 | 3. Charge account | **Charge account** | The allocation to charge (e.g. `PAS2699`). Prefilled from the template's allocation account. |
-| Storage & archive | **Work dir** | Derived from the CPU system, charge account and your Tapis username. Read-only. |
+| Storage & archive | **Work dir** | Base dir on the system. Taken from your run defaults; otherwise derived from the CPU system, charge account and your Tapis username. Editable. |
 | | **Archive system** | Where step outputs are archived, unless a sink node says otherwise. |
 | | **Archive dir (optional)** | Base directory on the archive system. Blank derives it from *Work dir*. |
+| | **Containers dir (optional)** | Folder on the exec system holding the step container images. A step that ships its image as an input uses the copy found here instead of downloading it each run. |
 
 Whatever you choose, each step archives under
 `.../{run_id}/{step_type_key}/{node_id}`, so one run's artifacts never collide
 with another's.
+
+Every field starts from your [run defaults](#set-your-run-defaults-once). The
+settings you launch with are remembered for this workflow, and used the next time
+you open its drawer.
 
 ## Run a whole pipeline as one Tapis job
 
@@ -590,13 +744,19 @@ full surface.
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| **Execution system** | `expanse-tapis-static` | Pin this step to its own system. Clear it to follow the run's CPU or GPU target. |
-| **Queue** | `tapisShared` (GPU steps: `tapisGPUShared`) | Only selectable once a system is pinned. |
+| **Execution system** | Your run defaults' system, else `expanse-tapis-static` | Pin this step to its own system. Clear it to follow the run's CPU or GPU target. |
+| **Queue** | Your default CPU or GPU queue, else `tapisShared` (GPU steps: `tapisGPUShared`) | Only selectable once a system is pinned. Picking `aws-tapis` selects `cpu-partition`, or `a10g-partition` for a GPU step. |
+| **Job working directory** | Your run defaults' work dir, else the system's own | Where the job runs on that system. Each job gets its own subfolder. |
 | **Node count** | 1 | Nodes requested. |
 | **Cores per node** | 8 | Cores per node requested. |
-| **Memory (MB)** | 800 | Memory requested. |
-| **Max runtime (minutes)** | 30 | Wall-clock limit. |
+| **Memory (MB)** | 16000 | Memory requested. |
+| **Max runtime (minutes)** | 45 | Wall-clock limit. |
 | **GPUs** | 0 (GPU steps: 1) | Becomes a `-G <n>` scheduler request. `0` on a GPU step removes it. |
+
+Defaults apply only to a step whose Run Configuration has never been saved. Once
+you save it, the step keeps those values.
+
+![Run Configuration dialog](./docs/images/run_configuration_modal.png)
 
 These override whatever the step type's own job template specifies. When a queue
 is pinned, over-requesting against its published limits is flagged here rather
@@ -745,13 +905,57 @@ and never queue anything. Those nodes have no 🖥 Run Configuration icon (there
 no compute to request), and on a run page clicking one opens its panel rather
 than a log view.
 
+## How inputs reach a job
+
+Tapis normally **copies** every input into a job's folder before the job starts.
+For a large image folder that copy can take longer than the job itself, even when
+the data already sits on the machine the job runs on. So the Studio only copies
+when it has to:
+
+```mermaid
+flowchart TD
+    A[Step input<br/>tapis://system/path] --> B{Same filesystem<br/>as the job's system?}
+    B -- No --> C[Copied in by Tapis<br/>STAGING_INPUTS]
+    B -- Yes --> D{Container image<br/>.sif input?}
+    D -- Yes, and found in<br/>Containers dir --> E[Use the copy in<br/>Containers dir]
+    D -- No --> F[Mounted read-only<br/>into the container]
+    E --> F
+    D -- Yes, not found --> C
+```
+
+
+- **Same filesystem.** An input on the job's own system is mounted read-only
+  into the container (`--bind host-path:container-path:ro`). The OSC systems
+  `pitzer-tapis`, `cardinal-tapis` and `ascend-tapis` share `/fs/ess` and
+  `/fs/scratch`, so data on any of them is mounted on the others too.
+- **Different filesystem.** Data on another site, or behind an `https://` link,
+  is still copied in as before.
+- **Container images.** Training, inference and preprocessing ship their
+  container as a `.sif` input. If your **Containers dir** has a file with the same
+  name (case, `-` and `_` ignored), that copy is mounted instead of downloading
+  the image every run.
+- **When in doubt, copy.** If the Studio can't confirm a mount will work (a
+  Docker-based app, a missing source, a Tapis error), the input is copied as
+  before. Mounting never makes a job fail.
+
+Mounting works with Apptainer/Singularity apps only. A step author can keep an
+input copied by adding `"bind": false` to it in the step's `step.json`, for a tool
+that writes into its own input folder.
+
+**Keep outputs with a sink.** Jobs no longer archive their outputs to a second
+location. A step's outputs stay in its job folder under your work dir, where the
+next step reads them. Scratch space is purged on a schedule, so **wire any output
+you want to keep into a sink node** (e.g. **💾 Write Results (JSON)**). An app
+whose own Tapis definition sets an archive system still archives there.
+
 ## From node to Tapis job
 
 When a run executes, the engine walks the DAG in dependency order. For each node
 it resolves the node's inputs from its incoming edges (binding the upstream
 step's output URIs to this step's input ports), merges the node's frozen
 configuration, resolves any secret references, renders the step type's Tapis job
-template by substituting `${…}` placeholders, and submits it to
+template by substituting `${…}` placeholders, mounts the inputs it can (see
+[How inputs reach a job](#how-inputs-reach-a-job)), and submits it to
 `POST /v3/jobs/submit`. It then polls the job's status until it finishes,
 recording each transition against the step — which is exactly what the canvas is
 showing you live. Per-step state lives in `pipeline_run` / `run_step`; if no

@@ -5,7 +5,7 @@ import { IconDeviceFloppy, IconLayoutSidebarLeftExpand, IconLayoutSidebarRightEx
 import { notifications } from "@mantine/notifications";
 import type { StepPanelProps } from "./types";
 import { BACKEND_URL, SAM3_ENDPOINT, apiFetch, getTapisToken } from "../lib/api";
-import { TAPIS_SYSTEMS, DEFAULT_TAPIS_SYSTEM, resolveWiredLocation } from "../lib/tapis";
+import { TAPIS_SYSTEMS, resolveWiredLocation } from "../lib/tapis";
 import { uploadTapisFile } from "../lib/tapisFiles";
 
 // Type-only imports — erased at build, so these browser-only packages (an MUI
@@ -13,7 +13,8 @@ import { uploadTapisFile } from "../lib/tapisFiles";
 // load during SSR. The runtime modules are loaded lazily below, client-side only.
 import type { FileExplorerProps } from "@icicle-ai/tapis-file-explorer";
 import type { AnnotationDetails as AnnotationDetailsComponent } from "@icicle-ai/annotation-details";
-import type { ImageCanvasProps, CanvasEngine, BaseAnnotation } from "@icicle-ai/image-annotation-canvas";
+import type { AdditionSource, ImageCanvasProps, CanvasEngine, BaseAnnotation } from "@icicle-ai/image-annotation-canvas";
+import { useDefaultSystem } from "../lib/runDefaults";
 
 // apiFetch, not a bare fetch: it carries whichever credential this deployment
 // uses — the session cookie standalone, the host's X-Tapis-Token when embedded.
@@ -69,6 +70,18 @@ const hasPoints = (a: Anno) =>
 // Math.min return NaN for the whole outline, so the list is re-derived rather
 // than trusted piecemeal. An already-valid annotation is returned by identity,
 // which keeps the canvas engines from re-diffing every annotation each render.
+// Zero-shot loads used to copy each detection's prompt_type ("text",
+// "visual", "exemplar") into `flag`, which the canvas draws as a coloured dot
+// on every annotation. Annotations loaded that way (ids "zs-<n>") and saved
+// in a node's config get it moved back to prompt_type; any other flag is the
+// user's own and stays. Returns the same object when there's nothing to fix.
+const PROMPT_TYPE_FLAGS = new Set(["text", "visual", "exemplar"]);
+function withoutPromptTypeFlag(a: Anno): Anno {
+  if (!String(a.id).startsWith("zs-") || !PROMPT_TYPE_FLAGS.has(String(a.flag))) return a;
+  const { flag, ...rest } = a;
+  return { ...rest, prompt_type: rest.prompt_type ?? flag } as Anno;
+}
+
 function toEngineShape(a: Anno, mode: "detection" | "segmentation"): Anno {
   if (mode === "segmentation") {
     if (hasPoints(a)) return a;
@@ -99,6 +112,7 @@ interface Libs {
 }
 
 export default function SmartLabelerPanel({ config, onChange, step, nodeId, connectedInputs, onSave }: StepPanelProps) {
+  const defaultSystem = useDefaultSystem();
   // Render only after mount so the canvas/MUI/Tapis-direct packages never run
   // during server render (see docs/adding-a-step-custom-ui.md §5).
   const [mounted, setMounted] = useState(false);
@@ -147,7 +161,7 @@ export default function SmartLabelerPanel({ config, onChange, step, nodeId, conn
   // else the wired images input — rather than silently falling back to the
   // unrelated global DEFAULT_TAPIS_SYSTEM, which risked saving to a system
   // that had nothing to do with this node's actual data.
-  const system = field("system") || wiredAnnotationsSystem || sourceSystem || DEFAULT_TAPIS_SYSTEM;
+  const system = field("system") || wiredAnnotationsSystem || sourceSystem || defaultSystem;
   const outputPath = field("path");
   const annotationType = (config.annotation_type === "segmentation" ? "segmentation" : "detection") as
     | "detection"
@@ -167,7 +181,7 @@ export default function SmartLabelerPanel({ config, onChange, step, nodeId, conn
       tfe.configureTapisFileExplorer({
         apiBaseUrl: BACKEND_URL,
         allowedSystems: TAPIS_SYSTEMS.map((s) => ({ value: s, label: s })),
-        defaultSystem: DEFAULT_TAPIS_SYSTEM,
+        defaultSystem,
       });
       if (!cancelled) {
         setLibs({
@@ -267,7 +281,7 @@ export default function SmartLabelerPanel({ config, onChange, step, nodeId, conn
   // crashing or silently vanishing; the reverse direction derives a bounding
   // box from points for the same reason on the way back to Boxes mode.
   const annotations = useMemo(
-    () => rawAnnotations.map((a) => toEngineShape(a, annotationType)),
+    () => rawAnnotations.map((a) => toEngineShape(withoutPromptTypeFlag(a), annotationType)),
     [rawAnnotations, annotationType]
   );
   // True once a fallback (non-exact) key match has actually been used for
@@ -454,7 +468,7 @@ export default function SmartLabelerPanel({ config, onChange, step, nodeId, conn
       }
       return;
     }
-    setSaveAsSystem(system || DEFAULT_TAPIS_SYSTEM);
+    setSaveAsSystem(system || defaultSystem);
     setSaveAsPath(outputPath);
     setSaveAsError(null);
     setSaveAsOpen(true);
@@ -677,7 +691,25 @@ export default function SmartLabelerPanel({ config, onChange, step, nodeId, conn
               onSelection={setSelectedId}
               selectedAnnotationIds={selectedIds}
               onMultiSelection={setSelectedIds}
-              onAddition={(added: Anno[]) => setAnnotationsForCurrent([...annotations, ...added])}
+              // Since image-annotation-canvas 0.2.0 this is the ONLY way SAM3
+              // results reach the canvas (text-prompt masks included): what's
+              // stored here comes back through `annotations` above.
+              onAddition={(added: Anno[], source?: AdditionSource) => {
+                setAnnotationsForCurrent([...annotations, ...added]);
+                if (source === "sam3-click" && added.length > 0) {
+                  // One region from a click: select it, ready to label or refine.
+                  setSelectedId(added[added.length - 1].id);
+                } else if (source === "sam3-text") {
+                  // Possibly many unrelated regions: leave the selection alone
+                  // and say how many were found.
+                  notifications.show({
+                    color: added.length ? "teal" : "yellow",
+                    message: added.length
+                      ? `SAM3 found ${added.length} region${added.length === 1 ? "" : "s"}.`
+                      : "SAM3 found no regions for that prompt.",
+                  });
+                }
+              }}
               onUpdate={(id: string, updates: Partial<Anno>) =>
                 setAnnotationsForCurrent(annotations.map((a) => (a.id === id ? { ...a, ...updates } : a)))
               }
@@ -793,8 +825,8 @@ export default function SmartLabelerPanel({ config, onChange, step, nodeId, conn
 //    — `annotations` is a flat ARRAY, one record per detection, grouped here
 //    by image_path. bounding_box is [x1, y1, x2, y2] (corners), converted to
 //    smart_labeler's own x/y/width/height. `class` -> label, `prompt_type`
-//    stashed on `flag` (filterable in the details panel same as any other
-//    flag). A present `segmentation` (absolute-pixel [[x,y],...] outline)
+//    kept as its own field (not `flag`; see below). A present
+//    `segmentation` (absolute-pixel [[x,y],...] outline)
 //    is used instead of the box when non-empty.
 //
 // `typeof x === "object"` is true for arrays too, so shape (2) must be
@@ -814,7 +846,10 @@ function parseLoadedAnnotations(data: any): { byFile: Record<string, Anno[]>; an
       if (!path || typeof path !== "string") return;
       const anno: Anno = { id: `zs-${i}`, label: item.class ?? item.label ?? "object" };
       if (typeof item.score === "number") anno.score = item.score;
-      if (item.prompt_type) anno.flag = String(item.prompt_type);
+      // Kept as its own field, NOT as `flag`: the canvas draws a coloured dot
+      // beside every flagged annotation, and a flag is the user's own marker
+      // (a "negative" one even changes how exemplars are built).
+      if (item.prompt_type) anno.prompt_type = String(item.prompt_type);
       const seg = item.segmentation;
       if (Array.isArray(seg) && seg.length > 0) {
         anno.points = seg.map((p: number[]) => ({ x: p[0], y: p[1] }));
@@ -843,8 +878,11 @@ function parseLoadedAnnotations(data: any): { byFile: Record<string, Anno[]>; an
 // Find the annotations_by_file key that actually corresponds to `path`, the
 // current image's path as THIS FileExplorer instance reports it. Tries, in
 // order: an exact match; the same string with/without a leading slash
-// (absolute-vs-relative mismatches are the most common real case); and
-// finally a basename-only match, but ONLY when exactly one key in
+// (absolute-vs-relative mismatches are the most common real case); a key
+// that is a trailing part of the path, e.g. "sub/img.jpg" for
+// "/fs/.../images/sub/img.jpg" (hf_inference's annotations.json is keyed
+// relative to its images folder); and finally a basename-only match, but
+// ONLY when exactly one key in
 // annotationsByFile shares that basename — with two candidates there's no
 // way to tell which directory they actually meant, so it's safer to report
 // no match than to silently guess wrong and show someone else's boxes.
@@ -856,6 +894,11 @@ function findAnnotationKey(annotationsByFile: Record<string, unknown>, path: str
   if (stripped !== path && stripped in annotationsByFile) return stripped;
   const withSlash = `/${stripped}`;
   if (withSlash in annotationsByFile) return withSlash;
+  // Longest matching suffix wins, so "a/sub/img.jpg" beats "sub/img.jpg".
+  const suffixes = Object.keys(annotationsByFile)
+    .filter((k) => k.includes("/") && withSlash.endsWith(`/${k.replace(/^\/+/, "")}`))
+    .sort((a, b) => b.length - a.length);
+  if (suffixes.length > 0) return suffixes[0];
   const basename = stripped.split("/").pop();
   if (basename) {
     const candidates = Object.keys(annotationsByFile).filter(

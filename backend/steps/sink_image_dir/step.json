@@ -1,6 +1,6 @@
 {
   "step_type_key": "sink_image_dir",
-  "display_name": "\ud83d\udcbe Write Image Directory",
+  "display_name": "💾 Write Image Directory",
   "description": "Writes a image_dir output to a destination path.",
   "category": "sink",
   "icon": "download",
@@ -13,9 +13,10 @@
   "outputs": [],
   "config_schema": {
     "path": {
-      "type": "string",
-      "description": "Destination Tapis URI where the image_dir is written (e.g. tapis://pitzer-tapis/fs/ess/PAS2699/shyama/images/run1).",
-      "default": ""
+      "type": "tapis_path",
+      "selectType": "dir",
+      "default": "",
+      "description": "Where to save the image folder: pick the system, then a folder (Browse) or type a path. A file output goes into the chosen folder under its own name, or to exactly the path you type if it isn't an existing folder (end it with / to make a new folder). A folder output replaces the chosen folder's contents. 'My node' works only for runs on your own node."
     }
   }
 }

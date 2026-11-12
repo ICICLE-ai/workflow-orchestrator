@@ -18,6 +18,7 @@ import markerIcon2x from "leaflet/dist/images/marker-icon-2x.png?url";
 import markerIcon from "leaflet/dist/images/marker-icon.png?url";
 import markerShadow from "leaflet/dist/images/marker-shadow.png?url";
 import "leaflet/dist/leaflet.css";
+import { useDefaultSystem } from "../lib/runDefaults";
 
 // Settings panel for the 'scouting_mission' step
 // (backend/steps/scouting_mission/step.json) — turns a hand-traced farm
@@ -56,7 +57,8 @@ export default function ScoutingMissionPanel({ config, onChange, step, connected
   const captureSpacingM = val("capture_spacing_m");
   const holdTimeS = val("hold_time_s");
   const boundaryPoints = valStr("boundary_points");
-  const imageUploadSystem = valStr("system");
+  const defaultSystem = useDefaultSystem();
+  const imageUploadSystem = valStr("system") || defaultSystem;
   const imageUploadPath = valStr("image_upload_path");
 
   const gpkgInputPort = step.inputs.find((p) => p.data_type === "geopackage")?.port_name;
@@ -139,7 +141,7 @@ export default function ScoutingMissionPanel({ config, onChange, step, connected
             path={imageUploadPath}
             selectType="dir"
             onSystemChange={(v) => set("system", v)}
-            onPathChange={(v) => set("image_upload_path", v)}
+            onPathChange={(v) => onChange({ ...config, system: imageUploadSystem, image_upload_path: v })}
           />
         </ParamSection>
 

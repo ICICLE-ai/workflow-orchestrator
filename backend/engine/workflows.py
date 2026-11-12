@@ -29,6 +29,7 @@ from engine.transactions import (
 from engine.tapis import TapisV3, copy_tapis_path, resolve_latest_file, use_real_tapis
 from engine import inline_steps
 from engine import job_spec
+from engine.bind_inputs import localize_file_inputs
 from engine import secrets as secrets_store
 from engine import single_job
 
@@ -146,17 +147,33 @@ def _run_sink_node(run_id: int, node_key: str, node_config: dict) -> dict:
     specific output (e.g. just 'predictions') land at a user-chosen location,
     independent of where the producing step archived.
     """
-    dest = (node_config or {}).get("path", "")
+    # The sink's settings hold a system plus a bare path (a tapis_path field),
+    # joined here exactly as the local bundle's _platform_source_path does; an
+    # older template's full tapis:// URI in `path` still works as-is.
+    cfg = node_config or {}
+    path, system = str(cfg.get("path") or ""), str(cfg.get("system") or "")
+    dest = f"tapis://{system}/{path.lstrip('/')}" if system and path and "://" not in path else path
     # The resolved input value for this sink's 'data' port (set by _resolve_inputs).
     resolved = get_step_input(run_id, node_key)  # includes resolved input ports
     src = resolved.get("data") or resolved.get("path") or ""
-    if not src or not dest:
-        return {"path": dest, "copied": False, "note": "missing source or destination"}
-    # replace=True clears the destination first, so the sink dir reflects only
-    # this run's wired output — no residue from prior runs with older layouts.
+    # Raising fails the step with this message, instead of a green node that
+    # copied nothing.
+    if not path:
+        raise RuntimeError("This sink has no destination: open its settings and choose a system and path.")
+    if system == "node-local":
+        raise RuntimeError("This sink writes to 'My node', which only a run on your own node can reach. "
+                           "Pick a Tapis system for platform runs.")
+    if "://" not in dest:
+        raise RuntimeError(f"This sink's destination '{path}' has no Tapis system: open its settings and pick one.")
+    if not src:
+        raise RuntimeError("Nothing reached this sink's input: check that it is wired to an upstream output.")
+    # replace=True: a folder output replaces the destination folder's contents,
+    # so it reflects only this run; a single file only replaces itself.
     ok = copy_tapis_path(src, dest, run_id, replace=True)
     print(f"[sink] copy {src} -> {dest} (replace): {'OK' if ok else 'FAILED'}")
-    return {"path": dest, "source": src, "copied": bool(ok)}
+    if not ok:
+        raise RuntimeError(f"Copying {src} to {dest} failed; the backend log has the Tapis error.")
+    return {"path": dest, "source": src, "copied": True}
 
 
 def _resolve_secrets(node_key: str, ctx: dict, team_id: int | None) -> tuple[dict, list[str]]:
@@ -217,7 +234,7 @@ def _derive_outputs(run_id: int, node_key: str, ctx: dict, job_uuid: str) -> dic
     archive_uri = (ctx.get("archive_uri") or "").rstrip("/")
     outputs = {"archive_uri": archive_uri, "job_uuid": job_uuid}
     for port in get_node_output_ports(node_key):
-        sub = port.get("output_path")
+        sub = job_spec.render_path(port.get("output_path"), ctx)
         dir_uri = f"{archive_uri}/{sub}" if sub else archive_uri
         pattern = port.get("file_glob")
         if pattern:
@@ -319,6 +336,23 @@ def execute_node_workflow(node_key: str, run_id: int, orchestrator_workflow_id: 
         # node's own config alongside its business params.
         job_spec.apply_resource_overrides(rendered, resolved)
         rendered.setdefault("name", f"run-{run_id}-{node_key}")
+        # Inputs already on the exec system's filesystem are bind-mounted into
+        # the container instead of copied in by Tapis (see engine.bind_inputs);
+        # only cross-site inputs are still staged.
+        rendered = localize_file_inputs(rendered, run_id, ctx.get("containers_dir"))
+        # No archive fields in the job: outputs stay in the job's own output dir
+        # and downstream steps read (bind) them from there; a sink copies one
+        # out when the user wants it kept. Tapis then takes the archive target
+        # from the app definition, if it has one. Only possible when we know the
+        # output dir — otherwise it's the app's default, and the run archive is
+        # the one location we can name. Same when it holds a Tapis macro other
+        # than ${JobUUID} (aws-tapis's ${JobWorkingDir}): only Tapis can expand it.
+        output_dir = rendered.get("execSystemOutputDir")
+        if output_dir and "${" in output_dir.replace("${JobUUID}", ""):
+            output_dir = None
+        if output_dir:
+            rendered.pop("archiveSystemId", None)
+            rendered.pop("archiveSystemDir", None)
 
         # 3. Submit and poll.
         job_uuid = TapisV3.submit_job(rendered, run_id, redact=secret_values)
@@ -356,6 +390,9 @@ def execute_node_workflow(node_key: str, run_id: int, orchestrator_workflow_id: 
             DBOS.sleep(3)
 
         # 4. Record each output port's path (Tapis URI) for downstream steps.
+        if output_dir:
+            job_output = output_dir.replace("${JobUUID}", job_uuid).lstrip("/")
+            ctx = {**ctx, "archive_uri": f"tapis://{rendered['execSystemId']}/{job_output}"}
         outputs = _derive_outputs(run_id, node_key, ctx, job_uuid)
         print(f"[workflows] node {node_key} (run {run_id}) derived outputs: {outputs}")
         complete_run_step(run_id, node_key, outputs)

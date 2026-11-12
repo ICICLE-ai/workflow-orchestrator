@@ -26,7 +26,7 @@ description = "Tapis post-it redeem URL (pre-authenticated download link)"
 regex = '''https://[a-zA-Z0-9.-]+\.tapis\.io/v3/files/postits/redeem/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}-[0-9]+'''
 tags = ["tapis", "capability-url", "pre-authenticated"]
 
-  # The four post-its already committed and in active use by step definitions.
+  # The three post-its already committed and in active use by step definitions.
   # Suppressed so the rule can catch NEW ones without failing CI on day one.
   #
   # TODO: these are live capability URLs in `main`. Decide per post-it whether
@@ -35,10 +35,9 @@ tags = ["tapis", "capability-url", "pre-authenticated"]
   [rules.allowlist]
   description = "Known post-its pending review — see TODO above"
   regexes = [
-    '''17772bec-0a2d-476e-a212-b65adabfacdb-010''',  # backend/steps/extract_frames
     '''c4db6fc3-67fb-4bd0-aaab-0d97b0b2fd50-010''',  # backend/steps/inference
     '''86abf9eb-2978-423e-a636-a952bd3837ce-010''',  # backend/steps/preprocessing
-    '''48caa51f-8cbb-49e7-a7c7-349d9ce6f4ab-010''',  # backend/steps/training
+    '''f7d02c8b-4a6a-40af-b1a2-b21235b24432-010''',  # backend/steps/training
 
     # Step container image links in backend/image_sources.json. ACCEPTED as
     # public artifact links (decided 2026-10-15), not pending review: they
@@ -51,7 +50,18 @@ tags = ["tapis", "capability-url", "pre-authenticated"]
     '''13157e55-7514-481e-966b-ff4cc091dd75-010''',  # generate-flight-plan
     '''0ed4e6d4-d290-4ce7-bd33-950dc2584b4a-010''',  # generate-geopackage
     '''8d2f6836-8bb9-4796-b3e3-0354fa634cc5-010''',  # export-flight-mission
-    '''af9d5b30-a6d8-4efd-bc83-71991410c42f-010''',  # zero-shot-annotation
+    '''653515ea-77c2-4374-af26-58a0b087ec61-010''',  # zero-shot-annotation
+    '''639d5124-1c6b-4c1b-b8f0-870630ff99d7-010''',  # extract_frames
+    '''78bf9754-a7c2-4e86-85c1-d594c1a515d1-010''',  # wf_inference
+    '''da97383c-e54d-463b-abcf-8c06d82c3e13-010''',  # wf-utils
+
+    # Retired links: replaced by newer ones above, but still in git history,
+    # which the scan reads commit by commit — dropping an entry here when its
+    # link is replaced fails every later scan of the commit that added it.
+    # Revoke the post-it itself to retire it for real.
+    '''17772bec-0a2d-476e-a212-b65adabfacdb-010''',  # extract_frames (old)
+    '''48caa51f-8cbb-49e7-a7c7-349d9ce6f4ab-010''',  # training (old)
+    '''af9d5b30-a6d8-4efd-bc83-71991410c42f-010''',  # zero-shot-annotation (old)
   ]
 
 

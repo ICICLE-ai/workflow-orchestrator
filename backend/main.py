@@ -11,8 +11,9 @@ import uvicorn
 from datetime import datetime, timedelta, timezone
 
 from db import engine, SessionLocal, get_db, DATABASE_URL, DB_HOST, DB_PORT, DB_NAME, DB_USER
-from models import Base, StepTypeRegistry, StepTypePort, WorkflowTemplate, PipelineRun, RunStep, AppUser, WfNode, WfEdge, RunEdge, PortDataType, Secret, WorkflowTrigger, DeployPreference
+from models import Base, StepTypeRegistry, StepTypePort, WorkflowTemplate, PipelineRun, RunStep, AppUser, WfNode, WfEdge, RunEdge, PortDataType, Secret, WorkflowTrigger, DeployPreference, RunPreference, TemplateShare, UserGroup
 import auth
+import groups
 import geospatial
 import annotation_adapter
 from pydantic import BaseModel
@@ -48,9 +49,11 @@ why it was or wasn't accepted.
 Templates and runs are scoped to the calling user.
 
 * **Runs** are owner-only. Another user's run returns `404`.
-* **Templates** are owner-only until published (`POST
-  /api/workflow-templates/{template_id}/publish`), which grants every user
-  read, run and clone access — never write. Only the owner can add a version.
+* **Templates** are private to their owner until shared. The owner can share a
+  template with specific users or with whole user groups, or publish it to
+  every user (`PUT /api/workflow-templates/{template_id}/sharing`). Any of
+  these grants read, run and clone access — never write. Only the owner can add
+  a version.
 
 Resources you may not access return **`404`, not `403`**, so a response never
 confirms that an id exists.
@@ -75,6 +78,10 @@ OPENAPI_TAGS = [
         "the run executes as the trigger's owner, with the run settings frozen on "
         "the trigger. `POST /api/webhooks/{token}` is the only endpoint here that "
         "needs no credential: the token is the credential."},
+    {"name": "groups", "description":
+        "User groups — named sets of users a workflow can be shared with in one "
+        "step. Any user can create one; only members can see it; admins manage "
+        "membership."},
     {"name": "secrets", "description":
         "Team-scoped API tokens (Weights & Biases, Hugging Face, ...). Only a "
         "secret's KEY is ever returned; values are decrypted server-side at job "
@@ -166,9 +173,21 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> AppUser
 # cannot distinguish "no such run" from "not your run", which is the intent.
 
 
+def _shared_template_ids(db: Session, user: AppUser):
+    """Subquery of the template_ids shared with `user`, directly or through any
+    group they belong to (see TemplateShare)."""
+    return db.query(TemplateShare.template_id).filter(
+        or_(
+            TemplateShare.user_id == user.user_id,
+            TemplateShare.group_id.in_(db.query(groups.member_group_ids(db, user))),
+        )
+    ).subquery()
+
+
 def visible_templates(db: Session, user: AppUser):
     """Base query for templates `user` may READ: their own, anything published
-    public, plus anything explicitly shared with their team.
+    public, anything shared with them or with a group they are in, plus anything
+    shared with their team (the legacy is_shared flag).
 
     Visibility is not permission to modify. Read access allows opening, running
     and cloning; adding a version is owner-only (see owned_template_or_404).
@@ -181,6 +200,7 @@ def visible_templates(db: Session, user: AppUser):
         or_(
             WorkflowTemplate.owner_id == user.user_id,
             WorkflowTemplate.is_public.is_(True),
+            WorkflowTemplate.template_id.in_(db.query(_shared_template_ids(db, user))),
             and_(
                 WorkflowTemplate.is_shared.is_(True),
                 WorkflowTemplate.team_id.isnot(None),
@@ -241,7 +261,7 @@ def owned_template_or_404(db: Session, user: AppUser, template_id: int, *,
         WorkflowTemplate.template_id == template_id
     ).first()
     if readable:
-        how = "published" if readable.is_public else "shared with your team"
+        how = "published" if readable.is_public else "shared with you"
         raise HTTPException(
             status_code=403,
             detail=f"'{readable.name}' is {how} by another user, so it can't be {action}. {hint}",
@@ -539,7 +559,8 @@ def on_startup():
                 "ALTER TABLE app_user "
                 "ADD COLUMN IF NOT EXISTS tapis_access_token VARCHAR, "
                 "ADD COLUMN IF NOT EXISTS tapis_refresh_token VARCHAR, "
-                "ADD COLUMN IF NOT EXISTS tapis_token_expires_at TIMESTAMPTZ;"
+                "ADD COLUMN IF NOT EXISTS tapis_token_expires_at TIMESTAMPTZ, "
+                "ADD COLUMN IF NOT EXISTS run_defaults JSON;"
             ))
             conn.execute(text(
                 "ALTER TABLE workflow_template "
@@ -602,6 +623,11 @@ app.include_router(geospatial.preview_router)
 # The annotation_format_adapter step's converter — inline data reshaping (no
 # Tapis job), see annotation_adapter.py's module docstring.
 app.include_router(annotation_adapter.router)
+
+# User groups and the user search behind the member/share pickers. Template
+# sharing itself lives below, beside publish/unpublish, because it needs the
+# ownership helpers above.
+app.include_router(groups.router)
 
 @app.get("/")
 def read_root():
@@ -675,6 +701,50 @@ def get_port_data_types(db: Session = Depends(get_db), user: AppUser = Depends(g
         } for t in types
     ]
 
+def _shared_template_id_set(db: Session, user: AppUser) -> set[int]:
+    return {row[0] for row in db.query(_shared_template_ids(db, user)).all()}
+
+
+def _access_fields(db: Session, user: AppUser, t: WorkflowTemplate,
+                   shared_ids: set[int] | None = None,
+                   granted_ids: set[int] | None = None) -> dict:
+    """Why `user` can see `t`, for the UI's badges and read-only banner.
+
+    access is "owner", "shared" (with them or a group of theirs — wins over
+    public, since it is the more specific reason), "public", or "team" (the
+    legacy team-wide is_shared flag). has_shares tells the OWNER whether
+    anyone has been granted access, for the Private/Shared badge. Pass
+    `shared_ids`/`granted_ids` when listing many rows to avoid queries per row.
+    """
+    owner = t.owner.username if t.owner else None
+    if t.owner_id == user.user_id:
+        access = "owner"
+        if granted_ids is None:
+            granted_ids = _granted_template_id_set(db, [t.template_id])
+        has_shares = t.template_id in granted_ids
+    else:
+        has_shares = None
+        if shared_ids is None:
+            shared_ids = _shared_template_id_set(db, user)
+        if t.template_id in shared_ids:
+            access = "shared"
+        elif t.is_public:
+            access = "public"
+        else:
+            access = "team"
+    return {"access": access, "owner_username": owner, "has_shares": has_shares}
+
+
+def _granted_template_id_set(db: Session, template_ids) -> set[int]:
+    """Which of `template_ids` have at least one TemplateShare row."""
+    ids = list(template_ids)
+    if not ids:
+        return set()
+    return {row[0] for row in db.query(TemplateShare.template_id).filter(
+        TemplateShare.template_id.in_(ids)
+    ).distinct().all()}
+
+
 @app.get("/api/workflow-templates")
 def list_workflow_templates(db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)):
     # Group by template_id to get the latest version of each template.
@@ -706,6 +776,8 @@ def list_workflow_templates(db: Session = Depends(get_db), user: AppUser = Depen
         (WorkflowTemplate.template_id == subquery.c.template_id) &
         (WorkflowTemplate.version == subquery.c.max_version)
     ).all()
+    shared_ids = _shared_template_id_set(db, user)
+    granted_ids = _granted_template_id_set(db, {t.template_id for t in templates if t.owner_id == user.user_id})
     
     return [
         {
@@ -720,6 +792,7 @@ def list_workflow_templates(db: Session = Depends(get_db), user: AppUser = Depen
             # decides whether it offers Save (owner) or Clone (everyone else).
             "is_public": bool(t.is_public),
             "is_owner": t.owner_id == user.user_id,
+            **_access_fields(db, user, t, shared_ids, granted_ids),
         } for t in templates
     ]
 
@@ -796,6 +869,7 @@ def get_workflow_template(template_version_id: int, db: Session = Depends(get_db
         # "Clone to my workspace" rather than writing a version.
         "is_public": bool(template.is_public),
         "is_owner": template.owner_id == user.user_id,
+        **_access_fields(db, user, template),
         "nodes": [{"id": str(n.node_id), "type": "customNode", "position": {"x": n.position_x, "y": n.position_y}, "data": {"nodeType": n.step_type_key, "config_values": n.default_config}} for n in nodes],
         "edges": edge_list
     }
@@ -1055,6 +1129,98 @@ def unpublish_template(template_id: int, db: Session = Depends(get_db),
     return _set_public(db, user, template_id, False)
 
 
+# --- Sharing ------------------------------------------------------------------
+# Who, besides the owner, can open/run/clone a template lineage: specific users,
+# whole groups (TemplateShare rows), and/or everyone (is_public). All of it is
+# read access — sharing never lets anyone but the owner save a version.
+
+
+class SharingUpdate(BaseModel):
+    is_public: bool
+    usernames: List[str] = []
+    group_ids: List[int] = []
+
+
+def _sharing_state(db: Session, template_id: int, template: WorkflowTemplate) -> dict:
+    shares = db.query(TemplateShare).filter(TemplateShare.template_id == template_id).all()
+    user_ids = [s.user_id for s in shares if s.user_id is not None]
+    group_ids = [s.group_id for s in shares if s.group_id is not None]
+    users = db.query(AppUser).filter(AppUser.user_id.in_(user_ids)).order_by(AppUser.username).all() if user_ids else []
+    grps = db.query(UserGroup).filter(UserGroup.group_id.in_(group_ids)).order_by(UserGroup.name).all() if group_ids else []
+    return {
+        "template_id": template_id,
+        "name": template.name,
+        "is_public": bool(template.is_public),
+        # "private" means no one but the owner; "shared" means specific users
+        # and/or groups; "public" means everyone (shares are kept alongside, so
+        # unpublishing falls back to them rather than to fully private).
+        "visibility": "public" if template.is_public else ("shared" if shares else "private"),
+        "users": [groups.user_brief(u) for u in users],
+        "groups": [{"group_id": g.group_id, "name": g.name} for g in grps],
+    }
+
+
+@app.get("/api/workflow-templates/{template_id}/sharing", tags=["workflow-templates"])
+def get_template_sharing(template_id: int, db: Session = Depends(get_db),
+                         user: AppUser = Depends(get_current_user)):
+    """Who this template lineage is shared with. Owner only — the grantee list
+    is the owner's business, not every viewer's."""
+    template = owned_template_or_404(db, user, template_id, action="managed by you", hint=SHARING_HINT)
+    return _sharing_state(db, template_id, template)
+
+
+@app.put("/api/workflow-templates/{template_id}/sharing", tags=["workflow-templates"])
+def set_template_sharing(template_id: int, body: SharingUpdate, db: Session = Depends(get_db),
+                         user: AppUser = Depends(get_current_user)):
+    """Replace this template's sharing settings in one go: public or not, and
+    the full set of users and groups it is shared with. Owner only.
+
+    Groups must be ones the caller belongs to — you can't push a workflow into
+    the list of a group you aren't in. Users must have signed in at least once.
+    Clones are unaffected either way: a clone is its own private lineage.
+    """
+    template = owned_template_or_404(
+        db, user, template_id, action="re-shared by you", hint=SHARING_HINT,
+    )
+
+    usernames = sorted({u.strip() for u in body.usernames if u.strip()} - {user.username})
+    found = db.query(AppUser).filter(AppUser.username.in_(usernames)).all() if usernames else []
+    missing = sorted(set(usernames) - {u.username for u in found})
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown user(s): {', '.join(missing)}. People can be added once they have signed in at least once.",
+        )
+
+    group_ids = set(body.group_ids)
+    if group_ids:
+        mine = {gid for (gid,) in db.query(groups.member_group_ids(db, user)).all()}
+        # A group already shared with stays allowed even if the owner has since
+        # left it — re-saving unrelated changes shouldn't force dropping it.
+        already = {gid for (gid,) in db.query(TemplateShare.group_id).filter(
+            TemplateShare.template_id == template_id, TemplateShare.group_id.isnot(None)
+        ).all()}
+        not_mine = group_ids - mine - already
+        if not_mine:
+            raise HTTPException(
+                status_code=400,
+                detail="You can only share with groups you are a member of.",
+            )
+
+    db.query(TemplateShare).filter(TemplateShare.template_id == template_id).delete(synchronize_session=False)
+    for u in found:
+        db.add(TemplateShare(template_id=template_id, user_id=u.user_id, created_by_id=user.user_id))
+    for gid in group_ids:
+        db.add(TemplateShare(template_id=template_id, group_id=gid, created_by_id=user.user_id))
+    # Across the whole lineage, for the reason given in _set_public.
+    db.query(WorkflowTemplate).filter(
+        WorkflowTemplate.template_id == template_id
+    ).update({WorkflowTemplate.is_public: body.is_public}, synchronize_session=False)
+    db.commit()
+    db.refresh(template)
+    return _sharing_state(db, template_id, template)
+
+
 @app.post("/api/workflow-templates/{template_version_id}/clone")
 def clone_template(template_version_id: int, db: Session = Depends(get_db),
                    user: AppUser = Depends(get_current_user)):
@@ -1150,8 +1316,45 @@ def list_pipeline_runs(db: Session = Depends(get_db), user: AppUser = Depends(ge
             "template_version_id": r.template_version_id,
             "template_name": templates.get(r.template_version_id),
             "dbos_workflow_id": r.dbos_workflow_id,
+            # "local" for a run imported from a self-hosted node (see
+            # engine/local_import.py); "platform" for one the DAG engine ran.
+            "source": (r.frozen_config or {}).get("source") or "platform",
+            "host": (r.frozen_config or {}).get("host"),
         } for r in runs
     ]
+
+
+@app.post("/api/pipeline-runs/import-local", tags=["pipeline-runs"])
+async def import_local_run(request: Request, db: Session = Depends(get_db),
+                           user: AppUser = Depends(get_current_user)):
+    """Record a run executed on the user's own node, from the runner's package.
+
+    The body is the `run-<id>-report.zip` the runner writes at the end of every
+    run (send it as-is, e.g. `Content-Type: application/zip`). It becomes a
+    normal run of the template version the bundle was exported from, with each
+    step's status, log tail and small output files, viewable on the run page.
+    Importing the same package again returns the run it already created.
+    """
+    from engine import local_import
+
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > local_import.MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Package is larger than the upload limit.")
+    data = await request.body()
+    try:
+        report, zf = local_import.open_package(data)
+    except local_import.PackageError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    template = template_or_404(db, user, local_import.template_version_id(report))
+    existing = local_import.find_existing(visible_runs(db, user), report)
+    if existing:
+        return {"run_id": existing.run_id, "already_imported": True}
+    try:
+        run = local_import.create_run(db, user, template, report, zf)
+    except local_import.PackageError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"run_id": run.run_id, "already_imported": False}
 
 
 @app.get("/api/pipeline-runs/{run_id}/detail")
@@ -1202,7 +1405,7 @@ def get_step_logs(run_id: int, node_id: int, db: Session = Depends(get_db), user
     # Ownership is checked on the RUN before any step lookup. These logs are
     # container stdout/stderr and Tapis job messages — among the most revealing
     # output in the system.
-    run_or_404(db, user, run_id)
+    run = run_or_404(db, user, run_id)
 
     step = db.query(RunStep).filter(
         RunStep.run_id == run_id, RunStep.node_id == node_id
@@ -1218,8 +1421,18 @@ def get_step_logs(run_id: int, node_id: int, db: Session = Depends(get_db), user
         "error_message": step.error_message,   # DBOS-level error we captured
         "tapis_last_message": None,            # Tapis' own summary of the outcome
         "job_output": None,                    # container stdout/stderr
+        "job_output_source": "tapisjob.out",   # what job_output was read from
         "logs_note": None,
     }
+
+    # An imported run's log is the tail of the runner.log it uploaded.
+    from engine import local_import
+    if local_import.is_local(run):
+        result["job_output_source"] = "runner.log"
+        result["job_output"] = local_import.step_log(run_id, node_id)
+        if result["job_output"] is None:
+            result["logs_note"] = "This step ran no container on the node, so there is no log."
+        return result
 
     uuid = step.tapis_job_uuid
     if not uuid:
@@ -1371,6 +1584,7 @@ def _deployment_context(db: Session, user: AppUser, template_version_id: int,
 
     template = template_or_404(db, user, template_version_id)
     try:
+        deployment.node_images_dir(images_dir)
         bundle = local_bundle.build_bundle(
             db, template, data_root=data_root, workdir=workdir, images_dir=images_dir
         )
@@ -1393,6 +1607,7 @@ def _deployment_context(db: Session, user: AppUser, template_version_id: int,
     runner = deployment.runner_instructions(
         data_root, workdir, images_dir, bundle_file, bundle.get("secrets_required") or [],
         [src["platform_path"] for src in sources if src["used"]],
+        deployment.sink_mounts(bundle, data_root),
     )
     return template, bundle, rows, runner, token, safe_name, sources
 
@@ -1403,6 +1618,11 @@ class DeploySettings(BaseModel):
     remap: bool = False
     data_root: str = "/"
     workdir: str = ""
+    # Folder on the node for step images; "" means containers/ in the zip.
+    containers_dir: str = ""
+    # Put the images in the zip (slow, but works offline) instead of letting
+    # the runner download them on the node.
+    images_in_zip: bool = False
 
 
 @app.get("/api/workflow-templates/{template_version_id}/deploy-settings")
@@ -1479,7 +1699,8 @@ def deployment_zip(
     template_version_id: int,
     data_root: str = "/",
     workdir: str = "./wf-local",
-    images_dir: str = "./images",
+    images_dir: str = "./containers",
+    include_images: bool = True,
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_current_user),
 ):
@@ -1490,12 +1711,18 @@ def deployment_zip(
     Streamed, since the images make it gigabytes. Downloading redeems each
     image's source link once — postit links are use-limited, so prefer keeping
     the zip over re-downloading it.
+
+    `include_images=false`, or an absolute `images_dir` (a folder of the
+    user's own on the node), leaves the images out: the zip is then a few
+    hundred KB and the runner downloads each image into that folder on first
+    use, straight from its source to the node.
     """
-    return _deployment_zip_response(db, user, template_version_id, data_root, workdir, images_dir)
+    return _deployment_zip_response(db, user, template_version_id, data_root, workdir, images_dir,
+                                    include_images)
 
 
 def _deployment_zip_response(db: Session, user: AppUser, template_version_id: int,
-                             data_root: str, workdir: str, images_dir: str):
+                             data_root: str, workdir: str, images_dir: str, include_images: bool = True):
     from fastapi.responses import StreamingResponse
     from engine import deployment
 
@@ -1504,7 +1731,7 @@ def _deployment_zip_response(db: Session, user: AppUser, template_version_id: in
     )
     filename = f"{safe_name}-v{template.version}-deploy.zip"
     return StreamingResponse(
-        deployment.stream_zip(bundle, rows, token, runner),
+        deployment.stream_zip(bundle, rows, token, runner, include_images, images_dir),
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
@@ -1516,7 +1743,8 @@ def deployment_link(
     request: Request,
     data_root: str = "/",
     workdir: str = "./wf-local",
-    images_dir: str = "./images",
+    images_dir: str = "./containers",
+    include_images: bool = True,
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_current_user),
 ):
@@ -1531,12 +1759,16 @@ def deployment_link(
     from engine import deployment
 
     template = template_or_404(db, user, template_version_id)
+    try:
+        deployment.node_images_dir(images_dir)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     args = (user.user_id, template_version_id, data_root, workdir, images_dir)
     base = (os.getenv("APP_BASE_URL") or str(request.base_url)).rstrip("/")
     safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", template.name or "workflow").strip("-") or "workflow"
     expires = datetime.now(timezone.utc) + timedelta(seconds=deployment.DOWNLOAD_LINK_TTL)
     return {
-        "url": f"{base}/api/deployment-downloads/{deployment.make_download_token(*args, kind='zip')}",
+        "url": f"{base}/api/deployment-downloads/{deployment.make_download_token(*args, kind='zip', include_images=include_images)}",
         # bundle.json alone, with these paths as its defaults — for a node that
         # already unpacked the zip and only needs the paths changed.
         "bundle_url": f"{base}/api/deployment-downloads/{deployment.make_download_token(*args, kind='bundle')}",
@@ -1563,7 +1795,8 @@ def deployment_download(token: str, db: Session = Depends(get_db)):
     if payload.get("k") == "bundle":
         return export_local_bundle(payload["t"], payload["d"], payload["w"], payload["i"],
                                    download=True, db=db, user=user)
-    return _deployment_zip_response(db, user, payload["t"], payload["d"], payload["w"], payload["i"])
+    return _deployment_zip_response(db, user, payload["t"], payload["d"], payload["w"], payload["i"],
+                                    payload.get("x", True))
 
 
 class RunOptions(BaseModel):
@@ -1598,6 +1831,11 @@ class RunOptions(BaseModel):
     # appended beneath it for isolation). Optional override — when omitted,
     # the base is derived from work_dir instead (see get_run_archive_context).
     archive_dir: Optional[str] = None
+    # Directory on the exec system holding step container images (.sif). A step
+    # that ships its container as a fileInput (training, inference,
+    # preprocessing) binds the copy found here instead of staging it from its
+    # link on every run — see engine.bind_inputs.
+    containers_dir: Optional[str] = None
 
 
 @app.post("/api/workflow-templates/{template_version_id}/preflight", tags=["pipeline-runs"])
@@ -1817,7 +2055,62 @@ def execute_workflow(template_version_id: int, options: Optional[RunOptions] = N
     archive location is derived automatically (work_dir/wf_runs/<run_id>/<node>).
     """
     overrides = options.model_dump(exclude_none=True) if options is not None else {}
-    return _launch_run(db, template_version_id, user, overrides)
+    result = _launch_run(db, template_version_id, user, overrides)
+    if overrides:
+        _save_run_preference(db, user, template_version_id, overrides)
+    return result
+
+
+def _save_run_preference(db: Session, user: AppUser, template_version_id: int, settings: dict) -> None:
+    """Remember what this user launched this workflow with, so its Run settings
+    open on those next time instead of their general defaults."""
+    template = template_or_404(db, user, template_version_id)
+    row = db.query(RunPreference).filter(
+        RunPreference.user_id == user.user_id,
+        RunPreference.template_id == template.template_id,
+    ).first()
+    if row:
+        row.settings = settings
+    else:
+        db.add(RunPreference(user_id=user.user_id, template_id=template.template_id, settings=settings))
+    db.commit()
+
+
+class RunDefaults(BaseModel):
+    """A user's run-settings defaults, applied to every workflow they haven't
+    launched with settings of its own. All optional; blank means the built-in
+    default."""
+    exec_system: Optional[str] = None
+    exec_queue: Optional[str] = None
+    gpu_exec_queue: Optional[str] = None
+    work_dir: Optional[str] = None
+    containers_dir: Optional[str] = None
+
+
+@app.get("/api/me/run-defaults")
+def get_run_defaults(user: AppUser = Depends(get_current_user)):
+    return {"defaults": user.run_defaults or {}}
+
+
+@app.put("/api/me/run-defaults")
+def put_run_defaults(body: RunDefaults, db: Session = Depends(get_db),
+                     user: AppUser = Depends(get_current_user)):
+    user.run_defaults = {k: v for k, v in body.model_dump().items() if v not in (None, "")}
+    db.commit()
+    return {"defaults": user.run_defaults}
+
+
+@app.get("/api/workflow-templates/{template_version_id}/run-settings")
+def get_run_settings(template_version_id: int, db: Session = Depends(get_db),
+                     user: AppUser = Depends(get_current_user)):
+    """This user's last-launched run settings for the workflow (null if never
+    launched), plus their general defaults to fall back on."""
+    template = template_or_404(db, user, template_version_id)
+    row = db.query(RunPreference).filter(
+        RunPreference.user_id == user.user_id,
+        RunPreference.template_id == template.template_id,
+    ).first()
+    return {"settings": row.settings if row else None, "defaults": user.run_defaults or {}}
 
 
 @app.post("/api/pipeline-runs/{run_id}/stop")
@@ -1962,6 +2255,16 @@ def resume_pipeline_run(
     # so it is scoped exactly like stopping.
     run = run_or_404(db, user, run_id)
     req = req or ResumeRequest()
+
+    from engine import local_import
+    if local_import.is_local(run):
+        # Its completed steps' outputs are on the user's node, not anywhere a
+        # Tapis job could read them.
+        raise HTTPException(
+            status_code=400,
+            detail="This run was imported from your own node and can't be resumed on the platform. "
+                   "Re-run it with the runner, or launch the template as a new platform run.",
+        )
 
     if (run.status or "").upper() == "RUNNING":
         raise HTTPException(
@@ -2499,6 +2802,15 @@ def tapis_files_list(system: str, path: str = "/", db: Session = Depends(get_db)
                      user: AppUser = Depends(get_current_user)):
     """List a directory on a Tapis storage system as the current user. Returns
     Tapis' file objects: [{name, path, size, type: 'file'|'dir', mimeType}]."""
+    from engine import local_import
+    local_run = local_import.run_id_for_system(system)
+    if local_run is not None:
+        # An imported run's packed outputs (see engine/local_import.py).
+        run_or_404(db, user, local_run)
+        try:
+            return {"result": local_import.list_dir(local_run, path)}
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="Path not found in this run's uploaded files.")
     token = _user_tapis_token(user, db)
     try:
         resp = httpx.get(_tapis_files_url("ops", system, path),
@@ -2518,6 +2830,18 @@ def tapis_files_list(system: str, path: str = "/", db: Session = Depends(get_db)
 def tapis_files_content(system: str, path: str, db: Session = Depends(get_db),
                         user: AppUser = Depends(get_current_user)):
     """Stream a file's bytes from a Tapis storage system as the current user."""
+    from engine import local_import
+    local_run = local_import.run_id_for_system(system)
+    if local_run is not None:
+        run_or_404(db, user, local_run)
+        try:
+            target = local_import.stored_path(local_run, path)
+            content = target.read_bytes()
+        except (FileNotFoundError, IsADirectoryError):
+            raise HTTPException(status_code=404, detail="File not found in this run's uploaded files.")
+        import mimetypes
+        return Response(content=content,
+                        media_type=mimetypes.guess_type(target.name)[0] or "application/octet-stream")
     token = _user_tapis_token(user, db)
     try:
         resp = httpx.get(_tapis_files_url("content", system, path),
