@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { Modal, Stack, Group, Button, NumberInput, Text, TextInput, Select, Badge, Divider, Loader } from "@mantine/core";
-import { TAPIS_SYSTEMS } from "../lib/tapis";
+import { TAPIS_SYSTEMS, preferredQueue } from "../lib/tapis";
 import { apiFetch } from "../lib/api";
+import { type RunDefaults, useRunDefaults } from "../lib/runDefaults";
 
 // Defaults for a step's compute resources — applied to any node that hasn't
 // customized them yet. These become the Tapis job's nodeCount/coresPerNode/
@@ -16,8 +17,8 @@ import { apiFetch } from "../lib/api";
 export const RUN_CONFIG_DEFAULTS = {
   nodeCount: 1,
   coresPerNode: 8,
-  memoryMB: 800,
-  maxMinutes: 30,
+  memoryMB: 16000,
+  maxMinutes: 45,
   gpus: 0,
   execSystem: "expanse-tapis-static",
   execQueue: "tapisShared",
@@ -34,12 +35,21 @@ export const GPU_RUN_CONFIG_DEFAULTS = {
 
 export type RunConfigValues = typeof RUN_CONFIG_DEFAULTS;
 
-export function runConfigDefaults(gpu?: boolean): RunConfigValues {
-  return gpu ? GPU_RUN_CONFIG_DEFAULTS : RUN_CONFIG_DEFAULTS;
+// The user's Run defaults (header -> Run defaults) replace the built-in
+// system/queue/work dir when they set a system; a node's saved values still win.
+export function runConfigDefaults(gpu?: boolean, user: RunDefaults = {}): RunConfigValues {
+  const base = gpu ? GPU_RUN_CONFIG_DEFAULTS : RUN_CONFIG_DEFAULTS;
+  if (!user.exec_system) return base;
+  return {
+    ...base,
+    execSystem: user.exec_system,
+    execQueue: (gpu ? user.gpu_exec_queue : user.exec_queue) || preferredQueue(user.exec_system, gpu ? "gpu" : "cpu") || "",
+    execWorkDir: user.work_dir || "",
+  };
 }
 
-export function readRunConfig(config: Record<string, any>, gpu?: boolean): RunConfigValues {
-  const defaults = runConfigDefaults(gpu);
+export function readRunConfig(config: Record<string, any>, gpu?: boolean, user: RunDefaults = {}): RunConfigValues {
+  const defaults = runConfigDefaults(gpu, user);
   return {
     nodeCount: config?.nodeCount ?? defaults.nodeCount,
     coresPerNode: config?.coresPerNode ?? defaults.coresPerNode,
@@ -78,12 +88,13 @@ export default function RunConfigModal({
   // inherits the GPU target rather than the CPU one.
   stepResources?: { gpu?: boolean };
 }) {
-  const [values, setValues] = useState<RunConfigValues>(() => runConfigDefaults(stepResources?.gpu));
+  const userDefaults = useRunDefaults();
+  const [values, setValues] = useState<RunConfigValues>(() => runConfigDefaults(stepResources?.gpu, userDefaults));
 
   // Reseed the working copy whenever the modal is (re)opened for this node.
   useEffect(() => {
-    if (opened) setValues(readRunConfig(initialConfig, stepResources?.gpu));
-  }, [opened, initialConfig, stepResources?.gpu]);
+    if (opened) setValues(readRunConfig(initialConfig, stepResources?.gpu, userDefaults));
+  }, [opened, initialConfig, stepResources?.gpu, userDefaults]);
 
   // Queues belong to a specific system, so the list is fetched for whichever
   // system this NODE overrode to — not the run's. Skipped entirely while
@@ -161,7 +172,14 @@ export default function RunConfigModal({
             // while inheriting an Expanse target submits a queue that isn't
             // there. The same goes for the job directory: a path only means
             // something on the system it was written for.
-            setValues((p) => ({ ...p, execSystem: v ?? "", execQueue: "", execWorkDir: "" }))
+            // aws-tapis's own default queue is no good for a GPU step, so a
+            // system with a preferred queue per target starts on that one.
+            setValues((p) => ({
+              ...p,
+              execSystem: v ?? "",
+              execQueue: (v && preferredQueue(v, stepResources?.gpu ? "gpu" : "cpu")) || "",
+              execWorkDir: "",
+            }))
           }
         />
         <Select

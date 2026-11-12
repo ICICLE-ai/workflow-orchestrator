@@ -5,7 +5,7 @@ import { IconDeviceFloppy, IconLayoutSidebarLeftExpand, IconLayoutSidebarRightEx
 import { notifications } from "@mantine/notifications";
 import type { StepPanelProps } from "./types";
 import { BACKEND_URL, SAM3_ENDPOINT, apiFetch, getTapisToken } from "../lib/api";
-import { TAPIS_SYSTEMS, DEFAULT_TAPIS_SYSTEM, resolveWiredLocation } from "../lib/tapis";
+import { TAPIS_SYSTEMS, resolveWiredLocation } from "../lib/tapis";
 import { uploadTapisFile } from "../lib/tapisFiles";
 
 // Type-only imports — erased at build, so these browser-only packages (an MUI
@@ -14,6 +14,7 @@ import { uploadTapisFile } from "../lib/tapisFiles";
 import type { FileExplorerProps } from "@icicle-ai/tapis-file-explorer";
 import type { AnnotationDetails as AnnotationDetailsComponent } from "@icicle-ai/annotation-details";
 import type { AdditionSource, ImageCanvasProps, CanvasEngine, BaseAnnotation } from "@icicle-ai/image-annotation-canvas";
+import { useDefaultSystem } from "../lib/runDefaults";
 
 // apiFetch, not a bare fetch: it carries whichever credential this deployment
 // uses — the session cookie standalone, the host's X-Tapis-Token when embedded.
@@ -111,6 +112,7 @@ interface Libs {
 }
 
 export default function SmartLabelerPanel({ config, onChange, step, nodeId, connectedInputs, onSave }: StepPanelProps) {
+  const defaultSystem = useDefaultSystem();
   // Render only after mount so the canvas/MUI/Tapis-direct packages never run
   // during server render (see docs/adding-a-step-custom-ui.md §5).
   const [mounted, setMounted] = useState(false);
@@ -159,7 +161,7 @@ export default function SmartLabelerPanel({ config, onChange, step, nodeId, conn
   // else the wired images input — rather than silently falling back to the
   // unrelated global DEFAULT_TAPIS_SYSTEM, which risked saving to a system
   // that had nothing to do with this node's actual data.
-  const system = field("system") || wiredAnnotationsSystem || sourceSystem || DEFAULT_TAPIS_SYSTEM;
+  const system = field("system") || wiredAnnotationsSystem || sourceSystem || defaultSystem;
   const outputPath = field("path");
   const annotationType = (config.annotation_type === "segmentation" ? "segmentation" : "detection") as
     | "detection"
@@ -179,7 +181,7 @@ export default function SmartLabelerPanel({ config, onChange, step, nodeId, conn
       tfe.configureTapisFileExplorer({
         apiBaseUrl: BACKEND_URL,
         allowedSystems: TAPIS_SYSTEMS.map((s) => ({ value: s, label: s })),
-        defaultSystem: DEFAULT_TAPIS_SYSTEM,
+        defaultSystem,
       });
       if (!cancelled) {
         setLibs({
@@ -466,7 +468,7 @@ export default function SmartLabelerPanel({ config, onChange, step, nodeId, conn
       }
       return;
     }
-    setSaveAsSystem(system || DEFAULT_TAPIS_SYSTEM);
+    setSaveAsSystem(system || defaultSystem);
     setSaveAsPath(outputPath);
     setSaveAsError(null);
     setSaveAsOpen(true);

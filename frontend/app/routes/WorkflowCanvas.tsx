@@ -6,9 +6,10 @@ import { useNavigate, useParams, useLoaderData } from 'react-router';
 import { notifications } from '@mantine/notifications';
 import CustomNode from '../components/CustomNode';
 import { apiFetch, fetchCurrentUser } from '../lib/api';
-import { TAPIS_SYSTEMS, defaultWorkDir } from '../lib/tapis';
+import { TAPIS_SYSTEMS, defaultWorkDir, preferredQueue } from '../lib/tapis';
 import TopNav from '../components/TopNav';
 import ThemeToggle from '../components/ThemeToggle';
+import { runDefaultsToOptions } from '../lib/runDefaults';
 import RunSettingsDrawer, { type RunOptions, type JobSteps } from '../components/RunSettingsDrawer';
 import { type ExecutionMode, type SingleJobPlan } from '../components/SingleJobPanel';
 import DeployDialog from '../components/DeployDialog';
@@ -262,6 +263,8 @@ function Flow() {
     // node_id is still appended beneath it). Empty means "derive from work_dir",
     // same as before this field existed — see get_run_archive_context.
     archive_dir: '',
+    // Optional dir of .sif images on the exec system — see engine.bind_inputs.
+    containers_dir: '',
     slurm_account: 'PAS2699',
   });
 
@@ -284,12 +287,37 @@ function Flow() {
   // ARCHIVE system's scratch/project layout, not any one step's exec system.
   // (A run whose GPU steps are on Expanse and CPU steps on OSC has no single
   // exec system to inherit a path from; its artifacts still have one home.)
+  //
+  // Only a work_dir still at the previous default (or blank) follows along: one
+  // the user typed, or loaded from their saved settings, is kept.
+  const lastDefaultWorkDir = useRef(defaultWorkDir('pitzer-tapis', { slurmAccount: 'PAS2699' }));
   useEffect(() => {
-    setRunOptions((prev) => ({
-      ...prev,
-      work_dir: defaultWorkDir(prev.archive_system, { slurmAccount: prev.slurm_account, username: tapisUsername }),
-    }));
+    setRunOptions((prev) => {
+      const next = defaultWorkDir(prev.archive_system, { slurmAccount: prev.slurm_account, username: tapisUsername });
+      const following = !prev.work_dir || prev.work_dir === lastDefaultWorkDir.current;
+      lastDefaultWorkDir.current = next;
+      return following ? { ...prev, work_dir: next } : prev;
+    });
   }, [runOptions.archive_system, runOptions.slurm_account, tapisUsername]);
+
+  // Start from what this user last launched THIS workflow with, else their
+  // general Run defaults (header -> Run defaults), else the built-ins above.
+  const templateVersionId = templateData?.template_version_id;
+  useEffect(() => {
+    let cancelled = false;
+    const url = templateVersionId
+      ? `/api/workflow-templates/${templateVersionId}/run-settings`
+      : '/api/me/run-defaults';
+    apiFetch(url)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (cancelled || !d) return;
+        const saved = d.settings || runDefaultsToOptions(d.defaults || {});
+        setRunOptions((prev) => ({ ...prev, ...saved }));
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [templateVersionId]);
 
   // Queue choices come from the exec system itself (Tapis' batchLogicalQueues),
   // not a hardcoded list. Fetched once per system, for each of the two targets.
@@ -304,7 +332,7 @@ function Flow() {
     setRunOptions((prev) =>
       names.includes(prev.exec_queue)
         ? prev
-        : { ...prev, exec_queue: cpuQueues.defaultQueue || names[0] || prev.exec_queue }
+        : { ...prev, exec_queue: pickQueue(names, preferredQueue(prev.exec_system, 'cpu'), cpuQueues.defaultQueue) || prev.exec_queue }
     );
   }, [cpuQueues.queues, cpuQueues.defaultQueue]);
   useEffect(() => {
@@ -313,7 +341,7 @@ function Flow() {
     setRunOptions((prev) =>
       names.includes(prev.gpu_exec_queue)
         ? prev
-        : { ...prev, gpu_exec_queue: gpuQueues.defaultQueue || names[0] || prev.gpu_exec_queue }
+        : { ...prev, gpu_exec_queue: pickQueue(names, preferredQueue(prev.gpu_exec_system, 'gpu'), gpuQueues.defaultQueue) || prev.gpu_exec_queue }
     );
   }, [gpuQueues.queues, gpuQueues.defaultQueue]);
 
@@ -1117,6 +1145,13 @@ function Flow() {
 // (the run declares a CPU one and a GPU one), so it's a hook rather than an
 // inline effect — two copies of the fetch/cancel/failure handling would
 // otherwise sit side by side in Flow.
+// The queue a target lands on when its system changes: our preferred one for
+// that system and target (lib/tapis PREFERRED_QUEUES) when the system offers it,
+// else the system's own default, else its first queue.
+function pickQueue(names: string[], preferred: string | undefined, systemDefault: string): string {
+  return (preferred && names.includes(preferred) ? preferred : '') || systemDefault || names[0] || '';
+}
+
 function useSystemQueues(system: string) {
   const [queues, setQueues] = useState<any[]>([]);
   const [defaultQueue, setDefaultQueue] = useState<string>('');

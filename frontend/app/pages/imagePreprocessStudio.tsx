@@ -4,12 +4,13 @@ import { IconDeviceFloppy, IconSettings, IconAlertTriangle, IconCheck, IconFiles
 import { notifications } from "@mantine/notifications";
 import type { StepPanelProps } from "./types";
 import { apiFetch } from "../lib/api";
-import { TAPIS_SYSTEMS, DEFAULT_TAPIS_SYSTEM, resolveWiredLocation } from "../lib/tapis";
+import { TAPIS_SYSTEMS, resolveWiredLocation } from "../lib/tapis";
 import TapisDirectoryBrowser, { parentOf } from "../components/TapisDirectoryBrowser";
 // Type-only imports — erased at build, so the heavy opencv-js package is NOT
 // pulled into the SSR bundle. The runtime component is loaded lazily below.
 import type { FileSource, RemoteFile } from "@icicle-ai/opencv-image-playground";
 import type { Pipeline } from "@icicle-ai/opencv-image-playground-core";
+import { useDefaultSystem } from "../lib/runDefaults";
 
 // Client-only load of the OpenCV playground (bundles opencv-js WASM + uses
 // browser APIs; must never import/render during server render).
@@ -32,6 +33,7 @@ const qs = (system: string, path: string) =>
   `system=${encodeURIComponent(system)}&path=${encodeURIComponent(path)}`;
 
 export default function ImagePreprocessStudioPanel({ config, onChange, step, connectedInputs }: StepPanelProps) {
+  const defaultSystem = useDefaultSystem();
   // Render the playground only after mount so its opencv-js WASM never runs on
   // the server.
   const [mounted, setMounted] = useState(false);
@@ -55,7 +57,7 @@ export default function ImagePreprocessStudioPanel({ config, onChange, step, con
   // input was the "browsing a wired directory silently uses the wrong
   // system" bug — this `system` value is shared for browsing sourceDir below
   // AND for where operations.json gets saved.
-  const system = String(config.source_system ?? "") || wiredLocation?.system || DEFAULT_TAPIS_SYSTEM;
+  const system = String(config.source_system ?? "") || wiredLocation?.system || defaultSystem;
 
   // A browsed source_dir (and the image remembered with it) only holds while
   // the wiring it was picked under is unchanged. Without this, ANY earlier

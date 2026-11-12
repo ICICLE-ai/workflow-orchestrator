@@ -11,7 +11,7 @@ import uvicorn
 from datetime import datetime, timedelta, timezone
 
 from db import engine, SessionLocal, get_db, DATABASE_URL, DB_HOST, DB_PORT, DB_NAME, DB_USER
-from models import Base, StepTypeRegistry, StepTypePort, WorkflowTemplate, PipelineRun, RunStep, AppUser, WfNode, WfEdge, RunEdge, PortDataType, Secret, WorkflowTrigger, DeployPreference, TemplateShare, UserGroup
+from models import Base, StepTypeRegistry, StepTypePort, WorkflowTemplate, PipelineRun, RunStep, AppUser, WfNode, WfEdge, RunEdge, PortDataType, Secret, WorkflowTrigger, DeployPreference, RunPreference, TemplateShare, UserGroup
 import auth
 import groups
 import geospatial
@@ -559,7 +559,8 @@ def on_startup():
                 "ALTER TABLE app_user "
                 "ADD COLUMN IF NOT EXISTS tapis_access_token VARCHAR, "
                 "ADD COLUMN IF NOT EXISTS tapis_refresh_token VARCHAR, "
-                "ADD COLUMN IF NOT EXISTS tapis_token_expires_at TIMESTAMPTZ;"
+                "ADD COLUMN IF NOT EXISTS tapis_token_expires_at TIMESTAMPTZ, "
+                "ADD COLUMN IF NOT EXISTS run_defaults JSON;"
             ))
             conn.execute(text(
                 "ALTER TABLE workflow_template "
@@ -1830,6 +1831,11 @@ class RunOptions(BaseModel):
     # appended beneath it for isolation). Optional override — when omitted,
     # the base is derived from work_dir instead (see get_run_archive_context).
     archive_dir: Optional[str] = None
+    # Directory on the exec system holding step container images (.sif). A step
+    # that ships its container as a fileInput (training, inference,
+    # preprocessing) binds the copy found here instead of staging it from its
+    # link on every run — see engine.bind_inputs.
+    containers_dir: Optional[str] = None
 
 
 @app.post("/api/workflow-templates/{template_version_id}/preflight", tags=["pipeline-runs"])
@@ -2049,7 +2055,62 @@ def execute_workflow(template_version_id: int, options: Optional[RunOptions] = N
     archive location is derived automatically (work_dir/wf_runs/<run_id>/<node>).
     """
     overrides = options.model_dump(exclude_none=True) if options is not None else {}
-    return _launch_run(db, template_version_id, user, overrides)
+    result = _launch_run(db, template_version_id, user, overrides)
+    if overrides:
+        _save_run_preference(db, user, template_version_id, overrides)
+    return result
+
+
+def _save_run_preference(db: Session, user: AppUser, template_version_id: int, settings: dict) -> None:
+    """Remember what this user launched this workflow with, so its Run settings
+    open on those next time instead of their general defaults."""
+    template = template_or_404(db, user, template_version_id)
+    row = db.query(RunPreference).filter(
+        RunPreference.user_id == user.user_id,
+        RunPreference.template_id == template.template_id,
+    ).first()
+    if row:
+        row.settings = settings
+    else:
+        db.add(RunPreference(user_id=user.user_id, template_id=template.template_id, settings=settings))
+    db.commit()
+
+
+class RunDefaults(BaseModel):
+    """A user's run-settings defaults, applied to every workflow they haven't
+    launched with settings of its own. All optional; blank means the built-in
+    default."""
+    exec_system: Optional[str] = None
+    exec_queue: Optional[str] = None
+    gpu_exec_queue: Optional[str] = None
+    work_dir: Optional[str] = None
+    containers_dir: Optional[str] = None
+
+
+@app.get("/api/me/run-defaults")
+def get_run_defaults(user: AppUser = Depends(get_current_user)):
+    return {"defaults": user.run_defaults or {}}
+
+
+@app.put("/api/me/run-defaults")
+def put_run_defaults(body: RunDefaults, db: Session = Depends(get_db),
+                     user: AppUser = Depends(get_current_user)):
+    user.run_defaults = {k: v for k, v in body.model_dump().items() if v not in (None, "")}
+    db.commit()
+    return {"defaults": user.run_defaults}
+
+
+@app.get("/api/workflow-templates/{template_version_id}/run-settings")
+def get_run_settings(template_version_id: int, db: Session = Depends(get_db),
+                     user: AppUser = Depends(get_current_user)):
+    """This user's last-launched run settings for the workflow (null if never
+    launched), plus their general defaults to fall back on."""
+    template = template_or_404(db, user, template_version_id)
+    row = db.query(RunPreference).filter(
+        RunPreference.user_id == user.user_id,
+        RunPreference.template_id == template.template_id,
+    ).first()
+    return {"settings": row.settings if row else None, "defaults": user.run_defaults or {}}
 
 
 @app.post("/api/pipeline-runs/{run_id}/stop")

@@ -9,6 +9,7 @@ import { apiFetch } from "../lib/api";
 import { resolveWiredLocation, splitTapisUri } from "../lib/tapis";
 import ParamSection from "../components/ParamSection";
 import TapisPathField from "../components/TapisPathField";
+import { useDefaultSystem } from "../lib/runDefaults";
 
 // Settings panel for the 'zero_shot_annotation' step (backend/steps/zero_shot_annotation/step.json)
 // — annotates every image in a directory with a zero-shot open-vocabulary
@@ -35,6 +36,7 @@ import TapisPathField from "../components/TapisPathField";
 //
 // Registered in registry.ts under the key "zero_shot_annotation".
 export default function ZeroShotAnnotationPanel({ config, onChange, step, connectedInputs }: StepPanelProps) {
+  const defaultSystem = useDefaultSystem();
   const schema = step.config_schema || {};
   const tip = (key: string) => schema[key]?.description;
   const field = (key: string) => (config[key] !== undefined ? config[key] : schema[key]?.default);
@@ -66,7 +68,7 @@ export default function ZeroShotAnnotationPanel({ config, onChange, step, connec
   // round-trip through TapisPathField the same way.
   const weightsUri = String(field("insid3_weights") ?? "");
   const weightsParts = splitTapisUri(weightsUri);
-  const weightsSystem = weightsParts?.system ?? "";
+  const weightsSystem = weightsParts?.system || defaultSystem;
   const weightsPath = weightsParts?.path ?? weightsUri;
   const setWeights = (nextSystem: string, nextPath: string) =>
     set(
@@ -101,7 +103,7 @@ export default function ZeroShotAnnotationPanel({ config, onChange, step, connec
   // bare-path + config.system shape so nodes saved before this still open.
   const promptFileUri = String(field("annotation_file") ?? "");
   const promptFileParts = splitTapisUri(promptFileUri);
-  const promptFileSystem = promptFileParts?.system ?? String(config.system ?? "");
+  const promptFileSystem = promptFileParts?.system ?? (String(config.system ?? "") || defaultSystem);
   const promptFile = promptFileParts?.path ?? promptFileUri;
   const hasExemplars = promptFileUri.trim().length > 0;
 

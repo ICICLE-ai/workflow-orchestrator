@@ -33,6 +33,10 @@ class AppUser(Base):
     tapis_access_token = Column(String)
     tapis_refresh_token = Column(String)
     tapis_token_expires_at = Column(DateTime(timezone=True))
+    # The user's own run-settings defaults (system, CPU/GPU queue, work dir,
+    # containers dir), applied to any workflow they haven't launched with
+    # settings of its own — see RunPreference and /api/me/run-defaults.
+    run_defaults = Column(JSON)
 
     team = relationship("Team", back_populates="users")
     workflows = relationship("WorkflowTemplate", back_populates="owner")
@@ -440,5 +444,23 @@ class DeployPreference(Base):
     template_id = Column(Integer, nullable=False, index=True)
     # {node, nodeName, remap, data_root, workdir} — whatever the dialog sends,
     # validated by DeploySettings in main.py.
+    settings = Column(JSON, nullable=False, default=dict)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class RunPreference(Base):
+    """The run settings one user last launched one workflow lineage with.
+
+    Same keying as DeployPreference: template_id so a new version keeps them,
+    per user since each person runs on their own allocation. Overrides the
+    user's AppUser.run_defaults for this workflow only.
+    """
+    __tablename__ = 'run_preference'
+    __table_args__ = (UniqueConstraint('user_id', 'template_id', name='uq_run_pref_user_template'),)
+
+    pref_id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey('app_user.user_id', ondelete='CASCADE'), nullable=False)
+    template_id = Column(Integer, nullable=False, index=True)
+    # RunOptions as launched (see main.py).
     settings = Column(JSON, nullable=False, default=dict)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

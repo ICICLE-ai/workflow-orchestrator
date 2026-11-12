@@ -64,6 +64,7 @@ const RUN_OPTION_FIELDS: { key: string; label: string }[] = [
   { key: "work_dir", label: "Work dir" },
   { key: "archive_system", label: "Archive system" },
   { key: "archive_dir", label: "Archive dir" },
+  { key: "containers_dir", label: "Containers dir" },
 ];
 
 // Shown above those in the drawer, but NOT part of the re-run payload: the

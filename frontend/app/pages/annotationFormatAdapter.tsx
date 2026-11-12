@@ -6,6 +6,7 @@ import { apiFetch } from "../lib/api";
 import ParamSection from "../components/ParamSection";
 import TapisPathField from "../components/TapisPathField";
 import { resolveWiredLocation } from "../lib/tapis";
+import { useDefaultSystem } from "../lib/runDefaults";
 
 // Settings panel for the 'annotation_format_adapter' step
 // (backend/steps/annotation_format_adapter/step.json) — converts annotations
@@ -35,7 +36,8 @@ export default function AnnotationFormatAdapterPanel({ config, onChange, step, c
 
   const fromFormat = String(field("from_format") ?? "native");
   const toFormat = String(field("to_format") ?? "coco");
-  const destSystem = String(config.system ?? "");
+  const defaultSystem = useDefaultSystem();
+  const destSystem = String(config.system ?? "") || defaultSystem;
   const destPath = String(config.path ?? "");
 
   // 'sam3_exemplars' writes zero_shot_annotation's PROMPT file, not an
@@ -224,7 +226,7 @@ export default function AnnotationFormatAdapterPanel({ config, onChange, step, c
             path={destPath}
             selectType={toFormat === "yolo" ? "dir" : "file"}
             onSystemChange={(v) => set("system", v)}
-            onPathChange={(v) => set("path", v)}
+            onPathChange={(v) => onChange({ ...config, system: destSystem, path: v })}
           />
         </ParamSection>
 

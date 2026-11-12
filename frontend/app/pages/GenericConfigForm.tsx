@@ -3,11 +3,13 @@ import { NumberInput, Switch, TextInput, Select, Stack, Text } from "@mantine/co
 import type { StepPanelProps } from "./types";
 import { apiFetch } from "../lib/api";
 import TapisPathField from "../components/TapisPathField";
+import { useDefaultSystem } from "../lib/runDefaults";
 
 // The default step settings page: an auto-generated form driven by the step's
 // config_schema. Used for every step type that has no custom page registered in
 // registry.ts. This preserves the original inline behavior from CustomNode.
 export default function GenericConfigForm({ config, onChange, step }: StepPanelProps) {
+  const defaultSystem = useDefaultSystem();
   const schema = step.config_schema || {};
   const entries = Object.entries(schema);
 
@@ -75,11 +77,13 @@ export default function GenericConfigForm({ config, onChange, step }: StepPanelP
               key={key}
               label={key}
               description={field.description}
-              system={String(config.system ?? "")}
+              system={String(config.system ?? "") || defaultSystem}
               path={(value as string) ?? ""}
               selectType={field.selectType === "dir" ? "dir" : "file"}
               onSystemChange={(v) => onChange({ ...config, system: v })}
-              onPathChange={(v) => onChange({ ...config, [key]: v })}
+              // The shown system is saved with the path, so a fallback the
+              // user accepted is what the node actually stores.
+              onPathChange={(v) => onChange({ ...config, system: String(config.system ?? "") || defaultSystem, [key]: v })}
             />
           );
         }

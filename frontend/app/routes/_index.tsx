@@ -3,6 +3,7 @@ import { AppShell, Container, Text, Button, Group, Card, SimpleGrid, ThemeIcon }
 import { IconLayoutDashboard, IconActivity, IconFolder } from "@tabler/icons-react";
 import { useNavigate } from "react-router";
 import SecretsMenu from "../components/SecretsMenu";
+import RunDefaultsMenu from "../components/RunDefaultsMenu";
 import TopNav from "../components/TopNav";
 import ThemeToggle from "../components/ThemeToggle";
 
@@ -33,6 +34,7 @@ export default function Dashboard() {
             <TopNav />
           </Group>
           <Group gap="xs">
+            <RunDefaultsMenu />
             <ThemeToggle />
             <SecretsMenu />
           </Group>

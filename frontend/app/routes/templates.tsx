@@ -6,6 +6,7 @@ import { useMemo, useState } from "react";
 import { apiFetch } from "../lib/api";
 import TopNav from "../components/TopNav";
 import ThemeToggle from "../components/ThemeToggle";
+import RunDefaultsMenu from "../components/RunDefaultsMenu";
 import ShareDialog from "../components/ShareDialog";
 
 export async function clientLoader() {
@@ -107,7 +108,10 @@ export default function Templates({ loaderData }: Route.ComponentProps) {
             <Text fw={700} style={{ whiteSpace: 'nowrap' }}>No-Code Workflow Studio</Text>
             <TopNav />
           </Group>
-          <ThemeToggle />
+          <Group gap="xs">
+            <RunDefaultsMenu />
+            <ThemeToggle />
+          </Group>
         </Group>
       </AppShell.Header>
 

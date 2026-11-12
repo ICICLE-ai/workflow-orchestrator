@@ -339,7 +339,20 @@ def execute_node_workflow(node_key: str, run_id: int, orchestrator_workflow_id: 
         # Inputs already on the exec system's filesystem are bind-mounted into
         # the container instead of copied in by Tapis (see engine.bind_inputs);
         # only cross-site inputs are still staged.
-        rendered = localize_file_inputs(rendered, run_id)
+        rendered = localize_file_inputs(rendered, run_id, ctx.get("containers_dir"))
+        # No archive fields in the job: outputs stay in the job's own output dir
+        # and downstream steps read (bind) them from there; a sink copies one
+        # out when the user wants it kept. Tapis then takes the archive target
+        # from the app definition, if it has one. Only possible when we know the
+        # output dir — otherwise it's the app's default, and the run archive is
+        # the one location we can name. Same when it holds a Tapis macro other
+        # than ${JobUUID} (aws-tapis's ${JobWorkingDir}): only Tapis can expand it.
+        output_dir = rendered.get("execSystemOutputDir")
+        if output_dir and "${" in output_dir.replace("${JobUUID}", ""):
+            output_dir = None
+        if output_dir:
+            rendered.pop("archiveSystemId", None)
+            rendered.pop("archiveSystemDir", None)
 
         # 3. Submit and poll.
         job_uuid = TapisV3.submit_job(rendered, run_id, redact=secret_values)
@@ -377,6 +390,9 @@ def execute_node_workflow(node_key: str, run_id: int, orchestrator_workflow_id: 
             DBOS.sleep(3)
 
         # 4. Record each output port's path (Tapis URI) for downstream steps.
+        if output_dir:
+            job_output = output_dir.replace("${JobUUID}", job_uuid).lstrip("/")
+            ctx = {**ctx, "archive_uri": f"tapis://{rendered['execSystemId']}/{job_output}"}
         outputs = _derive_outputs(run_id, node_key, ctx, job_uuid)
         print(f"[workflows] node {node_key} (run {run_id}) derived outputs: {outputs}")
         complete_run_step(run_id, node_key, outputs)

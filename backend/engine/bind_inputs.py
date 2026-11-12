@@ -30,20 +30,35 @@ directory input, an empty file for a file input. That needs the exec dir's path
 BEFORE Tapis assigns a job UUID, so ${JobUUID} in execSystem{Exec,Input,Output}Dir
 is replaced with an id of our own when anything is bound.
 
+Container images
+----------------
+A few steps (training, inference, preprocessing) ship their real container as a
+.sif fileInput from a postit link, so every run copies gigabytes in. When the run
+sets a containers dir (Run settings -> containers_dir, a path on the exec
+system), a .sif input whose file is in that dir is pointed there instead, and so
+binds like any other same-filesystem input. Matched on the targetPath's file
+name ignoring case, '-' and '_' — the same rule the off-platform runner uses for
+its --images-dir (runner/wf_runner/runner.py resolve_image). A .sif not found
+there is still staged from its link.
+
 Anything this can't verify (mock mode, a non-Singularity app, an app that marks
 the input REQUIRED/FIXED, a rootDir with macros, a missing source, a Files API
 error) leaves that input staged exactly as before: binding is an optimization,
-never a reason for a job to fail. A fileInput can opt out explicitly with
+never a reason for a job to fail. An input the APP definition also declares can't be dropped from the job (Tapis
+merges it back in and stages it anyway), so it's rewritten to a tapislocal://
+URL instead: Tapis's own form for "already on the exec system — mount, don't
+copy". A fileInput can opt out explicitly with
 "bind": false in its step.json — e.g. a tool that writes into its input dir,
 which a read-only bind would break.
 """
+import re
 import uuid
 
 import httpx
 from dbos import DBOS
 
 from engine import tapis_auth
-from engine.tapis import _require_run_token, _tapis_mkdir, _tapis_path_type, split_tapis_uri, use_real_tapis
+from engine.tapis import _require_run_token, _tapis_children, _tapis_mkdir, _tapis_path_type, split_tapis_uri, use_real_tapis
 
 # Systems that mount the same filesystems (/fs/ess, /fs/scratch), so a path on
 # one is reachable as-is from a job on another. Mirrors transactions._OSC_EXEC_SYSTEMS.
@@ -135,13 +150,39 @@ def _touch(sys_id: str, path: str, headers: dict) -> bool:
     return r.status_code in (200, 201)
 
 
+def _normalized_image_name(name: str) -> str:
+    return re.sub(r"[-_\s]+", "", name.strip().lower())
+
+
+def _use_containers_dir(file_inputs: list, exec_system: str, containers_dir: str, headers: dict) -> None:
+    """Point each .sif fileInput at its copy in `containers_dir` on the exec
+    system, when there is one (see "Container images" in the module docstring)."""
+    sifs = [fi for fi in file_inputs if isinstance(fi, dict) and str(fi.get("targetPath", "")).endswith(".sif")]
+    if not sifs or not containers_dir:
+        return
+    containers_dir = "/" + containers_dir.strip("/")
+    try:
+        available = _tapis_children(exec_system, containers_dir, headers)
+    except Exception as e:
+        print(f"[bind_inputs] can't list containers dir {exec_system}:{containers_dir} ({type(e).__name__}) — staging images")
+        return
+    by_name = {_normalized_image_name(n): n for n in available}
+    for fi in sifs:
+        wanted = fi["targetPath"].rsplit("/", 1)[-1]
+        found = by_name.get(_normalized_image_name(wanted))
+        if not found:
+            print(f"[bind_inputs] '{fi.get('name')}': no {wanted} in {containers_dir} — staging it from its link")
+            continue
+        fi["sourceUrl"] = f"tapis://{exec_system}{containers_dir}/{found}"
+
+
 def _bindable_host_path(path: str) -> bool:
     # --bind splits on ',' and ':'; whitespace would split the containerArgs string.
     return not any(c in path for c in ",: \t\n")
 
 
 @DBOS.step()
-def localize_file_inputs(rendered: dict, run_id: int) -> dict:
+def localize_file_inputs(rendered: dict, run_id: int, containers_dir: str = "") -> dict:
     """Return `rendered` with same-filesystem fileInputs turned into read-only
     container binds (see the module docstring). A DBOS step so the generated
     exec dir id and the Files API calls are recorded, not redone on recovery."""
@@ -150,13 +191,13 @@ def localize_file_inputs(rendered: dict, run_id: int) -> dict:
     if not file_inputs or not use_real_tapis():
         return rendered
     try:
-        return _localize(rendered, run_id, opted_out)
+        return _localize(rendered, run_id, opted_out, containers_dir or "")
     except Exception as e:
         print(f"[bind_inputs] {type(e).__name__}: {e} — staging every input as before")
         return rendered
 
 
-def _localize(rendered: dict, run_id: int, opted_out: set) -> dict:
+def _localize(rendered: dict, run_id: int, opted_out: set, containers_dir: str) -> dict:
     exec_system = rendered.get("execSystemId") or ""
     exec_dir = rendered.get("execSystemExecDir") or ""
     if not exec_dir or rendered.get("execSystemInputDir") != exec_dir:
@@ -164,6 +205,10 @@ def _localize(rendered: dict, run_id: int, opted_out: set) -> dict:
         # staging would have put the input, so there's nothing safe to map.
         print("[bind_inputs] exec/input dir unknown or different — staging inputs")
         return rendered
+
+    headers = {"X-Tapis-Token": _require_run_token(run_id)}
+    _use_containers_dir([fi for fi in rendered["fileInputs"] if id(fi) not in opted_out],
+                        exec_system, containers_dir, headers)
 
     candidates = []
     for fi in rendered["fileInputs"]:
@@ -175,7 +220,6 @@ def _localize(rendered: dict, run_id: int, opted_out: set) -> dict:
     if not candidates:
         return rendered
 
-    headers = {"X-Tapis-Token": _require_run_token(run_id)}
     app = _app_def(rendered.get("appId", ""), rendered.get("appVersion", ""), headers)
     if not app or str(app.get("runtime", "")).upper() != "SINGULARITY":
         print(f"[bind_inputs] app runtime is {(app or {}).get('runtime')!r}, not SINGULARITY — staging inputs")
@@ -193,14 +237,22 @@ def _localize(rendered: dict, run_id: int, opted_out: set) -> dict:
     bound = []
     for fi, sys_id, path in candidates:
         name = fi.get("name")
-        mode = (app_inputs.get(name) or {}).get("inputMode")
-        if mode in ("REQUIRED", "FIXED"):
-            print(f"[bind_inputs] '{name}': app declares it {mode} — staging (mark it OPTIONAL in the app to bind)")
-            continue
         root = _root_dir(sys_id, headers)
         if root is None:
             continue
         host_src = f"{root}{path}".rstrip("/")
+        if name in app_inputs:
+            # Tapis merges the app's own declaration back in whatever the job
+            # sends, so dropping it from the job doesn't stop it being staged —
+            # and its envKey then collides with a --bind's (JOBS_DUPLICATE_ENV_VAR).
+            # Keep the entry and let Tapis mount it instead: a tapislocal:// URL
+            # names a path already on the exec system, which Tapis doesn't copy
+            # and, with autoMountLocal, mounts into the container at targetPath —
+            # setting the envKey itself.
+            fi["sourceUrl"] = f"tapislocal://exec.tapis{host_src}"
+            fi["autoMountLocal"] = True
+            print(f"[bind_inputs] '{name}': declared by the app too — {fi['sourceUrl']} (mounted by Tapis, not copied)")
+            continue
         if not _bindable_host_path(host_src):
             print(f"[bind_inputs] '{name}': {host_src!r} can't be expressed in --bind — staging")
             continue
@@ -221,16 +273,26 @@ def _localize(rendered: dict, run_id: int, opted_out: set) -> dict:
         if not ok:
             print(f"[bind_inputs] '{name}': couldn't create mount point {mount_point} — staging")
             continue
-        bound.append((fi, f"--bind {host_src}:{container_path(target, binds)}:ro"))
+        bound.append((fi, host_src, container_path(target, binds)))
 
     if not bound:
         return rendered
 
     rendered.update(pinned)
-    bound_ids = {id(fi) for fi, _ in bound}
+    bound_ids = {id(fi) for fi, _, _ in bound}
     rendered["fileInputs"] = [fi for fi in rendered["fileInputs"] if id(fi) not in bound_ids]
     container_args = parameter_set.setdefault("containerArgs", [])
-    for fi, arg in bound:
+    env_vars = parameter_set.setdefault("envVariables", [])
+    # Tapis rejects a key set twice — by the step, the app, or another input.
+    env_keys = {e.get("key") for e in env_vars + (app_params.get("envVariables") or []) if isinstance(e, dict)}
+    env_keys |= {fi.get("envKey") for fi in rendered["fileInputs"] if isinstance(fi, dict)}
+    env_keys |= {i.get("envKey") for i in app_inputs.values()}
+    for fi, host_src, dest in bound:
+        arg = f"--bind {host_src}:{dest}:ro"
         container_args.append({"name": f"bind-{fi.get('name')}", "arg": arg})
+        # A staged input's envKey hands the program its path; a bound one has
+        # no staging to set it, so set it to where the bind puts the input.
+        if fi.get("envKey") and fi["envKey"] not in env_keys:
+            env_vars.append({"key": fi["envKey"], "value": dest})
         print(f"[bind_inputs] '{fi.get('name')}': {fi['sourceUrl']} -> {arg}")
     return rendered

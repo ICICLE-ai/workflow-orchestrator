@@ -376,6 +376,13 @@ def _exec_system_dirs(exec_system: str, slurm_account: str, username: str = "",
     if exec_system == "expanse-tapis-static":
         base = "/jobs/${JobUUID}"
         return (base, base, base)
+    if exec_system == "aws-tapis":
+        # Tapis' own layout under the system's jobWorkingDir — ${JobWorkingDir}
+        # is a Tapis macro, left for Tapis to fill like ${JobUUID}. Sent
+        # explicitly rather than omitted, since omitting inherits the apps' OSC
+        # paths (see above). output/ matches OSC: the apps write to $PWD/output.
+        base = "${JobWorkingDir}/jobs/${JobUUID}"
+        return (base, base, f"{base}/output")
     if exec_system == "expanse-tapis":
         # Per-USER scratch, not per-allocation — see _default_work_dir. The
         # username check is on `username` itself, not on the returned path:
@@ -604,6 +611,8 @@ def get_run_archive_context(run_id: int, node_key: str = None) -> dict:
         "exec_system_exec_dir": exec_dir,
         "exec_system_input_dir": input_dir,
         "exec_system_output_dir": output_dir,
+        # Where step .sif images live on the exec system; see engine.bind_inputs.
+        "containers_dir": cfg.get("containers_dir", ""),
     }
 
 
