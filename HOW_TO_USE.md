@@ -133,7 +133,6 @@ automatically and the widget shows your username with no login/logout controls.
 Before your first run, tell the Studio where you usually run. Click **Run
 defaults** in the header of the dashboard or the Templates page.
 
-<!-- IMAGE NEEDED: run_defaults_button.png — the dashboard header, with the "Run defaults" button highlighted. -->
 
 | Field | What to enter |
 | --- | --- |
@@ -143,7 +142,6 @@ defaults** in the header of the dashboard or the Templates page.
 | **Work dir** | Your base folder on that system. Jobs run under it, and outputs go to `…/wf_runs`. |
 | **Containers dir** | The folder on that system that holds the step container images (`trainer.sif`, `inf.sif`, …). Jobs then use these images in place instead of copying them in each run. See [How inputs reach a job](#how-inputs-reach-a-job). |
 
-<!-- IMAGE NEEDED: run_defaults_modal.png — the Run defaults dialog filled in (e.g. aws-tapis, cpu-partition, a10g-partition, a work dir and a containers dir). -->
 ![Run defaults dialog](./docs/images/run_defaults_modal.png)
 
 Click **Save defaults**. From then on, these values are used everywhere a
@@ -195,7 +193,6 @@ Two optional sections sit below, closed by default:
 - **Storage & archive:** where outputs are written (work dir, archive system,
   archive dir), and the **containers dir**. The defaults are usually right.
 
-<!-- IMAGE NEEDED: run_drawer_storage.png — the Run workflow drawer with "Storage & archive" expanded, showing Work dir, Archive system, Archive dir and Containers dir. -->
 ![Storage & archive section](./docs/images/run_drawer_storage.png)
 - **Trigger with a webhook:** a URL that starts this workflow from outside the
   Studio. See [Trigger a workflow from outside
@@ -456,7 +453,6 @@ A new workflow is **private**: only you can see it. To share it:
 2. Click **Share** in the canvas header, or the share icon on the workflow's card
    in the Templates list.
 
-   <!-- IMAGE NEEDED: share_button.png — the canvas header (or a Templates card) with the Share button highlighted. -->
    ![Share button](./docs/images/share_button.png)
 
 3. Choose who can see it:
@@ -472,7 +468,6 @@ A new workflow is **private**: only you can see it. To share it:
    ✕ on their name.
 5. Click **Save**.
 
-<!-- IMAGE NEEDED: share_dialog.png — the Share dialog on "Specific people", with one group and two people added. -->
 ![Share dialog](./docs/images/share_dialog.png)
 
 Good to know:
@@ -536,7 +531,6 @@ run it.
 Groups let you share with a whole team at once. Click **Groups** in the top
 navigation, then **New Group**. You become the group's first admin.
 
-<!-- IMAGE NEEDED: groups_page.png — the Groups page showing one group with its members and their Admin / Member roles. -->
 ![Groups page](./docs/images/groups_page.png)
 
 - **Admins** can rename or delete the group, add and remove members, and make
@@ -762,7 +756,6 @@ full surface.
 Defaults apply only to a step whose Run Configuration has never been saved. Once
 you save it, the step keeps those values.
 
-<!-- IMAGE NEEDED: run_configuration_modal.png — a step's Run Configuration dialog (open the 🖥 icon on a node), showing the system, queue and work dir filled in from run defaults, with 16000 MB and 45 min. -->
 ![Run Configuration dialog](./docs/images/run_configuration_modal.png)
 
 These override whatever the step type's own job template specifies. When a queue
@@ -930,7 +923,6 @@ flowchart TD
     D -- Yes, not found --> C
 ```
 
-<!-- IMAGE NEEDED (optional): input_binding.png — a PNG export of the diagram above, for viewers that don't render Mermaid. -->
 
 - **Same filesystem.** An input on the job's own system is mounted read-only
   into the container (`--bind host-path:container-path:ro`). The OSC systems

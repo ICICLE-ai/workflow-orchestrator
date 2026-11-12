@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "No-Code Workflow Studio API",
-    "description": "Backend for the **No-Code Workflow Studio** \u2014 build ML workflows on a visual\ncanvas and execute them as a durable DAG against Tapis-managed HPC resources.\n\n### Authentication\n\nEvery endpoint except `GET /` requires an authenticated user. Two credentials\nare accepted, checked in this order:\n\n1. **`X-Tapis-Token`** header \u2014 a Tapis access token. Used when the Studio is\n   embedded in TapisUI, where the host supplies the token.\n2. **`session`** cookie \u2014 set by this app's own Tapis OAuth login\n   (`GET /login` \u2192 `GET /oauth2/callback`).\n\nA token that fails verification falls through to the session rather than\nhard-failing. `GET /auth-debug` reports which credential a request carried and\nwhy it was or wasn't accepted.\n\n### Ownership\n\nTemplates and runs are scoped to the calling user.\n\n* **Runs** are owner-only. Another user's run returns `404`.\n* **Templates** are owner-only until published (`POST\n  /api/workflow-templates/{template_id}/publish`), which grants every user\n  read, run and clone access \u2014 never write. Only the owner can add a version.\n\nResources you may not access return **`404`, not `403`**, so a response never\nconfirms that an id exists.\n",
+    "description": "Backend for the **No-Code Workflow Studio** \u2014 build ML workflows on a visual\ncanvas and execute them as a durable DAG against Tapis-managed HPC resources.\n\n### Authentication\n\nEvery endpoint except `GET /` requires an authenticated user. Two credentials\nare accepted, checked in this order:\n\n1. **`X-Tapis-Token`** header \u2014 a Tapis access token. Used when the Studio is\n   embedded in TapisUI, where the host supplies the token.\n2. **`session`** cookie \u2014 set by this app's own Tapis OAuth login\n   (`GET /login` \u2192 `GET /oauth2/callback`).\n\nA token that fails verification falls through to the session rather than\nhard-failing. `GET /auth-debug` reports which credential a request carried and\nwhy it was or wasn't accepted.\n\n### Ownership\n\nTemplates and runs are scoped to the calling user.\n\n* **Runs** are owner-only. Another user's run returns `404`.\n* **Templates** are private to their owner until shared. The owner can share a\n  template with specific users or with whole user groups, or publish it to\n  every user (`PUT /api/workflow-templates/{template_id}/sharing`). Any of\n  these grants read, run and clone access \u2014 never write. Only the owner can add\n  a version.\n\nResources you may not access return **`404`, not `403`**, so a response never\nconfirms that an id exists.\n",
     "contact": {
       "name": "ICICLE-ai / workflow-orchestrator",
       "url": "https://github.com/ICICLE-ai/workflow-orchestrator"
@@ -1003,6 +1003,633 @@
         ]
       }
     },
+    "/api/users/search": {
+      "get": {
+        "tags": [
+          "groups"
+        ],
+        "summary": "Search Users",
+        "description": "Users whose username or email contains `q`, for the member and share\npickers. Requires at least 2 characters so it can't be used to page through\nthe whole user table.",
+        "operationId": "search_users_api_users_search_get",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Q"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 10,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          }
+        },
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/groups": {
+      "get": {
+        "tags": [
+          "groups"
+        ],
+        "summary": "List Groups",
+        "description": "The groups the caller belongs to.",
+        "operationId": "list_groups_api_groups_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          }
+        },
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "groups"
+        ],
+        "summary": "Create Group",
+        "operationId": "create_group_api_groups_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GroupCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          }
+        },
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/groups/{group_id}": {
+      "get": {
+        "tags": [
+          "groups"
+        ],
+        "summary": "Get Group",
+        "operationId": "get_group_api_groups__group_id__get",
+        "parameters": [
+          {
+            "name": "group_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Group Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "groups"
+        ],
+        "summary": "Update Group",
+        "operationId": "update_group_api_groups__group_id__patch",
+        "parameters": [
+          {
+            "name": "group_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Group Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GroupUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "groups"
+        ],
+        "summary": "Delete Group",
+        "description": "Delete a group. Workflows shared with it stop being visible to its members\n(unless shared with them some other way). Admin only.",
+        "operationId": "delete_group_api_groups__group_id__delete",
+        "parameters": [
+          {
+            "name": "group_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Group Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/groups/{group_id}/delete": {
+      "post": {
+        "tags": [
+          "groups"
+        ],
+        "summary": "Delete Group Post",
+        "operationId": "delete_group_post_api_groups__group_id__delete_post",
+        "parameters": [
+          {
+            "name": "group_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Group Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/groups/{group_id}/members": {
+      "post": {
+        "tags": [
+          "groups"
+        ],
+        "summary": "Add Member",
+        "operationId": "add_member_api_groups__group_id__members_post",
+        "parameters": [
+          {
+            "name": "group_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Group Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemberAdd"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/groups/{group_id}/members/{user_id}": {
+      "patch": {
+        "tags": [
+          "groups"
+        ],
+        "summary": "Update Member",
+        "operationId": "update_member_api_groups__group_id__members__user_id__patch",
+        "parameters": [
+          {
+            "name": "group_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Group Id"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "User Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemberUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "groups"
+        ],
+        "summary": "Remove Member",
+        "description": "Remove a member (admin), or leave the group (pass your own user_id).",
+        "operationId": "remove_member_api_groups__group_id__members__user_id__delete",
+        "parameters": [
+          {
+            "name": "group_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Group Id"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "User Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/groups/{group_id}/members/{user_id}/delete": {
+      "post": {
+        "tags": [
+          "groups"
+        ],
+        "summary": "Remove Member Post",
+        "operationId": "remove_member_post_api_groups__group_id__members__user_id__delete_post",
+        "parameters": [
+          {
+            "name": "group_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Group Id"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "User Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
     "/": {
       "get": {
         "summary": "Read Root",
@@ -1463,6 +2090,124 @@
         ]
       }
     },
+    "/api/workflow-templates/{template_id}/sharing": {
+      "get": {
+        "tags": [
+          "workflow-templates"
+        ],
+        "summary": "Get Template Sharing",
+        "description": "Who this template lineage is shared with. Owner only \u2014 the grantee list\nis the owner's business, not every viewer's.",
+        "operationId": "get_template_sharing_api_workflow_templates__template_id__sharing_get",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "workflow-templates"
+        ],
+        "summary": "Set Template Sharing",
+        "description": "Replace this template's sharing settings in one go: public or not, and\nthe full set of users and groups it is shared with. Owner only.\n\nGroups must be ones the caller belongs to \u2014 you can't push a workflow into\nthe list of a group you aren't in. Users must have signed in at least once.\nClones are unaffected either way: a clone is its own private lineage.",
+        "operationId": "set_template_sharing_api_workflow_templates__template_id__sharing_put",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SharingUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
     "/api/workflow-templates/{template_version_id}/clone": {
       "post": {
         "summary": "Clone Template",
@@ -1538,6 +2283,37 @@
         "tags": [
           "pipeline-runs"
         ],
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/pipeline-runs/import-local": {
+      "post": {
+        "tags": [
+          "pipeline-runs"
+        ],
+        "summary": "Import Local Run",
+        "description": "Record a run executed on the user's own node, from the runner's package.\n\nThe body is the `run-<id>-report.zip` the runner writes at the end of every\nrun (send it as-is, e.g. `Content-Type: application/zip`). It becomes a\nnormal run of the template version the bundle was exported from, with each\nstep's status, log tail and small output files, viewable on the run page.\nImporting the same package again returns the run it already created.",
+        "operationId": "import_local_run_api_pipeline_runs_import_local_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          }
+        },
         "security": [
           {
             "tapisToken": []
@@ -2018,7 +2794,7 @@
     "/api/workflow-templates/{template_version_id}/deployment.zip": {
       "get": {
         "summary": "Deployment Zip",
-        "description": "Everything to run this template on an offline node, as one zip: the\nbundle, every step image the server can fetch, the runner, run scripts and\na README saying where each piece goes.\n\nStreamed, since the images make it gigabytes. Downloading redeems each\nimage's source link once \u2014 postit links are use-limited, so prefer keeping\nthe zip over re-downloading it.",
+        "description": "Everything to run this template on an offline node, as one zip: the\nbundle, every step image the server can fetch, the runner, run scripts and\na README saying where each piece goes.\n\nStreamed, since the images make it gigabytes. Downloading redeems each\nimage's source link once \u2014 postit links are use-limited, so prefer keeping\nthe zip over re-downloading it.\n\n`include_images=false`, or an absolute `images_dir` (a folder of the\nuser's own on the node), leaves the images out: the zip is then a few\nhundred KB and the runner downloads each image into that folder on first\nuse, straight from its source to the node.",
         "operationId": "deployment_zip_api_workflow_templates__template_version_id__deployment_zip_get",
         "parameters": [
           {
@@ -2056,8 +2832,18 @@
             "required": false,
             "schema": {
               "type": "string",
-              "default": "./images",
+              "default": "./containers",
               "title": "Images Dir"
+            }
+          },
+          {
+            "name": "include_images",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": true,
+              "title": "Include Images"
             }
           }
         ],
@@ -2141,8 +2927,18 @@
             "required": false,
             "schema": {
               "type": "string",
-              "default": "./images",
+              "default": "./containers",
               "title": "Images Dir"
+            }
+          },
+          {
+            "name": "include_images",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": true,
+              "title": "Include Images"
             }
           }
         ],
@@ -2432,6 +3228,139 @@
         },
         "tags": [
           "pipeline-runs"
+        ],
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/me/run-defaults": {
+      "get": {
+        "summary": "Get Run Defaults",
+        "operationId": "get_run_defaults_api_me_run_defaults_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          }
+        },
+        "tags": [
+          "meta"
+        ],
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      },
+      "put": {
+        "summary": "Put Run Defaults",
+        "operationId": "put_run_defaults_api_me_run_defaults_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunDefaults"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          }
+        },
+        "tags": [
+          "meta"
+        ],
+        "security": [
+          {
+            "tapisToken": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/workflow-templates/{template_version_id}/run-settings": {
+      "get": {
+        "summary": "Get Run Settings",
+        "description": "This user's last-launched run settings for the workflow (null if never\nlaunched), plus their general defaults to fall back on.",
+        "operationId": "get_run_settings_api_workflow_templates__template_version_id__run_settings_get",
+        "parameters": [
+          {
+            "name": "template_version_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Template Version Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated \u2014 no valid X-Tapis-Token or session cookie."
+          },
+          "404": {
+            "description": "Not found, or not visible to the calling user."
+          }
+        },
+        "tags": [
+          "workflow-templates"
         ],
         "security": [
           {
@@ -3676,6 +4605,16 @@
             "type": "string",
             "title": "Workdir",
             "default": ""
+          },
+          "containers_dir": {
+            "type": "string",
+            "title": "Containers Dir",
+            "default": ""
+          },
+          "images_in_zip": {
+            "type": "boolean",
+            "title": "Images In Zip",
+            "default": false
           }
         },
         "type": "object",
@@ -3726,6 +4665,52 @@
         ],
         "title": "EdgeModel"
       },
+      "GroupCreate": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "GroupCreate"
+      },
+      "GroupUpdate": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          }
+        },
+        "type": "object",
+        "title": "GroupUpdate"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -3738,6 +4723,45 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "MemberAdd": {
+        "properties": {
+          "username": {
+            "type": "string",
+            "title": "Username"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "admin",
+              "member"
+            ],
+            "title": "Role",
+            "default": "member"
+          }
+        },
+        "type": "object",
+        "required": [
+          "username"
+        ],
+        "title": "MemberAdd"
+      },
+      "MemberUpdate": {
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": [
+              "admin",
+              "member"
+            ],
+            "title": "Role"
+          }
+        },
+        "type": "object",
+        "required": [
+          "role"
+        ],
+        "title": "MemberUpdate"
       },
       "NodeExecutionRequest": {
         "properties": {
@@ -3837,6 +4861,68 @@
         "type": "object",
         "title": "ResumeRequest",
         "description": "Body for `POST /api/pipeline-runs/{run_id}/resume`. Every field optional \u2014\nan empty body resumes the run without redoing anything already completed."
+      },
+      "RunDefaults": {
+        "properties": {
+          "exec_system": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exec System"
+          },
+          "exec_queue": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exec Queue"
+          },
+          "gpu_exec_queue": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gpu Exec Queue"
+          },
+          "work_dir": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Dir"
+          },
+          "containers_dir": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Containers Dir"
+          }
+        },
+        "type": "object",
+        "title": "RunDefaults",
+        "description": "A user's run-settings defaults, applied to every workflow they haven't\nlaunched with settings of its own. All optional; blank means the built-in\ndefault."
       },
       "RunOptions": {
         "properties": {
@@ -3938,6 +5024,17 @@
               }
             ],
             "title": "Archive Dir"
+          },
+          "containers_dir": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Containers Dir"
           }
         },
         "type": "object",
@@ -4000,6 +5097,35 @@
         },
         "type": "object",
         "title": "SecretUpdate"
+      },
+      "SharingUpdate": {
+        "properties": {
+          "is_public": {
+            "type": "boolean",
+            "title": "Is Public"
+          },
+          "usernames": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Usernames",
+            "default": []
+          },
+          "group_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Group Ids",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "is_public"
+        ],
+        "title": "SharingUpdate"
       },
       "TapisFileWrite": {
         "properties": {
@@ -4227,6 +5353,10 @@
     {
       "name": "triggers",
       "description": "Ways for something outside the Studio to start a run. A *webhook* trigger is an autogenerated secret URL that launches the workflow when POSTed to \u2014 the run executes as the trigger's owner, with the run settings frozen on the trigger. `POST /api/webhooks/{token}` is the only endpoint here that needs no credential: the token is the credential."
+    },
+    {
+      "name": "groups",
+      "description": "User groups \u2014 named sets of users a workflow can be shared with in one step. Any user can create one; only members can see it; admins manage membership."
     },
     {
       "name": "secrets",
