@@ -1852,7 +1852,7 @@ class RunOptions(BaseModel):
     # and stored on the run's frozen_config. All optional; sensible defaults
     # apply when omitted (see engine.transactions.get_run_archive_context).
     slurm_account: Optional[str] = None
-    # Exec-system selection — lets a run target OSC (pitzer-tapis / ascend-tapis)
+    # Exec-system selection — lets a run target OSC (pitzer-tapis / pitzer-tapis-static / ascend-tapis)
     # or Expanse (expanse-tapis) without code changes. exec_queue is the site's
     # queue name (OSC: cpu/gpu/nextgen; Expanse: tapisGPUshared/...). work_dir is
     # the base scratch/project path for OSC execSystem*Dir fields.

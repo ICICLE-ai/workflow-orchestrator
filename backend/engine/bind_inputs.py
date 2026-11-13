@@ -62,7 +62,7 @@ from engine.tapis import _require_run_token, _tapis_children, _tapis_mkdir, _tap
 
 # Systems that mount the same filesystems (/fs/ess, /fs/scratch), so a path on
 # one is reachable as-is from a job on another. Mirrors transactions._OSC_EXEC_SYSTEMS.
-_SHARED_FS_GROUPS = [{"pitzer-tapis", "cardinal-tapis", "ascend-tapis"}]
+_SHARED_FS_GROUPS = [{"pitzer-tapis", "pitzer-tapis-static", "cardinal-tapis", "ascend-tapis"}]
 
 _BIND_FLAGS = ("--bind", "-B")
 _JOB_DIR_FIELDS = ("execSystemExecDir", "execSystemInputDir", "execSystemOutputDir")

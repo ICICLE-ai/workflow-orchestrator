@@ -3,6 +3,7 @@
 // Selectable Tapis execution/storage systems.
 export const TAPIS_SYSTEMS = [
   "pitzer-tapis",
+  "pitzer-tapis-static",
   "expanse-tapis",
   "cardinal-tapis",
   "ascend-tapis",
@@ -13,6 +14,7 @@ export const TAPIS_SYSTEMS = [
 // Queue to pick on a system whose own Tapis default isn't the right one for a
 // CPU or GPU target. A system not listed falls back to its Tapis default queue.
 const PREFERRED_QUEUES: Record<string, { cpu: string; gpu: string }> = {
+  "pitzer-tapis-static": { cpu: "cpu", gpu: "gpu" },
   "aws-tapis": { cpu: "cpu-partition", gpu: "a10g-partition" },
 };
 
@@ -75,7 +77,7 @@ export function resolveWiredLocation(
 }
 
 // OSC systems share one scratch layout, keyed by the run's Slurm allocation.
-const OSC_SCRATCH_SYSTEMS = ["pitzer-tapis", "cardinal-tapis", "ascend-tapis"];
+const OSC_SCRATCH_SYSTEMS = ["pitzer-tapis", "pitzer-tapis-static", "cardinal-tapis", "ascend-tapis"];
 
 // The base directory a run's Tapis jobs execute/archive under is fixed per
 // exec system (not a free-form path) — each system has its own scratch/project

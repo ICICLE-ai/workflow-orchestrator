@@ -336,7 +336,7 @@ def get_downstream_sink_path(run_id: int, node_key: str) -> str:
 
 # OSC systems share one scratch layout, keyed by the run's Slurm allocation —
 # mirrors frontend/app/lib/tapis.ts's OSC_SCRATCH_SYSTEMS grouping.
-_OSC_EXEC_SYSTEMS = {"pitzer-tapis", "cardinal-tapis", "ascend-tapis"}
+_OSC_EXEC_SYSTEMS = {"pitzer-tapis", "pitzer-tapis-static", "cardinal-tapis", "ascend-tapis"}
 
 def _exec_system_dirs(exec_system: str, slurm_account: str, username: str = "",
                       work_dir: str = "") -> tuple:

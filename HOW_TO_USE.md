@@ -399,8 +399,9 @@ depending on what the field wants; the chosen system is stored alongside the
 path, and downstream steps receive the full `tapis://system/path` URI rather than
 a bare path.
 
-Available systems: `pitzer-tapis`, `cardinal-tapis`, `ascend-tapis`,
-`expanse-tapis`, `expanse-tapis-static`, `aws-tapis`.
+Available systems: `pitzer-tapis`, `pitzer-tapis-static`, `cardinal-tapis`,
+`ascend-tapis`, `expanse-tapis`, `expanse-tapis-static`, `aws-tapis`.
+`pitzer-tapis-static` has two queues: `cpu` (its default) and `gpu`.
 
 A field with no system chosen yet shows the system from your
 [run defaults](#set-your-run-defaults-once). Once you pick a path, the system
@@ -936,7 +937,7 @@ flowchart TD
 
 - **Same filesystem.** An input on the job's own system is mounted read-only
   into the container (`--bind host-path:container-path:ro`). The OSC systems
-  `pitzer-tapis`, `cardinal-tapis` and `ascend-tapis` share `/fs/ess` and
+  `pitzer-tapis`, `pitzer-tapis-static`, `cardinal-tapis` and `ascend-tapis` share `/fs/ess` and
   `/fs/scratch`, so data on any of them is mounted on the others too.
 - **Different filesystem.** Data on another site, or behind an `https://` link,
   is still copied in as before.
