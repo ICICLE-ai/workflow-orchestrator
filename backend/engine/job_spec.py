@@ -285,12 +285,19 @@ def render(template, context: dict):
     rendered = _render_value(template, context)
 
     if isinstance(rendered, dict):
+        # A step whose program writes somewhere other than $PWD/output says so
+        # with a RELATIVE execSystemOutputDir ("results"), resolved under its
+        # own exec dir.
+        own_output = rendered.get("execSystemOutputDir")
+        own_output = own_output.strip("/") if isinstance(own_output, str) and not own_output.startswith("/") else ""
         for field, ctx_key in _EXEC_DIR_FIELDS.items():
             value = context.get(ctx_key)
             if value:
                 rendered[field] = value
             else:
                 rendered.pop(field, None)
+        if own_output and rendered.get("execSystemExecDir"):
+            rendered["execSystemOutputDir"] = f"{rendered['execSystemExecDir'].rstrip('/')}/{own_output}"
         if rendered.get("execSystemLogicalQueue", None) in ("", None):
             rendered.pop("execSystemLogicalQueue", None)
         _normalize_archive_dir(rendered, context)

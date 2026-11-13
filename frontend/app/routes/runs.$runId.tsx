@@ -65,6 +65,7 @@ const RUN_OPTION_FIELDS: { key: string; label: string }[] = [
   { key: "archive_system", label: "Archive system" },
   { key: "archive_dir", label: "Archive dir" },
   { key: "containers_dir", label: "Containers dir" },
+  { key: "stage_files", label: "File staging" },
 ];
 
 // Shown above those in the drawer, but NOT part of the re-run payload: the
@@ -643,11 +644,11 @@ function RunViewForRun({ loaderData }: Route.ComponentProps) {
         <Stack gap="sm">
           {[...RUN_INFO_FIELDS, ...RUN_OPTION_FIELDS].map(({ key, label }) => {
             const value = detail.frozen_config?.[key];
-            if (!value) return null;
+            if (value === undefined || value === null || value === "") return null;
             return (
               <div key={key}>
                 <Text size="xs" c="dimmed">{label}</Text>
-                <Text size="sm">{String(value)}</Text>
+                <Text size="sm">{typeof value === "boolean" ? (value ? "On" : "Off") : String(value)}</Text>
               </div>
             );
           })}

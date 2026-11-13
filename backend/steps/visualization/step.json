@@ -2,7 +2,7 @@
   "step_type_key": "visualization",
   "resources": { "gpu": false },
   "display_name": "Visualization",
-  "description": "Shows a training run's metrics.json: the scores (mAP, accuracy, loss, ...) and the run's settings. Wire it to a Training node's 'metrics' output, or to a 📄 JSON File source pointing at any metrics.json (or a folder holding one). Design-time only — submits no Tapis job.",
+  "description": "Shows a training run's metrics.json: the scores (mAP, accuracy, loss, ...) and the run's settings, plus per-epoch curves (losses, precision/recall/mAP, learning rate) from the results.csv a YOLO run writes next to it. Wire it to a Training node's 'metrics' output, or to a 📄 JSON File source pointing at any metrics.json (or a folder holding one). Design-time only — submits no Tapis job.",
   "category": "Visualization",
   "icon": "eye",
   "inputs": [

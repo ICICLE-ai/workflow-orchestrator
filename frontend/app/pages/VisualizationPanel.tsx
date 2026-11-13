@@ -17,6 +17,7 @@ import { IconChartBar, IconInfoCircle, IconExternalLink } from "@tabler/icons-re
 import { apiFetch } from "../lib/api";
 import { resolveWiredLocation } from "../lib/tapis";
 import type { StepPanelProps } from "./types";
+import TrainingCurves, { parseResultsCsv, type EpochRow } from "../components/TrainingCurves";
 
 // ─────────────────────────────────────────────────────────────
 // VisualizationPanel — displays training performance metrics
@@ -27,6 +28,8 @@ import type { StepPanelProps } from "./types";
 //   - a 📄 JSON File source pointing at any metrics.json, so a past
 //     run's results can be viewed without re-running training.
 // The wired value may name the file itself or a folder holding one.
+// A YOLO run also leaves results.csv (one row per epoch) next to its
+// metrics.json; when it's there, the per-epoch curves are charted too.
 // Registered in registry.ts under "visualization".
 // ─────────────────────────────────────────────────────────────
 
@@ -108,6 +111,7 @@ export default function VisualizationPanel({ config, step, connectedInputs }: St
   const [metrics, setMetrics] = useState<TrainingMetrics | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [epochs, setEpochs] = useState<EpochRow[]>([]);
 
   const resultsPort = step.inputs.find((p) => p.data_type === "json_results")?.port_name ?? "results";
   const wired = connectedInputs?.[resultsPort];
@@ -116,6 +120,21 @@ export default function VisualizationPanel({ config, step, connectedInputs }: St
   const metricsPath = loc ? (/\.json$/i.test(loc.path) ? loc.path : `${loc.path.replace(/\/+$/, "")}/metrics.json`) : "";
   const wandbProject = config?.wandb_project as string | undefined;
   const wandbUrl = config?.wandb_url as string | undefined;
+
+  // Next to metrics.json, wherever that is. Absent for HuggingFace runs, which
+  // simply get no curves.
+  const resultsCsvPath = metricsPath ? `${metricsPath.replace(/\/[^/]*$/, "")}/results.csv` : "";
+  useEffect(() => {
+    setEpochs([]);
+    if (!loc || !resultsCsvPath) return;
+    let cancelled = false;
+    apiFetch(`/api/tapis-files/content?system=${encodeURIComponent(loc.system)}&path=${encodeURIComponent(resultsCsvPath)}`)
+      .then((res) => (res.ok ? res.text() : ""))
+      .then((text) => { if (!cancelled) setEpochs(parseResultsCsv(text)); })
+      .catch(() => { /* no curves, the scores still show */ });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loc?.system, resultsCsvPath]);
 
   useEffect(() => {
     setMetrics(null);
@@ -224,6 +243,17 @@ export default function VisualizationPanel({ config, step, connectedInputs }: St
                 radius="sm"
               />
             </Box>
+          )}
+
+          {/* Per-epoch curves */}
+          {epochs.length > 0 && (
+            <>
+              <Divider label="Training curves" labelPosition="left" />
+              <TrainingCurves
+                rows={epochs}
+                plannedEpochs={typeof metrics.metadata?.epochs === "number" ? metrics.metadata.epochs : undefined}
+              />
+            </>
           )}
 
           <Divider />

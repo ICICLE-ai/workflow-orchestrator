@@ -364,23 +364,26 @@ def _exec_system_dirs(exec_system: str, slurm_account: str, username: str = "",
     ${JobUUID} is a Tapis-side macro (filled in by Tapis at submission, not by
     us) — left as literal text here since our own ${...} substitution only
     replaces keys actually present in the context dict, and "JobUUID" never is.
+
+    The output dir is <exec dir>/output on every system: the apps write their
+    results to $PWD/output, and downstream steps find them there. A step that
+    writes elsewhere names its own subfolder (see job_spec.render).
     """
     if work_dir.strip():
         base = f"{work_dir.strip().rstrip('/')}/${{JobUUID}}"
         # Same layout as the system's default, just rooted elsewhere.
-        output = f"{base}/output" if exec_system in _OSC_EXEC_SYSTEMS else base
-        return (base, base, output)
+        return (base, base, f"{base}/output")
     if exec_system in _OSC_EXEC_SYSTEMS:
         base = f"/fs/scratch/{slurm_account}/harvest_jobs/${{JobUUID}}"
         return (base, base, f"{base}/output")
     if exec_system == "expanse-tapis-static":
         base = "/jobs/${JobUUID}"
-        return (base, base, base)
+        return (base, base, f"{base}/output")
     if exec_system == "aws-tapis":
         # Tapis' own layout under the system's jobWorkingDir — ${JobWorkingDir}
         # is a Tapis macro, left for Tapis to fill like ${JobUUID}. Sent
         # explicitly rather than omitted, since omitting inherits the apps' OSC
-        # paths (see above). output/ matches OSC: the apps write to $PWD/output.
+        # paths (see above).
         base = "${JobWorkingDir}/jobs/${JobUUID}"
         return (base, base, f"{base}/output")
     if exec_system == "expanse-tapis":
@@ -394,7 +397,7 @@ def _exec_system_dirs(exec_system: str, slurm_account: str, username: str = "",
         if not work:
             return (None, None, None)
         base = f"{work}/${{JobUUID}}"
-        return (base, base, base)
+        return (base, base, f"{base}/output")
     return (None, None, None)
 
 
@@ -464,6 +467,10 @@ def resolve_node_exec_target(cfg: dict, node_config: dict, step_resources: dict)
     elif node_config.get(_NODE_EXEC_QUEUE_KEY):
         exec_queue = node_config[_NODE_EXEC_QUEUE_KEY]
     return exec_system, exec_queue
+
+
+def _same_filesystem(a: str, b: str) -> bool:
+    return a == b or (a in _OSC_EXEC_SYSTEMS and b in _OSC_EXEC_SYSTEMS)
 
 
 def exec_work_dir(cfg: dict, node_config: dict, exec_system: str, archive_system: str) -> str:
@@ -591,11 +598,27 @@ def get_run_archive_context(run_id: int, node_key: str = None) -> dict:
     else:
         archive_dir = workspace
 
+    # The job runs inside its own step's folder of the run workspace —
+    # <workspace>/<step_type_key>/<node_id>/<job id> — so everything a run
+    # produced sits under wf_runs/<run_id> with nothing copied there. Only when
+    # that folder is on this node's filesystem and is a plain path, and the
+    # node didn't pick its own job dir in Run Configuration. Each attempt (a
+    # resume, a redo) gets its own <job id> folder, so it never runs on top of
+    # an earlier attempt's output.
+    base = exec_work_dir(cfg, node_config, exec_system, archive_system)
+    # A node job dir that's just the run's work dir again isn't a choice of its
+    # own (the Run Configuration once pre-filled it from the user's defaults),
+    # so it doesn't keep the node out of the run folder.
+    own_dir = str(node_config.get(_NODE_EXEC_WORK_DIR_KEY) or "").strip().rstrip("/")
+    if own_dir and own_dir == str(work_dir or "").strip().rstrip("/"):
+        own_dir = ""
+    if (node is not None and not own_dir
+            and _same_filesystem(exec_system, archive_system)
+            and archive_dir.startswith("/") and "$" not in archive_dir):
+        base = archive_dir
     # username matters for expanse-tapis, whose scratch is per-user rather than
     # per-allocation (unlike OSC's, which is keyed by slurm_account).
-    exec_dir, input_dir, output_dir = _exec_system_dirs(
-        exec_system, slurm_account, username, exec_work_dir(cfg, node_config, exec_system, archive_system)
-    )
+    exec_dir, input_dir, output_dir = _exec_system_dirs(exec_system, slurm_account, username, base)
 
     return {
         "run_id": run_id,
@@ -613,6 +636,8 @@ def get_run_archive_context(run_id: int, node_key: str = None) -> dict:
         "exec_system_output_dir": output_dir,
         # Where step .sif images live on the exec system; see engine.bind_inputs.
         "containers_dir": cfg.get("containers_dir", ""),
+        # Off unless the run turned it on: same-filesystem inputs are mounted.
+        "stage_files": cfg.get("stage_files") is True,
     }
 
 

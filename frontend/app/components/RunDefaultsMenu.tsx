@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Button, Modal, Stack, Select, TextInput, Group, Text, SimpleGrid } from "@mantine/core";
+import { Button, Modal, Stack, Select, TextInput, Group, Text, SimpleGrid, Switch } from "@mantine/core";
 import { IconServerCog } from "@tabler/icons-react";
 import { notifications } from "@mantine/notifications";
 import { apiFetch } from "../lib/api";
@@ -124,6 +124,12 @@ export default function RunDefaultsMenu() {
             placeholder="e.g. /fs/ess/PAS2699/containers"
             value={values.containers_dir || ""}
             onChange={(e) => set({ containers_dir: e.currentTarget.value })}
+          />
+          <Switch
+            label="File staging"
+            description="On: Tapis copies every input into the job. Off: inputs already on the system are mounted into the container instead of copied — faster, but needs Apptainer/Singularity on the compute nodes."
+            checked={values.stage_files === true}
+            onChange={(e) => set({ stage_files: e.currentTarget.checked })}
           />
           <Group justify="flex-end" mt="xs">
             <Button variant="default" onClick={() => setOpened(false)}>Cancel</Button>

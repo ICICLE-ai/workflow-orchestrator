@@ -3039,6 +3039,11 @@ components:
           - type: string
           - type: 'null'
           title: Containers Dir
+        stage_files:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Stage Files
       type: object
       title: RunDefaults
       description: 'A user''s run-settings defaults, applied to every workflow they haven''t
@@ -3098,6 +3103,11 @@ components:
           - type: string
           - type: 'null'
           title: Containers Dir
+        stage_files:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Stage Files
       type: object
       title: RunOptions
     SecretCreate:

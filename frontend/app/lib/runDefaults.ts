@@ -13,6 +13,8 @@ export interface RunDefaults {
   gpu_exec_queue?: string;
   work_dir?: string;
   containers_dir?: string;
+  // Copy inputs into each job through Tapis. Unset means off.
+  stage_files?: boolean;
 }
 
 let cache: RunDefaults | null = null;
@@ -56,8 +58,8 @@ export function useDefaultSystem(): string {
 // Map the defaults onto Run settings fields. One system serves the CPU target,
 // the GPU target and the archive; only fields the user filled in are returned,
 // so blanks keep whatever the caller already has.
-export function runDefaultsToOptions(d: RunDefaults): Record<string, string> {
-  const out: Record<string, string> = {};
+export function runDefaultsToOptions(d: RunDefaults): Record<string, string | boolean> {
+  const out: Record<string, string | boolean> = {};
   if (d.exec_system) {
     out.exec_system = d.exec_system;
     out.gpu_exec_system = d.exec_system;
@@ -67,5 +69,6 @@ export function runDefaultsToOptions(d: RunDefaults): Record<string, string> {
   if (d.gpu_exec_queue) out.gpu_exec_queue = d.gpu_exec_queue;
   if (d.work_dir) out.work_dir = d.work_dir;
   if (d.containers_dir) out.containers_dir = d.containers_dir;
+  if (typeof d.stage_files === "boolean") out.stage_files = d.stage_files;
   return out;
 }

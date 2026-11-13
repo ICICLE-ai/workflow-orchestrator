@@ -176,21 +176,57 @@ def _use_containers_dir(file_inputs: list, exec_system: str, containers_dir: str
         fi["sourceUrl"] = f"tapis://{exec_system}{containers_dir}/{found}"
 
 
+def _add_app_images(rendered: dict, containers_dir: str, headers: dict) -> None:
+    """Override the app's own .sif input with the containers dir copy, for a
+    step whose job doesn't name that input (wf_inference): Tapis would otherwise
+    merge it in from the app with its download link. A job input of the same
+    name replaces the app's; one only added when the copy exists, so a missing
+    image still falls back to the app's link."""
+    if not containers_dir:
+        return
+    app = _app_def(rendered.get("appId", ""), rendered.get("appVersion", ""), headers) or {}
+    named = {fi.get("name") for fi in rendered.get("fileInputs") or [] if isinstance(fi, dict)}
+    extra = [
+        {"name": i["name"], "sourceUrl": i.get("sourceUrl"), "targetPath": i["targetPath"], "autoMountLocal": True}
+        for i in (app.get("jobAttributes") or {}).get("fileInputs") or []
+        if str(i.get("targetPath", "")).endswith(".sif") and i.get("name") not in named
+        and str(i.get("inputMode", "")).upper() != "FIXED"
+    ]
+    _use_containers_dir(extra, rendered.get("execSystemId") or "", containers_dir, headers)
+    found = [fi for fi in extra if str(fi.get("sourceUrl", "")).startswith("tapis://")]
+    if found:
+        rendered.setdefault("fileInputs", []).extend(found)
+
+
 def _bindable_host_path(path: str) -> bool:
     # --bind splits on ',' and ':'; whitespace would split the containerArgs string.
     return not any(c in path for c in ",: \t\n")
 
 
 @DBOS.step()
-def localize_file_inputs(rendered: dict, run_id: int, containers_dir: str = "") -> dict:
+def localize_file_inputs(rendered: dict, run_id: int, containers_dir: str = "", stage_files: bool = False) -> dict:
     """Return `rendered` with same-filesystem fileInputs turned into read-only
     container binds (see the module docstring). A DBOS step so the generated
-    exec dir id and the Files API calls are recorded, not redone on recovery."""
-    file_inputs = rendered.get("fileInputs") or []
-    opted_out = {id(fi) for fi in file_inputs if isinstance(fi, dict) and fi.pop("bind", True) is False}
-    if not file_inputs or not use_real_tapis():
+    exec dir id and the Files API calls are recorded, not redone on recovery.
+
+    With `stage_files` (the run setting, off by default) nothing is bound: every
+    input is staged by Tapis as before, and the containers dir only changes
+    where a .sif is copied from — the exec system itself, not its link."""
+    if not use_real_tapis():
         return rendered
     try:
+        _add_app_images(rendered, containers_dir or "", {"X-Tapis-Token": _require_run_token(run_id)})
+    except Exception as e:
+        print(f"[bind_inputs] can't check the app's image ({type(e).__name__}: {e}) — using its link")
+    file_inputs = rendered.get("fileInputs") or []
+    opted_out = {id(fi) for fi in file_inputs if isinstance(fi, dict) and fi.pop("bind", True) is False}
+    if not file_inputs:
+        return rendered
+    try:
+        if stage_files:
+            headers = {"X-Tapis-Token": _require_run_token(run_id)}
+            _use_containers_dir(file_inputs, rendered.get("execSystemId") or "", containers_dir or "", headers)
+            return rendered
         return _localize(rendered, run_id, opted_out, containers_dir or "")
     except Exception as e:
         print(f"[bind_inputs] {type(e).__name__}: {e} — staging every input as before")
@@ -234,9 +270,19 @@ def _localize(rendered: dict, run_id: int, opted_out: set, containers_dir: str) 
     pinned = {f: rendered[f].replace("${JobUUID}", job_dir_id) for f in _JOB_DIR_FIELDS if isinstance(rendered.get(f), str)}
     exec_dir = pinned.get("execSystemExecDir", exec_dir)
 
+    # The app's own image, when the app runs a staged file ($PWD/trainer.sif):
+    # Singularity reads that from the host before any bind exists, so it must
+    # land in the exec dir as a file — a bind or a tapislocal:// mount puts it
+    # only inside a container that then can't start.
+    image = str(app.get("containerImage") or "").replace("${PWD}", "$PWD")
+    image_target = image[len("$PWD/"):].strip("/") if image.startswith("$PWD/") else None
+
     bound = []
     for fi, sys_id, path in candidates:
         name = fi.get("name")
+        if image_target and fi["targetPath"].strip("/") == image_target:
+            print(f"[bind_inputs] '{name}': the app's container image — staging it from {fi['sourceUrl']}")
+            continue
         root = _root_dir(sys_id, headers)
         if root is None:
             continue
@@ -282,6 +328,13 @@ def _localize(rendered: dict, run_id: int, opted_out: set, containers_dir: str) 
     bound_ids = {id(fi) for fi, _, _ in bound}
     rendered["fileInputs"] = [fi for fi in rendered["fileInputs"] if id(fi) not in bound_ids]
     container_args = parameter_set.setdefault("containerArgs", [])
+    # A destination under $PWD itself (no `--bind $PWD:/job` of the step's or
+    # app's maps it elsewhere) lands inside the working dir Apptainer mounts on
+    # its own — which then covers the bind, leaving the container the empty
+    # mount point. Binding $PWD explicitly first makes it a parent like /job,
+    # so the binds inside it apply on top.
+    if any(dest.startswith("$PWD") for _, _, dest in bound):
+        container_args.append({"name": "bind-cwd", "arg": "--bind $PWD"})
     env_vars = parameter_set.setdefault("envVariables", [])
     # Tapis rejects a key set twice — by the step, the app, or another input.
     env_keys = {e.get("key") for e in env_vars + (app_params.get("envVariables") or []) if isinstance(e, dict)}

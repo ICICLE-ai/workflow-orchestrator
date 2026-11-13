@@ -4918,6 +4918,17 @@
               }
             ],
             "title": "Containers Dir"
+          },
+          "stage_files": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Files"
           }
         },
         "type": "object",
@@ -5035,6 +5046,17 @@
               }
             ],
             "title": "Containers Dir"
+          },
+          "stage_files": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Files"
           }
         },
         "type": "object",

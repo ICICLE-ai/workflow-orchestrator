@@ -140,7 +140,8 @@ defaults** in the header of the dashboard or the Templates page.
 | **CPU queue** | The queue for steps with no GPU, e.g. `cpu-partition` on `aws-tapis`. |
 | **GPU queue** | The queue for GPU steps (training, zero-shot annotation, …), e.g. `a10g-partition` on `aws-tapis`. |
 | **Work dir** | Your base folder on that system. Jobs run under it, and outputs go to `…/wf_runs`. |
-| **Containers dir** | The folder on that system that holds the step container images (`trainer.sif`, `inf.sif`, …). Jobs then use these images in place instead of copying them in each run. See [How inputs reach a job](#how-inputs-reach-a-job). |
+| **Containers dir** | The folder on that system that holds the step container images (`trainer.sif`, `inf.sif`, …). Jobs then use these images in place instead of downloading them each run. See [How inputs reach a job](#how-inputs-reach-a-job). |
+| **File staging** | **Off** (default): inputs already on the system are mounted into the container instead of copied, which is faster but needs Apptainer/Singularity on the compute nodes. **On**: Tapis copies every input into the job. |
 
 ![Run defaults dialog](./docs/images/run_defaults_modal.png)
 
@@ -261,8 +262,9 @@ each node tinted by its live status.
 A second, smaller badge carries the raw **Tapis job status** — the full
 vocabulary (`STAGING_INPUTS`, `QUEUED`, `RUNNING`, `ARCHIVING`, `FINISHED`, …) —
 so a step that looks stuck can be told apart from one merely sitting in a queue.
-`STAGING_INPUTS` is usually brief: inputs already on the job's filesystem are
-mounted, not copied (see [How inputs reach a job](#how-inputs-reach-a-job)).
+With **File staging** off (the default), `STAGING_INPUTS` is usually brief: inputs already on
+the job's filesystem are mounted, not copied (see [How inputs reach a
+job](#how-inputs-reach-a-job)).
 The page polls every 2.5 s while the run is `RUNNING`; ⟳ in the header refreshes
 on demand.
 
@@ -405,9 +407,9 @@ A field with no system chosen yet shows the system from your
 shown is saved with it, so the step keeps pointing at the same place even if you
 change your defaults later.
 
-Inputs on the same filesystem as the step's job are mounted into its container,
-not copied, so large image folders don't slow the job's start. See
-[How inputs reach a job](#how-inputs-reach-a-job).
+With **File staging** off (the default), inputs on the same filesystem as the step's job are
+mounted into its container, not copied, so large image folders don't slow the
+job's start. See [How inputs reach a job](#how-inputs-reach-a-job).
 
 ![Path field](./docs/images/path_field.png)
 
@@ -596,6 +598,7 @@ CPU steps on OSC still writes all its artifacts to one place.
 | | **Archive system** | Where step outputs are archived, unless a sink node says otherwise. |
 | | **Archive dir (optional)** | Base directory on the archive system. Blank derives it from *Work dir*. |
 | | **Containers dir (optional)** | Folder on the exec system holding the step container images. A step that ships its image as an input uses the copy found here instead of downloading it each run. |
+| | **File staging** | Off by default: same-filesystem inputs are mounted. Turn it on to have Tapis copy every input into the job. |
 
 Whatever you choose, each step archives under
 `.../{run_id}/{step_type_key}/{node_id}`, so one run's artifacts never collide
@@ -909,18 +912,25 @@ than a log view.
 
 Tapis normally **copies** every input into a job's folder before the job starts.
 For a large image folder that copy can take longer than the job itself, even when
-the data already sits on the machine the job runs on. So the Studio only copies
-when it has to:
+the data already sits on the machine the job runs on.
+
+**File staging** (in [Run defaults](#set-your-run-defaults-once), or under
+**Storage & archive** in the Run workflow drawer) decides what happens:
+
+- **Off (default):** the Studio only copies when it has to, as shown below. This
+  needs Apptainer/Singularity on the compute nodes, as on the OSC systems.
+- **On:** every input is copied by Tapis. This works on any system. Turn it on if
+  a step can't see its input inside the job. A container image found in your
+  **Containers dir** is copied from there instead of being downloaded from its
+  link.
 
 ```mermaid
 flowchart TD
     A[Step input<br/>tapis://system/path] --> B{Same filesystem<br/>as the job's system?}
     B -- No --> C[Copied in by Tapis<br/>STAGING_INPUTS]
     B -- Yes --> D{Container image<br/>.sif input?}
-    D -- Yes, and found in<br/>Containers dir --> E[Use the copy in<br/>Containers dir]
     D -- No --> F[Mounted read-only<br/>into the container]
-    E --> F
-    D -- Yes, not found --> C
+    D -- Yes --> C
 ```
 
 
@@ -931,9 +941,10 @@ flowchart TD
 - **Different filesystem.** Data on another site, or behind an `https://` link,
   is still copied in as before.
 - **Container images.** Training, inference and preprocessing ship their
-  container as a `.sif` input. If your **Containers dir** has a file with the same
-  name (case, `-` and `_` ignored), that copy is mounted instead of downloading
-  the image every run.
+  container as a `.sif` input. The container runs from that file, so it is
+  always copied into the job. If your **Containers dir** has a file with the same
+  name (case, `-` and `_` ignored), it's copied from there instead of being
+  downloaded from its link.
 - **When in doubt, copy.** If the Studio can't confirm a mount will work (a
   Docker-based app, a missing source, a Tapis error), the input is copied as
   before. Mounting never makes a job fail.
@@ -943,8 +954,15 @@ input copied by adding `"bind": false` to it in the step's `step.json`, for a to
 that writes into its own input folder.
 
 **Keep outputs with a sink.** Jobs no longer archive their outputs to a second
-location. A step's outputs stay in its job folder under your work dir, where the
-next step reads them. Scratch space is purged on a schedule, so **wire any output
+location. Each job runs inside its run's folder, and its outputs stay there,
+where the next step reads them:
+
+```
+<work dir>/wf_runs/<run_id>/<step_type>/<node_id>/<job id>/
+    output/  tapisjob.out  tapisjob.sh  (inputs, when staged)
+```
+
+Every attempt at a step (a resume, a redo) gets its own `<job id>` folder. Scratch space is purged on a schedule, so **wire any output
 you want to keep into a sink node** (e.g. **💾 Write Results (JSON)**). An app
 whose own Tapis definition sets an archive system still archives there.
 

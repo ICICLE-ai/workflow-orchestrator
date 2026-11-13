@@ -36,7 +36,10 @@ export const GPU_RUN_CONFIG_DEFAULTS = {
 export type RunConfigValues = typeof RUN_CONFIG_DEFAULTS;
 
 // The user's Run defaults (header -> Run defaults) replace the built-in
-// system/queue/work dir when they set a system; a node's saved values still win.
+// system/queue when they set a system; a node's saved values still win. Not
+// the work dir: execWorkDir is a node's OWN job dir, and the run's work dir
+// already applies when it's empty — filling it in would pin the node outside
+// the run's wf_runs/<run_id> folder.
 export function runConfigDefaults(gpu?: boolean, user: RunDefaults = {}): RunConfigValues {
   const base = gpu ? GPU_RUN_CONFIG_DEFAULTS : RUN_CONFIG_DEFAULTS;
   if (!user.exec_system) return base;
@@ -44,7 +47,6 @@ export function runConfigDefaults(gpu?: boolean, user: RunDefaults = {}): RunCon
     ...base,
     execSystem: user.exec_system,
     execQueue: (gpu ? user.gpu_exec_queue : user.exec_queue) || preferredQueue(user.exec_system, gpu ? "gpu" : "cpu") || "",
-    execWorkDir: user.work_dir || "",
   };
 }
 

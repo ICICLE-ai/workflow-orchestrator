@@ -3,7 +3,7 @@ import { AppShell, Container, Title, Text, Button, Group, Card, ThemeIcon, Actio
 import { IconActivity, IconArrowLeft, IconRefresh, IconChevronDown, IconChevronRight, IconPlayerStop, IconFileText, IconSearch, IconPlayerPlay, IconUpload, IconServer } from "@tabler/icons-react";
 import { notifications } from "@mantine/notifications";
 import { useNavigate } from "react-router";
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { apiFetch } from "../lib/api";
 import TopNav from "../components/TopNav";
 import ThemeToggle from "../components/ThemeToggle";
@@ -39,24 +39,51 @@ const SORT_OPTIONS = [
   { value: "name_desc", label: "Name (Z–A)" },
 ];
 
+// How often an open logs view re-reads a step that's still running.
+const LIVE_LOGS_MS = 5000;
+
 // Modal that fetches and shows a step's failure detail: our recorded error,
 // Tapis' outcome summary, and the container's stdout/stderr (tapisjob.out).
 // `config` (the step's resolved inputs, passed down from the run detail
 // already in hand) renders immediately — it doesn't wait on the logs fetch.
+// While the step's job is active (the backend's `live`), it re-reads every
+// LIVE_LOGS_MS without blanking, following the end of the output unless the
+// user has scrolled up to read something.
 export function StepLogsModal({ runId, nodeId, stepType, config, opened, onClose }:
   { runId: number; nodeId: number | null; stepType?: string; config?: any; opened: boolean; onClose: () => void }) {
   const [logs, setLogs] = useState<any>(null);
   const [loading, setLoading] = useState(false);
+  const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
+  const outputRef = useRef<HTMLDivElement>(null);
+  const followRef = useRef(true);
+
+  const fetchLogs = useCallback(() =>
+    apiFetch(`/api/pipeline-runs/${runId}/step/${nodeId}/logs`)
+      .then((r) => r.ok ? r.json() : null)
+      .catch(() => null), [runId, nodeId]);
 
   useEffect(() => {
     if (!opened || nodeId == null) return;
-    setLoading(true); setLogs(null);
-    apiFetch(`/api/pipeline-runs/${runId}/step/${nodeId}/logs`)
-      .then((r) => r.ok ? r.json() : null)
-      .then((d) => setLogs(d))
-      .catch(() => setLogs(null))
+    setLoading(true); setLogs(null); followRef.current = true;
+    fetchLogs()
+      .then((d) => { setLogs(d); setUpdatedAt(new Date()); })
       .finally(() => setLoading(false));
-  }, [opened, runId, nodeId]);
+  }, [opened, nodeId, fetchLogs]);
+
+  const live = opened && Boolean(logs?.live);
+  useEffect(() => {
+    if (!live) return;
+    const id = setInterval(() => {
+      // A failed refresh keeps what's on screen rather than blanking it.
+      fetchLogs().then((d) => { if (d) { setLogs(d); setUpdatedAt(new Date()); } });
+    }, LIVE_LOGS_MS);
+    return () => clearInterval(id);
+  }, [live, fetchLogs]);
+
+  useEffect(() => {
+    const el = outputRef.current;
+    if (el && followRef.current) el.scrollTop = el.scrollHeight;
+  }, [logs?.job_output]);
 
   return (
     <Modal opened={opened} onClose={onClose} size="xl" title={`Logs — ${stepType || 'step'} #${nodeId}`}>
@@ -73,6 +100,11 @@ export function StepLogsModal({ runId, nodeId, stepType, config, opened, onClose
             <Badge color="gray" variant="light">step: {logs.status}</Badge>
             {logs.tapis_job_status && <Badge color="gray" variant="dot">tapis: {logs.tapis_job_status}</Badge>}
             {logs.tapis_job_uuid && <Text size="xs" c="dimmed">job {logs.tapis_job_uuid}</Text>}
+            {logs.live && (
+              <Badge color="blue" variant="light" leftSection={<Loader size={8} color="blue" />}>
+                Live{updatedAt ? ` · updated ${updatedAt.toLocaleTimeString()}` : ''}
+              </Badge>
+            )}
           </Group>
 
           {logs.tapis_last_message && (
@@ -92,7 +124,14 @@ export function StepLogsModal({ runId, nodeId, stepType, config, opened, onClose
           {logs.job_output && (
             <div>
               <Text size="sm" fw={600}>Container output ({logs.job_output_source || 'tapisjob.out'}, tail)</Text>
-              <ScrollArea.Autosize mah={360}>
+              <ScrollArea.Autosize
+                mah={360}
+                viewportRef={outputRef}
+                onScrollPositionChange={() => {
+                  const el = outputRef.current;
+                  if (el) followRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+                }}
+              >
                 <Code block style={{ fontSize: 11, whiteSpace: 'pre-wrap' }}>{logs.job_output}</Code>
               </ScrollArea.Autosize>
             </div>

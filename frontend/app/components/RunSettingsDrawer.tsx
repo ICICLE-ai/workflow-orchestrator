@@ -13,6 +13,7 @@ import {
   Select,
   SimpleGrid,
   Stack,
+  Switch,
   Text,
   TextInput,
   ThemeIcon,
@@ -48,6 +49,7 @@ export interface RunOptions {
   archive_system: string;
   archive_dir: string;
   containers_dir: string;
+  stage_files: boolean;
   slurm_account: string;
 }
 
@@ -550,6 +552,13 @@ export default function RunSettingsDrawer({
                   placeholder="e.g. /fs/ess/PAS2699/containers"
                   value={runOptions.containers_dir}
                   onChange={(e) => set({ containers_dir: e.currentTarget.value })}
+                />
+                <Switch
+                  size="xs"
+                  label="File staging"
+                  description="On: Tapis copies every input into the job. Off: inputs already on the exec system are mounted into the container instead."
+                  checked={runOptions.stage_files === true}
+                  onChange={(e) => set({ stage_files: e.currentTarget.checked })}
                 />
               </Stack>
             </Accordion.Panel>

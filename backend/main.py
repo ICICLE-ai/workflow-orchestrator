@@ -1447,24 +1447,72 @@ def get_step_logs(run_id: int, node_id: int, db: Session = Depends(get_db), user
     base = tapis_auth.TAPIS_BASE_URL
     headers = {"X-Tapis-Token": token}
     try:
+        jd = {}
         jr = _httpx.get(f"{base}/v3/jobs/{uuid}", headers=headers, timeout=30)
         if jr.status_code == 200:
-            jd = jr.json().get("result", {})
+            jd = jr.json().get("result", {}) or {}
             result["tapis_last_message"] = jd.get("lastMessage")
             result["tapis_job_status"] = jd.get("status") or result["tapis_job_status"]
-        # Container stdout/stderr — the most useful thing for a real failure.
-        out = _httpx.get(f"{base}/v3/jobs/{uuid}/output/download/tapisjob.out",
-                         headers=headers, timeout=30)
-        if out.status_code == 200:
-            text = out.text
-            # Keep the tail — the error is almost always at the end.
-            result["job_output"] = text[-8000:] if len(text) > 8000 else text
+        # Container stdout/stderr — the most useful thing for a real failure,
+        # and the job's progress while it runs. Read through the Files API, so
+        # it's readable from the moment the job starts, not only once it ends.
+        text, status = _read_job_log_tail(base, headers, jd)
+        # The jobs output API only serves a job that has ended.
+        if text is None and result["tapis_job_status"] in _TAPIS_TERMINAL_STATUSES:
+            out = _httpx.get(f"{base}/v3/jobs/{uuid}/output/download/tapisjob.out",
+                             headers=headers, timeout=30)
+            text, status = (out.text, 200) if out.status_code == 200 else (None, out.status_code)
+        if text is not None:
+            result["job_output"] = _clean_job_log(text)[-_LOG_TAIL_CHARS:]
+        elif result["tapis_job_status"] in _TAPIS_PRE_RUN_STATUSES:
+            result["logs_note"] = "The job hasn't started running yet, so there's no container output."
+        elif result["tapis_job_status"] == "RUNNING":
+            # Slurm creates tapisjob.out when the batch script starts on a node;
+            # until then (an autoscaled node still booting) there's no file.
+            result["logs_note"] = ("The job is running in Slurm, but its output file hasn't been created yet — "
+                                   "usually the compute node is still starting up. This updates automatically.")
         else:
-            result["logs_note"] = f"Container output not available (HTTP {out.status_code})."
+            result["logs_note"] = f"Container output not available (HTTP {status})."
     except Exception as e:
         result["logs_note"] = f"Could not reach Tapis for logs: {type(e).__name__}"
 
+    # Lets the logs view keep refreshing until the job is done.
+    result["live"] = (step.status in ("pending", "running")
+                      and result["tapis_job_status"] not in _TAPIS_TERMINAL_STATUSES)
     return result
+
+
+_LOG_TAIL_CHARS = 8000
+_TAPIS_TERMINAL_STATUSES = {"FINISHED", "FAILED", "CANCELLED"}
+_TAPIS_PRE_RUN_STATUSES = {"PENDING", "PROCESSING_INPUTS", "STAGING_INPUTS", "STAGING_JOB",
+                           "SUBMITTING_JOB", "QUEUED"}
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def _read_job_log_tail(base: str, headers: dict, job: dict) -> tuple:
+    """(text, http status) of the job's tapisjob.out, or (None, status) when it
+    can't be read. Tapis points Slurm's --output at the job's OUTPUT dir, so
+    that's tried first; the exec dir is where it was when the two were the same
+    folder. The whole file: Tapis Files ignores startByte/count and rejects a
+    Range header, so the tail is cut by the caller."""
+    import httpx as _httpx
+    system = job.get("execSystemId")
+    dirs = [d for d in (job.get("execSystemOutputDir"), job.get("execSystemExecDir")) if d and "${" not in d]
+    status = 0
+    for d in dict.fromkeys(dirs):
+        out = _httpx.get(f"{base}/v3/files/content/{system}{d.rstrip('/')}/tapisjob.out", headers=headers, timeout=60)
+        if out.status_code == 200:
+            return out.text, 200
+        status = out.status_code
+    return None, status
+
+
+def _clean_job_log(text: str) -> str:
+    """Terminal output made readable: ANSI codes dropped, and a line a progress
+    bar redrew with carriage returns reduced to its final state."""
+    text = _ANSI.sub("", text)
+    return "\n".join(line.rsplit("\r", 1)[-1] if "\r" in line.rstrip("\r") else line.rstrip("\r")
+                     for line in text.split("\n"))
 
 
 class NodeExecutionRequest(BaseModel):
@@ -1836,6 +1884,10 @@ class RunOptions(BaseModel):
     # preprocessing) binds the copy found here instead of staging it from its
     # link on every run — see engine.bind_inputs.
     containers_dir: Optional[str] = None
+    # True copies every input into the job dir through Tapis. Off (the default)
+    # bind-mounts inputs already on the exec system's filesystem instead — see
+    # engine.bind_inputs. Turn it on where the system's container setup can't bind.
+    stage_files: Optional[bool] = None
 
 
 @app.post("/api/workflow-templates/{template_version_id}/preflight", tags=["pipeline-runs"])
@@ -2085,6 +2137,7 @@ class RunDefaults(BaseModel):
     gpu_exec_queue: Optional[str] = None
     work_dir: Optional[str] = None
     containers_dir: Optional[str] = None
+    stage_files: Optional[bool] = None
 
 
 @app.get("/api/me/run-defaults")

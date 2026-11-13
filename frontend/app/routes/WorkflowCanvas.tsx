@@ -265,6 +265,8 @@ function Flow() {
     archive_dir: '',
     // Optional dir of .sif images on the exec system — see engine.bind_inputs.
     containers_dir: '',
+    // Tapis copies every input into the job; off mounts same-filesystem ones.
+    stage_files: false,
     slurm_account: 'PAS2699',
   });
 
@@ -312,7 +314,9 @@ function Flow() {
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
         if (cancelled || !d) return;
-        const saved = d.settings || runDefaultsToOptions(d.defaults || {});
+        // Defaults underneath, so a setting added after the workflow was last
+        // launched (e.g. stage_files) still follows the user's default.
+        const saved = { ...runDefaultsToOptions(d.defaults || {}), ...(d.settings || {}) };
         setRunOptions((prev) => ({ ...prev, ...saved }));
       })
       .catch(() => {});

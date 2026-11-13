@@ -336,10 +336,12 @@ def execute_node_workflow(node_key: str, run_id: int, orchestrator_workflow_id: 
         # node's own config alongside its business params.
         job_spec.apply_resource_overrides(rendered, resolved)
         rendered.setdefault("name", f"run-{run_id}-{node_key}")
-        # Inputs already on the exec system's filesystem are bind-mounted into
-        # the container instead of copied in by Tapis (see engine.bind_inputs);
-        # only cross-site inputs are still staged.
-        rendered = localize_file_inputs(rendered, run_id, ctx.get("containers_dir"))
+        # Unless the run stages files (off by default), inputs already on the exec
+        # system's filesystem are bind-mounted into the container instead of
+        # copied in by Tapis (see engine.bind_inputs); only cross-site inputs
+        # are still staged.
+        rendered = localize_file_inputs(rendered, run_id, ctx.get("containers_dir"),
+                                        stage_files=ctx.get("stage_files", False))
         # No archive fields in the job: outputs stay in the job's own output dir
         # and downstream steps read (bind) them from there; a sink copies one
         # out when the user wants it kept. Tapis then takes the archive target
