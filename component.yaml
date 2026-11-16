@@ -16,5 +16,5 @@
   status: AlphaRelease
   description: 
     The No-Code Workflow Studio is a web-based application that allows users to create, manage, and execute workflows without writing any code. It provides a visual interface for designing workflows, integrating various services, and automating tasks. The studio supports drag-and-drop functionality, making it accessible to users with varying levels of technical expertise.
-  licenseUrl: https://github.com/ICICLE-ai/workflow-orchestrator/blob/main/LICENSE
+  licenseUrl: https://github.com/ICICLE-ai/workflow-orchestrator?tab=BSD-3-Clause-1-ov-file
   sourceCodeUrl: https://github.com/ICICLE-ai/workflow-orchestrator
