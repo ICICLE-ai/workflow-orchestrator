@@ -518,8 +518,9 @@ class Sam3Backend(ZeroShotBackend):
             scores = result.get("scores")
             masks = result.get("masks")
 
-            for i in range(0 if boxes is None else len(boxes)):
-                x_min, y_min, x_max, y_max = boxes[i].tolist()
+            box_list = boxes.tolist() if boxes is not None else []
+            score_list = scores.tolist() if box_list else []
+            for i, (x_min, y_min, x_max, y_max) in enumerate(box_list):
 
                 seg_points: list[list[int]] = []
                 if want_segmentation and masks is not None and len(masks) > i:
@@ -530,7 +531,7 @@ class Sam3Backend(ZeroShotBackend):
                 detections.append(Detection(
                     x_min=int(x_min), y_min=int(y_min),
                     x_max=int(x_max), y_max=int(y_max),
-                    score=float(scores[i].item()),
+                    score=float(score_list[i]),
                     label=prompt.label,
                     prompt_type=prompt.kind,
                     segmentation=seg_points,
@@ -538,8 +539,6 @@ class Sam3Backend(ZeroShotBackend):
             batch_detections.append(detections)
 
         del inputs, outputs, batch_results
-        if self.device == "cuda":
-            torch.cuda.empty_cache()
 
         return batch_detections
 
@@ -1334,11 +1333,14 @@ def split_by_prompt_kind(jobs: list[TileJob]) -> tuple[list[TileJob], list[TileJ
     exemplar padding never leaks into text-only inference, and text jobs are
     never charged for a geometry-encoder pass.
     """
-    exemplar_jobs = [j for j in jobs if j.prompt.has_exemplars()]
-    reference_jobs = [j for j in jobs if j.prompt.kind == "reference"]
-    text_jobs = [
-        j for j in jobs if not j.prompt.has_exemplars() and j.prompt.kind != "reference"
-    ]
+    text_jobs, exemplar_jobs, reference_jobs = [], [], []
+    for job in jobs:
+        if job.prompt.kind == "reference":
+            reference_jobs.append(job)
+        elif job.prompt.has_exemplars():
+            exemplar_jobs.append(job)
+        else:
+            text_jobs.append(job)
     return text_jobs, exemplar_jobs, reference_jobs
 
 
@@ -1388,7 +1390,8 @@ def run_jobs(
     consecutive_failures = 0
 
     try:
-        for batch in tqdm(list(batched(jobs, batch_size)), desc=desc):
+        total_batches = math.ceil(len(jobs) / batch_size)
+        for batch in tqdm(batched(jobs, batch_size), total=total_batches, desc=desc):
             crops = [cache.crop(job.image_idx, job.tile) for job in batch]
             prompts = [job.prompt for job in batch]
 
